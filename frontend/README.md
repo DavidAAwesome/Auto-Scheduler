@@ -1,75 +1,35 @@
-# React + TypeScript + Vite
+# AutoPlan frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite frontend for the AutoPlan workspace. The visual shell follows the prototype's warm neutral background, purple accents, and rounded cards.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Use Node.js 24 LTS (supported by the project's ESLint dependency).
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```sh
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+## Checks
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```sh
+npm run build
+npm run lint
 ```
+
+`npm run preview` serves the production build after `npm run build`.
+
+## Navigation
+
+The frontend uses hash URLs, matching the prototype. The initial URL opens Login. Available screens are `#/login`, `#/home`, `#/tasks`, `#/assistant`, `#/analytics`, `#/calendar`, `#/profile`, and `#/settings`. Browser back/forward navigation and direct links are supported without server rewrite rules. Unknown routes show a recovery link.
+
+Each screen lives in `src/screens/`. Shared layout, icons, headings, and placeholder states live in `src/components/`. Global design tokens live in `src/index.css`; responsive layout styles live in `src/App.css`.
+
+The desktop sidebar expands at widths above 1100px, becomes an icon rail on tablets, and becomes a dismissible menu at 640px and below. The mobile menu supports Escape, focus containment, and background scroll locking.
+
+## Demo scope
+
+Use `demo@autoplan.app` / `autoplan` on Login, or choose the preview link. This is local demo validation, not authentication; workspace routes are intentionally publicly accessible. Sign out returns to the Login screen. All screen data is placeholder content, and no API requests or backend changes are involved. Tasks, planning, analytics, calendar connections, account editing, and settings are not implemented yet.
+
+Typography uses Google Fonts (Manrope and DM Sans), with system-font fallbacks when unavailable.
