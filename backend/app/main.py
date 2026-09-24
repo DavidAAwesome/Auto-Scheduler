@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from app.auth import get_current_user
 
 app = FastAPI(
     title="Auto-Scheduler API",
@@ -18,4 +19,12 @@ def root():
 def health_check():
     return {
         "status": "healthy"
+    }
+
+
+@app.get("/protected")
+def protected_route(user=Depends(get_current_user)):
+    return {
+        "message": "You are authenticated!",
+        "uid": user["uid"]
     }
