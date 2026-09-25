@@ -1,4 +1,5 @@
 import ScreenHeading from "../components/ScreenHeading";
+import { demoSession } from "../services/demoSession";
 export default function Profile() {
   return (
     <>
@@ -17,6 +18,15 @@ export default function Profile() {
         <a className="button secondary" href="#/settings">
           Workspace settings →
         </a>
+        <p className="muted">
+          This is a local demo. No real account is authenticated.
+        </p>
+        <button
+          className="button secondary"
+          onClick={() => demoSession.logout()}
+        >
+          Log out of demo
+        </button>
       </section>
     </>
   );

@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import AppLayout from "./components/AppLayout";
-import Login from "./screens/Login";
+import LoginPage from "./screens/LoginPage";
+import { demoSession } from "./services/demoSession";
 import Home from "./screens/Home";
 import Tasks from "./screens/Tasks";
 import Assistant from "./screens/Assistant";
@@ -10,7 +11,7 @@ import Profile from "./screens/Profile";
 import Settings from "./screens/Settings";
 import "./App.css";
 const screens = {
-  login: Login,
+  login: LoginPage,
   home: Home,
   tasks: Tasks,
   assistant: Assistant,
@@ -30,12 +31,18 @@ function getRoute() {
 }
 export default function App() {
   const route = useSyncExternalStore(subscribe, getRoute);
+  const signedIn = useSyncExternalStore(
+    demoSession.subscribe,
+    demoSession.getSnapshot,
+  );
+  const showLogin = !signedIn || route === "login";
   const isKnown = Object.prototype.hasOwnProperty.call(screens, route);
   useEffect(() => {
-    document.title = `${isKnown ? route.charAt(0).toUpperCase() + route.slice(1) : "Page not found"} · AutoPlan`;
+    document.title = `${showLogin ? "Login" : isKnown ? route.charAt(0).toUpperCase() + route.slice(1) : "Page not found"} · AutoPlan`;
     window.scrollTo(0, 0);
     document.getElementById("main-content")?.focus({ preventScroll: true });
-  }, [route, isKnown]);
+  }, [route, isKnown, showLogin]);
+  if (showLogin) return <LoginPage />;
   if (!isKnown)
     return (
       <main className="login-page">
@@ -49,9 +56,7 @@ export default function App() {
       </main>
     );
   const Screen = screens[route as keyof typeof screens];
-  return route === "login" ? (
-    <Login />
-  ) : (
+  return (
     <AppLayout key={route} route={route}>
       <Screen />
     </AppLayout>

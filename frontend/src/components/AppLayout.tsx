@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { demoSession } from "../services/demoSession";
 import Icon, { type IconName } from "./Icon";
 const mainLinks: IconName[] = [
   "home",
@@ -121,6 +122,10 @@ export default function AppLayout({
             <a
               className="nav-link"
               href="#/login"
+              onClick={(event) => {
+                event.preventDefault();
+                demoSession.logout();
+              }}
               title="Sign out"
               aria-label="Sign out"
             >
