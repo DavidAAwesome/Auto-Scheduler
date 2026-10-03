@@ -1,19 +1,28 @@
+import { useState } from "react";
 import ScreenHeading from "../components/ScreenHeading";
 import MockNotice from "../components/MockNotice";
+import TaskForm from "../components/TaskForm";
 import { useMockData } from "../hooks/useMockData";
 import { formatDate } from "../utils/dates";
 import "./Tasks.css";
 export default function Calendar() {
   const { tasks, calendarEvents } = useMockData();
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  
   const ordered = [...tasks].sort((a, b) =>
     a.deadline.localeCompare(b.deadline),
   );
   return (
     <>
-      <ScreenHeading
-        title="Make space for your week."
-        description="Task deadlines and sample calendar events, together in one place."
-      />
+<ScreenHeading
+  title="Make space for your week."
+  description="Task deadlines and sample calendar events, together in one place."
+  action={
+    <button className="button" onClick={() => setShowTaskForm(true)}>
+      + Add task
+    </button>
+  }
+/>
       <MockNotice />
       <div className="two-column">
         <section className="card">
@@ -66,7 +75,14 @@ export default function Calendar() {
             ))}
           </ul>
         </section>
-      </div>
+            </div>
+
+      {showTaskForm && (
+        <TaskForm
+          onClose={() => setShowTaskForm(false)}
+          onSave={() => setShowTaskForm(false)}
+        />
+      )}
     </>
   );
 }
