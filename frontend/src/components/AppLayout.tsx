@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { demoSession } from "../services/demoSession";
+import { authSession, useAuth } from "../services/authSession";
 import Icon, { type IconName } from "./Icon";
 const mainLinks: IconName[] = [
   "home",
@@ -17,6 +17,9 @@ export default function AppLayout({
   route: string;
   children: ReactNode;
 }) {
+  const { user } = useAuth();
+  const [logoutError, setLogoutError] = useState("");
+  const initial = user?.name.charAt(0).toUpperCase() || "?";
   const [open, setOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const sidebar = useRef<HTMLElement>(null);
@@ -124,7 +127,7 @@ export default function AppLayout({
               href="#/login"
               onClick={(event) => {
                 event.preventDefault();
-                demoSession.logout();
+                void authSession.logout().catch((e: Error) => setLogoutError(e.message));
               }}
               title="Sign out"
               aria-label="Sign out"
@@ -134,9 +137,9 @@ export default function AppLayout({
             </a>
           </nav>
           <a className="sidebar-user" href="#/profile">
-            <span className="avatar">M</span>
+            <span className="avatar">{initial}</span>
             <span className="user-details">
-              <strong>Mia's workspace</strong>
+              <strong>{user?.name}’s workspace</strong>
               <small>Personal account</small>
             </span>
           </a>
@@ -161,14 +164,15 @@ export default function AppLayout({
           </div>
           <div className="header-right">
             <span className="demo-badge">
-              <span /> Demo workspace
+              <span /> Your workspace
             </span>
             <a className="avatar" href="#/profile" aria-label="Open profile">
-              M
+              {initial}
             </a>
           </div>
         </header>
         <main id="main-content" tabIndex={-1}>
+          {logoutError && <p role="alert" className="form-error">{logoutError}</p>}
           {children}
         </main>
         <footer>AutoPlan · A little more space for what matters.</footer>

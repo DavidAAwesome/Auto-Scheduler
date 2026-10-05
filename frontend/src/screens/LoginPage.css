@@ -192,7 +192,11 @@
 .login-submit:hover {
   background: #4246bb;
 }
-.prototype-demo-label {
+.login-submit:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.login-account-link {
   font-size: 12px;
   color: var(--login-muted);
   text-align: center;

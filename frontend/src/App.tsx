@@ -1,7 +1,9 @@
 import { useEffect, useSyncExternalStore } from "react";
+import WorkspaceGate from "./components/WorkspaceGate";
 import AppLayout from "./components/AppLayout";
 import LoginPage from "./screens/LoginPage";
-import { demoSession } from "./services/demoSession";
+import { authSession, useAuth } from "./services/authSession";
+import SignupPage from "./screens/SignupPage";
 import Home from "./screens/Home";
 import Tasks from "./screens/Tasks";
 import Assistant from "./screens/Assistant";
@@ -12,6 +14,7 @@ import Settings from "./screens/Settings";
 import "./App.css";
 const screens = {
   login: LoginPage,
+  signup: SignupPage,
   home: Home,
   tasks: Tasks,
   assistant: Assistant,
@@ -31,18 +34,19 @@ function getRoute() {
 }
 export default function App() {
   const route = useSyncExternalStore(subscribe, getRoute);
-  const signedIn = useSyncExternalStore(
-    demoSession.subscribe,
-    demoSession.getSnapshot,
-  );
-  const showLogin = !signedIn || route === "login";
+  const session = useAuth();
+  useEffect(() => { void authSession.initialize(); }, []);
+  const authRoute = route === "signup" ? "signup" : "login";
+  const showLogin = session.status !== "authenticated" || route === "login" || route === "signup";
   const isKnown = Object.prototype.hasOwnProperty.call(screens, route);
   useEffect(() => {
-    document.title = `${showLogin ? "Login" : isKnown ? route.charAt(0).toUpperCase() + route.slice(1) : "Page not found"} · AutoPlan`;
+    document.title = `${showLogin ? (authRoute === "signup" ? "Sign up" : "Login") : isKnown ? route.charAt(0).toUpperCase() + route.slice(1) : "Page not found"} · AutoPlan`;
     window.scrollTo(0, 0);
     document.getElementById("main-content")?.focus({ preventScroll: true });
-  }, [route, isKnown, showLogin]);
-  if (showLogin) return <LoginPage />;
+  }, [route, isKnown, showLogin, authRoute]);
+  if (session.status === "loading") return <main className="login-page"><p role="status">Checking your session…</p></main>;
+  if (session.status === "error") return <main className="login-page"><section className="card"><h1>Couldn’t restore your session</h1><p role="alert">{session.error}</p><button className="button" onClick={() => void authSession.retry()}>Try again</button></section></main>;
+  if (showLogin) return authRoute === "signup" ? <SignupPage /> : <LoginPage />;
   if (!isKnown)
     return (
       <main className="login-page">
@@ -58,7 +62,7 @@ export default function App() {
   const Screen = screens[route as keyof typeof screens];
   return (
     <AppLayout key={route} route={route}>
-      <Screen />
+      <WorkspaceGate><Screen /></WorkspaceGate>
     </AppLayout>
   );
 }

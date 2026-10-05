@@ -1,46 +1,38 @@
 # AutoPlan frontend
 
-React + TypeScript + Vite frontend for the AutoPlan workspace. The visual shell follows the prototype's warm neutral background, purple accents, and rounded cards.
-
-## Run locally
-
-Use Node.js 24 LTS (supported by the project's ESLint dependency).
+React + TypeScript + Vite. See the root [README](../README.md) for MongoDB/FastAPI setup, environment variables, API contracts, and verification commands.
 
 ```sh
 npm ci
-npm run dev
-```
-
-## Checks
-
-```sh
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 npm run build
 npm run lint
 npm test
 ```
 
-`npm run preview` serves the production build after `npm run build`.
+Use Node.js 24 LTS. The backend must run on port 8000; Vite forwards `/api` there using `API_PROXY_TARGET`. `VITE_API_URL` defaults to `/api`. Only public configuration belongs in frontend environment variables.
 
-## Navigation
+## Screens and authentication
 
-The frontend uses hash URLs, matching the prototype. The initial URL opens Login. Available screens are `#/login`, `#/home`, `#/tasks`, `#/assistant`, `#/analytics`, `#/calendar`, `#/profile`, and `#/settings`. Browser back/forward navigation and direct links are supported without server rewrite rules. Unknown routes show a recovery link.
+Hash routes: `#/login`, `#/signup`, `#/home`, `#/tasks`, `#/assistant`, `#/analytics`, `#/calendar`, `#/profile`, and `#/settings`. Each screen lives in `src/screens/`. Login and Signup share the prototype's two-column design and preview card; the preview hides at widths of 760px and below. Signup adds name and confirm-password fields. There is no hardcoded demo login.
 
-Each screen lives in `src/screens/`. Shared layout, icons, headings, and placeholder states live in `src/components/`. Global design tokens live in `src/index.css`; responsive layout styles live in `src/App.css`.
+`src/services/api.ts` sends credentialed requests. `src/services/authSession.ts` restores the HttpOnly-cookie session through `/auth/me`; `App.tsx` gates workspace routes. Failed restoration offers a retry. Profile displays the backend user's name/email. Profile and sidebar logout revoke the server session.
 
-The desktop sidebar expands at widths above 1100px, becomes an icon rail on tablets, and becomes a dismissible menu at 640px and below. The mobile menu supports Escape, focus containment, and background scroll locking.
+Responsive workspace styles remain in `src/App.css`, with tokens in `src/index.css`. Typography uses Google Fonts with system fallbacks.
 
-## Demo scope
+## Sprint 1 workspace
 
-Use `demo@autoplan.app` / `autoplan` on Login. `src/screens/LoginPage.tsx` matches the prototype’s two-column login, hiding the preview column at 760px and below. This is UI-only demo validation, not real authentication. The demo session is stored in sessionStorage (with a memory fallback); workspace views show Login while signed out. Profile’s “Log out of demo” and sidebar Sign out clear that session. Tasks support add, edit, complete/reopen, delete, case-insensitive title search, and All/Open/Done filters. Home and Calendar use the same task store; changes persist under `autoplan.demo.workspace.v2` in localStorage and synchronize on storage events across tabs. The first load seeds sample data; empty task lists stay empty after reload. Scheduling, analytics, external calendar connections, account editing, and settings remain future work. No API requests or backend changes are involved.
+`src/services/workspace.ts` connects the existing API client to the shared `workspaceStore.ts`. Tasks support add/edit/complete/reopen/delete, search, and filters. Home and Calendar read the same confirmed server data. Workspace loading and failures are handled by `WorkspaceGate`; failed saves keep the confirmed data and display an error. Account changes clear memory immediately, and stale requests cannot restore the previous account's data. Task data is not stored in localStorage.
 
-Typography uses Google Fonts (Manrope and DM Sans for the workspace; Outfit and DM Sans for Login), with system-font fallbacks when unavailable.
+Settings saves all seven weekdays, a timezone, and an optional reminder preference. Each day supports one time window; midnight can be entered as 24:00 in the end field. Calendar displays the selected week, saved available hours, completed/open task deadlines, and an all-dates agenda. Its current date follows the saved timezone. Task deadlines are date-only values and are not converted to UTC.
 
-## Data and source verification
+- `src/types/models.ts`: Task, Availability, CalendarEvent, ScheduledBlock, and legacy prototype types.
+- `src/services/taskRules.ts`: shared task validation and filters, reused from the prototype.
+- `src/services/workspaceStore.ts`: API data loading, mutations, error handling, and account resets.
+- `src/components/TaskForm.tsx`: existing accessible form, now awaiting API writes.
+- `src/screens/Settings.tsx` and `Calendar.tsx`: saved settings and basic calendar.
+- `tests/workspace.test.ts`: API store, failure, account-race, and timezone regression tests.
 
-- `src/types/models.ts`: Task, Availability, CalendarEvent, ScheduledBlock, and workspace types.
-- `src/data/sampleData.ts`: sample task labels, priorities, durations, categories, and calendar event; dates are relative to first use.
-- `src/services/mockData.ts`: validation, CRUD, subscriptions, browser persistence, storage-error handling, and task selectors.
-- `src/components/TaskForm.tsx`: shared accessible modal form with native field validation.
-- `tests/mockData.test.ts`: store, search/filter, persistence, and error-path regression tests.
+The old `mockData.ts`/sample data remain as test fixtures and are not imported by the live app. No automatic upload of old localStorage data occurs. Scheduling, external calendar sync, and reminder delivery remain future sprint work.
 
-The repository did not contain the prototype's `app.js`. Its private source download was blocked by automatic approval review. Task fields and sample labels were verified from the normal prototype UI; exact source parity remains unverified. Availability, CalendarEvent, and ScheduledBlock are explicitly provisional contracts, not claimed transcriptions of that source. Supply the local `app.js` to reconcile these types and any remaining behavior differences. Demo state uses a separate versioned key from the unfinished earlier mock service; it does not overwrite that older key.
+`npm run preview` serves static output; deploy an API reverse proxy alongside it or configure an appropriate API URL. It is not the development proxy.

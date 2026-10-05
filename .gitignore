@@ -9,6 +9,7 @@ dist/
 
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 .venv/
 venv/
@@ -18,5 +19,6 @@ venv/
 
 # OS
 .DS_Store
-Thumbs.dbAutoPlan-prototype-source.zip
+Thumbs.db
+AutoPlan-prototype-source.zip
 AutoPlan-prototype-source/

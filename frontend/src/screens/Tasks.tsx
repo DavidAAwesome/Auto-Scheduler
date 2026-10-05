@@ -1,27 +1,27 @@
 import { useState } from "react";
 import ScreenHeading from "../components/ScreenHeading";
 import TaskForm from "../components/TaskForm";
-import MockNotice from "../components/MockNotice";
-import { useMockData } from "../hooks/useMockData";
+
+import { useWorkspace } from "../hooks/useWorkspace";
 import {
-  mockDataService,
   selectTasks,
   type TaskFilter,
-} from "../services/mockData";
+} from "../services/taskRules";
+import { workspaceService } from "../services/workspace";
 import { formatDate } from "../utils/dates";
 import type { Task } from "../types/models";
 import "./Tasks.css";
 export default function Tasks() {
-  const { tasks } = useMockData();
+  const { tasks, saving } = useWorkspace();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [editor, setEditor] = useState<Task | "new" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const shown = selectTasks(tasks, search, filter);
-  function mutate(action: () => void, message: string) {
+  async function mutate(action: () => Promise<unknown>, message: string) {
     try {
-      action();
+      await action();
       setMessage(message);
       setError("");
     } catch (e) {
@@ -40,7 +40,7 @@ export default function Tasks() {
           </button>
         }
       />
-      <MockNotice />
+
       <div className="tasks-toolbar">
         <input
           type="search"
@@ -91,13 +91,14 @@ export default function Tasks() {
             {shown.map((task) => (
               <li key={task.id} className={task.done ? "task-done" : ""}>
                 <input
+                  disabled={saving}
                   type="checkbox"
                   checked={task.done}
                   aria-label={`${task.done ? "Reopen" : "Complete"} ${task.title}`}
                   onChange={(e) =>
                     mutate(
                       () =>
-                        mockDataService.setCompleted(task.id, e.target.checked),
+                        workspaceService.setCompleted(task.id, e.target.checked),
                       e.target.checked ? "Task completed" : "Task reopened",
                     )
                   }
@@ -117,6 +118,7 @@ export default function Tasks() {
                 <div className="prototype-task-actions">
                   <button
                     className="button secondary"
+                    disabled={saving}
                     aria-label={`Edit ${task.title}`}
                     onClick={() => setEditor(task)}
                   >
@@ -124,10 +126,11 @@ export default function Tasks() {
                   </button>
                   <button
                     className="button secondary"
+                    disabled={saving}
                     aria-label={`Delete ${task.title}`}
                     onClick={() =>
                       mutate(
-                        () => mockDataService.deleteTask(task.id),
+                        () => workspaceService.deleteTask(task.id),
                         "Task deleted",
                       )
                     }
@@ -141,7 +144,7 @@ export default function Tasks() {
         )}
       </section>
       <p className="muted task-footnote">
-        Demo tasks are saved in this browser. Scheduling is not implemented yet;
+        Tasks are saved to your account. Automatic scheduling comes in Sprint 2;
         deadlines do not reserve calendar time.
       </p>
       {editor && (

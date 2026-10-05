@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import Icon from "../components/Icon";
-import { demoSession, DEMO_LOGIN_ERROR } from "../services/demoSession";
+import { authSession } from "../services/authSession";
 import "./LoginPage.css";
 
 function LoginBrand() {
@@ -14,22 +14,25 @@ function LoginBrand() {
   );
 }
 
-export default function LoginPage() {
+export default function LoginPage({ signup = false }: { signup?: boolean }) {
   const [error, setError] = useState("");
-  function submit(event: FormEvent<HTMLFormElement>) {
+  const [loading, setLoading] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (loading) return;
     const data = new FormData(event.currentTarget);
-    if (
-      !demoSession.login(
-        String(data.get("email") ?? ""),
-        String(data.get("password") ?? ""),
-      )
-    ) {
-      setError(DEMO_LOGIN_ERROR);
-      return;
-    }
+    const email = String(data.get("email") ?? "").trim();
+    const password = String(data.get("password") ?? "");
     setError("");
-    window.location.hash = "/home";
+    if (signup && password !== data.get("confirmPassword")) { setError("Passwords do not match."); return; }
+    if (signup && !String(data.get("name") ?? "").trim()) { setError("Enter your name."); return; }
+    setLoading(true);
+    try {
+      if (signup) await authSession.signup(String(data.get("name")).trim(), email, password);
+      else await authSession.login(email, password);
+      window.location.hash = "/home";
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to sign in. Please try again."); }
+    finally { setLoading(false); }
   }
   return (
     <main className="prototype-login">
@@ -62,15 +65,12 @@ export default function LoginPage() {
       <section className="login-right" aria-labelledby="login-heading">
         <form className="prototype-login-form" onSubmit={submit}>
           <LoginBrand />
-          <p className="login-eyebrow">WELCOME BACK</p>
-          <h2 id="login-heading">Sign in to your space</h2>
+          <p className="login-eyebrow">{signup ? "WELCOME TO AUTOPLAN" : "WELCOME BACK"}</p>
+          <h2 id="login-heading">{signup ? "Create your space" : "Sign in to your space"}</h2>
           <p className="login-subtitle">
-            Try the planning flow with a demo account.
+            {signup ? "A calmer week starts with your account." : "Your tasks, time, and priorities await."}
           </p>
-          <div className="prototype-login-notice" id="demo-login-notice">
-            Prototype login. Use <strong>demo@autoplan.app</strong> and{" "}
-            <strong>autoplan</strong>. No real account is created.
-          </div>
+          {signup && <div className="login-field"><label htmlFor="signup-name">Name</label><input id="signup-name" name="name" autoComplete="name" maxLength={80} required disabled={loading} /></div>}
           <div className="login-field">
             <label htmlFor="login-email">Email address</label>
             <input
@@ -78,9 +78,11 @@ export default function LoginPage() {
               name="email"
               type="email"
               autoComplete="username"
+              maxLength={254}
+              disabled={loading}
               required
-              placeholder="demo@autoplan.app"
-              aria-describedby="demo-login-notice login-error"
+              placeholder="you@example.com"
+              aria-describedby="login-error"
               aria-invalid={!!error}
             />
           </div>
@@ -90,13 +92,17 @@ export default function LoginPage() {
               id="login-password"
               name="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete={signup ? "new-password" : "current-password"}
+              minLength={signup ? 8 : undefined}
+              maxLength={128}
+              disabled={loading}
               required
-              placeholder="Enter demo password"
+              placeholder={signup ? "At least 8 characters" : "Enter your password"}
               aria-describedby="login-error"
               aria-invalid={!!error}
             />
           </div>
+          {signup && <div className="login-field"><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirmPassword" type="password" autoComplete="new-password" required maxLength={128} disabled={loading} aria-describedby="login-error" /></div>}
           <div
             className="prototype-login-error"
             id="login-error"
@@ -104,11 +110,11 @@ export default function LoginPage() {
           >
             {error}
           </div>
-          <button className="login-submit" type="submit">
-            Continue to demo <Icon name="arrow" size={16} />
+          <button className="login-submit" type="submit" disabled={loading}>
+            {loading ? "Please wait…" : signup ? "Create account" : "Sign in"} <Icon name="arrow" size={16} />
           </button>
-          <p className="prototype-demo-label">
-            Private prototype · No Google account connection
+          <p className="login-account-link">
+            {signup ? "Already have an account?" : "New to AutoPlan?"}{" "}<a className="text-link" href={signup ? "#/login" : "#/signup"}>{signup ? "Sign in" : "Create an account"}</a>
           </p>
         </form>
       </section>

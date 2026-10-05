@@ -1,23 +1,26 @@
+import { useAuth } from "../services/authSession";
 import ScreenHeading from "../components/ScreenHeading";
 import Icon from "../components/Icon";
 import { useState } from "react";
-import { useMockData } from "../hooks/useMockData";
-import { mockDataService } from "../services/mockData";
-import { formatDate, localDate } from "../utils/dates";
-import MockNotice from "../components/MockNotice";
+import { useWorkspace } from "../hooks/useWorkspace";
+import { workspaceService } from "../services/workspace";
+import { formatDate } from "../utils/dates";
+
+import { dateInZone } from "../utils/calendar";
 import "./Tasks.css";
 export default function Home() {
-  const { tasks, scheduledBlocks } = useMockData();
+  const { user } = useAuth();
+  const { tasks, saving, availability } = useWorkspace();
   const [error, setError] = useState("");
   const upcoming = tasks
     .filter((task) => !task.done)
     .sort((a, b) => a.deadline.localeCompare(b.deadline))
     .slice(0, 4);
-  const focus = scheduledBlocks.filter((block) => block.type === "focus");
+  const todayTasks = tasks.filter(task => task.deadline === dateInZone(availability?.timeZone ?? "UTC") && !task.done);
   return (
     <>
       <ScreenHeading
-        title="Good morning, Mia 👋"
+        title={`Welcome, ${user?.name || "there"} 👋`}
         description="Here’s what your week is shaping up to look like."
         action={
           <a className="button" href="#/tasks">
@@ -25,7 +28,7 @@ export default function Home() {
           </a>
         }
       />
-      <MockNotice />
+
       <section className="hero">
         <div>
           <p className="eyebrow">A LITTLE CLARITY GOES A LONG WAY</p>
@@ -51,14 +54,14 @@ export default function Home() {
             },
             {
               icon: "assistant",
-              value: `${(focus.filter((block) => block.date === localDate()).reduce((sum, block) => sum + block.end - block.start, 0) / 60).toFixed(1)}h`,
-              label: "Focus time today",
+              value: String(todayTasks.length),
+              label: "Tasks due today",
               tone: "green",
             },
             {
               icon: "calendar",
-              value: String(focus.length),
-              label: "Scheduled focus blocks",
+              value: String(tasks.filter(task => task.done).length),
+              label: "Tasks completed",
               tone: "peach",
             },
           ] as const
@@ -94,11 +97,12 @@ export default function Home() {
                 <li key={task.id}>
                   <input
                     type="checkbox"
+                    disabled={saving}
                     checked={task.done}
                     aria-label={`Complete ${task.title}`}
-                    onChange={() => {
+                    onChange={async () => {
                       try {
-                        mockDataService.setCompleted(task.id, true);
+                        await workspaceService.setCompleted(task.id, true);
                         setError("");
                       } catch (e) {
                         setError((e as Error).message);
@@ -139,8 +143,8 @@ export default function Home() {
           </div>
           <div className="small-empty">
             <Icon name="calendar" size={28} />
-            <h3>A little room to breathe</h3>
-            <p>Your scheduled focus blocks will appear here.</p>
+            <h3>{todayTasks.length ? `${todayTasks.length} task deadlines today` : "A little room to breathe"}</h3>
+            <p>{todayTasks.length ? todayTasks.map(task => task.title).join(" · ") : "No open tasks due today. Your calendar shows upcoming deadlines and available hours."}</p>
           </div>
         </section>
       </div>

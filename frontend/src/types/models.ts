@@ -14,7 +14,7 @@ export interface Task {
   done: boolean;
 }
 export type TaskInput = Omit<Task, "id" | "done">;
-export interface Availability {
+export interface DemoAvailability {
   start: number;
   end: number;
   weekends: boolean;
@@ -38,7 +38,11 @@ export interface ScheduledBlock {
 export interface DemoWorkspace {
   version: 2;
   tasks: Task[];
-  availability: Availability;
+  availability: DemoAvailability;
   calendarEvents: CalendarEvent[];
   scheduledBlocks: ScheduledBlock[];
 }
+
+/** Weekly wall-clock hours in the selected IANA timezone. Monday = 0. */
+export interface AvailableDay { day: number; enabled: boolean; start: number; end: number }
+export interface Availability { days: AvailableDay[]; timeZone: string; reminders: boolean }

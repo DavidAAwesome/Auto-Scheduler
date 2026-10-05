@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Task, TaskInput } from "../types/models";
 import { addDays, localDate } from "../utils/dates";
-import { mockDataService } from "../services/mockData";
+import { workspaceService } from "../services/workspace";
 
 export default function TaskForm({
   task,
@@ -13,6 +13,7 @@ export default function TaskForm({
   onSave: (message: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     const node = dialog.current;
@@ -24,8 +25,9 @@ export default function TaskForm({
       trigger?.focus();
     };
   }, []);
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saving) return;
     const data = new FormData(event.currentTarget);
     const input: TaskInput = {
       title: String(data.get("title")),
@@ -34,23 +36,24 @@ export default function TaskForm({
       priority: data.get("priority") as TaskInput["priority"],
       category: data.get("category") as TaskInput["category"],
     };
+    setSaving(true);
     try {
-      if (task) mockDataService.updateTask(task.id, input);
-      else mockDataService.createTask(input);
+      if (task) await workspaceService.updateTask(task.id, input);
+      else await workspaceService.createTask(input);
       onSave(task ? "Task updated" : "Task added");
       onClose();
     } catch (e) {
       setError((e as Error).message);
-    }
+    } finally { setSaving(false); }
   }
   return (
     <dialog
       ref={dialog}
       className="task-dialog"
       aria-labelledby="task-dialog-title"
-      onCancel={onClose}
+      onCancel={(e) => { if (saving) e.preventDefault(); else onClose(); }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) {
+        if (!saving && e.target === e.currentTarget) {
           const rect = e.currentTarget.getBoundingClientRect();
           if (
             e.clientX < rect.left ||
@@ -67,7 +70,7 @@ export default function TaskForm({
           <p className="eyebrow">{task ? "EDIT TASK" : "NEW TASK"}</p>
           <h2 id="task-dialog-title">{task ? "Edit task" : "Add a task"}</h2>
         </div>
-        <button className="icon-button" onClick={onClose} aria-label="Close">
+        <button className="icon-button" onClick={onClose} disabled={saving} aria-label="Close">
           ×
         </button>
       </div>
@@ -128,7 +131,7 @@ export default function TaskForm({
           </label>
         </div>
         <p className="muted">
-          Save the task, then generate or replan your schedule to place it.
+          Save a deadline to show this task on your calendar. Automatic scheduling comes in Sprint 2.
         </p>
         {error && (
           <p role="alert" className="form-error">
@@ -136,11 +139,11 @@ export default function TaskForm({
           </p>
         )}
         <div className="task-dialog-footer">
-          <button className="button secondary" type="button" onClick={onClose}>
+          <button className="button secondary" type="button" disabled={saving} onClick={onClose}>
             Cancel
           </button>
-          <button className="button" type="submit">
-            {task ? "Save changes" : "Add task"}
+          <button className="button" type="submit" disabled={saving}>
+            {saving ? "Saving…" : task ? "Save changes" : "Add task"}
           </button>
         </div>
       </form>

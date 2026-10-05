@@ -3,29 +3,8 @@ import type { DemoWorkspace, Task, TaskInput } from "../types/models.ts";
 import { createSampleData } from "../data/sampleData.ts";
 import { validDate } from "../utils/dates.ts";
 export const STORAGE_KEY = "autoplan.demo.workspace.v2";
-export function validateTask(input: TaskInput) {
-  if (
-    !input ||
-    typeof input.title !== "string" ||
-    !input.title.trim() ||
-    input.title.trim().length > 80
-  )
-    throw new Error("Enter a task name between 1 and 80 characters.");
-  if (!validDate(input.deadline)) throw new Error("Choose a valid deadline.");
-  if (
-    !Number.isInteger(input.minutes) ||
-    input.minutes < 15 ||
-    input.minutes > 720 ||
-    input.minutes % 15 !== 0
-  )
-    throw new Error(
-      "Time needed must be 15–720 minutes, in 15-minute increments.",
-    );
-  if (!["High", "Medium", "Low"].includes(input.priority))
-    throw new Error("Choose a valid priority.");
-  if (!["Project", "Study", "Personal", "Work"].includes(input.category))
-    throw new Error("Choose a valid category.");
-}
+export { validateTask, selectTasks } from "./taskRules.ts";
+import { validateTask } from "./taskRules.ts";
 function taskFields(input: TaskInput): TaskInput {
   return {
     title: input.title.trim(),
@@ -34,18 +13,6 @@ function taskFields(input: TaskInput): TaskInput {
     priority: input.priority,
     category: input.category,
   };
-}
-export type TaskFilter = "all" | "open" | "done";
-export function selectTasks(
-  tasks: Task[],
-  search = "",
-  filter: TaskFilter = "all",
-) {
-  return tasks.filter(
-    (task) =>
-      task.title.toLowerCase().includes(search.toLowerCase()) &&
-      (filter === "all" || (filter === "done" ? task.done : !task.done)),
-  );
 }
 function validateWorkspace(data: DemoWorkspace) {
   if (
@@ -210,8 +177,32 @@ try {
 } catch {
   /* Handled by the store. */
 }
-export const mockDataService = createDemoStore(browserStorage);
-if (typeof window !== "undefined")
-  window.addEventListener("storage", (event) => {
-    if (event.key === STORAGE_KEY) mockDataService.reload();
-  });
+// Prototype task data stays local, but is isolated per authenticated user.
+let currentUser: string | null = null;
+let store = createDemoStore(undefined);
+const workspaceListeners = new Set<() => void>();
+let unsubscribeStore = store.subscribe(() => workspaceListeners.forEach(listener => listener()));
+export function setWorkspaceUser(userId: string | null) {
+  if (currentUser === userId) return;
+  currentUser = userId;
+  unsubscribeStore();
+  const scopedStorage = browserStorage && userId ? {
+    getItem: (key: string) => browserStorage!.getItem(`${key}:${userId}`),
+    setItem: (key: string, value: string) => browserStorage!.setItem(`${key}:${userId}`, value),
+  } : undefined;
+  store = createDemoStore(scopedStorage);
+  unsubscribeStore = store.subscribe(() => workspaceListeners.forEach(listener => listener()));
+  workspaceListeners.forEach(listener => listener());
+}
+export const mockDataService = {
+  getSnapshot: () => store.getSnapshot(),
+  getLoadNotice: () => store.getLoadNotice(),
+  subscribe(listener: () => void) { workspaceListeners.add(listener); return () => { workspaceListeners.delete(listener); }; },
+  createTask: (input: TaskInput) => store.createTask(input),
+  updateTask: (id: string, input: TaskInput) => store.updateTask(id, input),
+  setCompleted: (id: string, done: boolean) => store.setCompleted(id, done),
+  deleteTask: (id: string) => store.deleteTask(id),
+};
+if (typeof window !== 'undefined') window.addEventListener('storage', event => {
+  if (currentUser && event.key === `${STORAGE_KEY}:${currentUser}`) store.reload();
+});

@@ -1,0 +1,28 @@
+.availability-form { max-width: 850px; }
+.availability-form fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0; }
+.availability-row { display: grid; grid-template-columns: minmax(130px, 1fr) 1fr 1fr; gap: 18px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.availability-row label:not(.day-toggle), .timezone-field { display: grid; gap: 6px; font-size: 13px; }
+.day-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
+.availability-form input[type='checkbox'] { accent-color: var(--primary); }
+.availability-form input[type='text'], .availability-form input[type='time'], .timezone-field input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--text); font: inherit; }
+.availability-form .settings-row { margin: 18px 0; }
+.availability-form input:disabled { opacity: .45; }
+.calendar-toolbar, .calendar-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.calendar-toolbar { justify-content: space-between; margin-bottom: 20px; }
+.calendar-toolbar h2 { font-size: 18px; }
+.calendar-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
+.calendar-day { padding: 14px; min-height: 185px; }
+.calendar-day h2 { font-size: 14px; }
+.calendar-day h2 span { display: block; margin-top: 6px; font-weight: 400; color: var(--muted); }
+.calendar-day p, .calendar-day small { font-size: 11px; }
+.calendar-today { border-color: var(--primary); }
+.calendar-hours { color: #467b64; background: #e7f5ee; padding: 7px; border-radius: 7px; }
+.calendar-day ul { padding: 0; list-style: none; }
+.calendar-day li { border-top: 1px solid var(--border); padding: 10px 0; overflow-wrap: anywhere; }
+.calendar-day strong { font-size: 12px; }
+.calendar-day small { display: block; margin-top: 6px; color: var(--muted); }
+.calendar-done strong { text-decoration: line-through; }
+.calendar-agenda { margin-top: 20px; }
+button:disabled { cursor: wait; opacity: .6; }
+@media (max-width: 1100px) { .calendar-week { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .calendar-week { grid-template-columns: 1fr; } .calendar-day { min-height: 0; } .availability-row { grid-template-columns: 1fr 1fr; gap: 10px; } .day-toggle { grid-column: 1 / -1; } }
