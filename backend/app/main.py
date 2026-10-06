@@ -10,6 +10,7 @@ from app.auth import get_current_user, router
 from app.config import get_settings
 from app.database import connect_database, initialize_indexes
 from app.workspace import router as workspace_router
+from app.plans import router as plans_router
 
 
 def create_app(database=None):
@@ -43,7 +44,7 @@ def create_app(database=None):
             if (origin and origin not in origins) or (not origin and request.headers.get('sec-fetch-site') == 'cross-site'):
                 return JSONResponse(status_code=403, content={'detail': 'Request origin is not allowed.'})
         response = await call_next(request)
-        if request.url.path.startswith(('/auth', '/tasks', '/availability', '/protected')):
+        if request.url.path.startswith(('/auth', '/tasks', '/availability', '/protected', '/plan')):
             response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -64,6 +65,7 @@ def create_app(database=None):
 
     app.include_router(router)
     app.include_router(workspace_router)
+    app.include_router(plans_router)
 
     @app.get('/')
     def root():

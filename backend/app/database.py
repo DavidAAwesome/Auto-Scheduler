@@ -30,6 +30,7 @@ def initialize_indexes(db):
     db.sessions.create_index('user_id')
     db.tasks.create_index([('user_id', 1), ('deadline', 1)])
     db.availability.create_index('user_id', unique=True)
+    db.plans.create_index('user_id', unique=True)
 
 
 def get_database(request: Request):

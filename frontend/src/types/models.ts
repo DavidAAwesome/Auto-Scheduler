@@ -46,3 +46,20 @@ export interface DemoWorkspace {
 /** Weekly wall-clock hours in the selected IANA timezone. Monday = 0. */
 export interface AvailableDay { day: number; enabled: boolean; start: number; end: number }
 export interface Availability { days: AvailableDay[]; timeZone: string; reminders: boolean }
+
+/** Live API plans use timezone-aware ISO instants, unlike legacy demo fixtures. */
+export interface BusyInterval { start: string; end: string }
+export interface PlanBlock extends BusyInterval {
+  id: string; taskId: string | null; title: string; type: 'focus' | 'break';
+}
+export interface PlanTaskResult {
+  taskId: string; title: string; deadline: string;
+  requestedMinutes: number; scheduledMinutes: number; unscheduledMinutes: number;
+  status: 'scheduled' | 'partial' | 'unscheduled' | 'overdue' | 'outside_window';
+  reason: string | null; message: string;
+}
+export interface GeneratedPlan {
+  version: 1; generatedAt: string; startDate: string; endDate: string; timeZone: string;
+  source: 'provided' | 'availability_only'; busyIntervals: BusyInterval[];
+  blocks: PlanBlock[]; tasks: PlanTaskResult[]; stale: boolean; staleReasons: string[];
+}

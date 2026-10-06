@@ -13,7 +13,8 @@ test('API-backed tasks, completion and availability survive a fresh store', asyn
   const request: Requester = async <T>(path: string, options?: RequestInit): Promise<T> => {
     const data = options?.body ? JSON.parse(String(options.body)) : null;
     let result: unknown;
-    if (path === '/availability') { if (data) saved = data; result = saved; }
+    if (path === '/plan') result = null;
+    else if (path === '/availability') { if (data) saved = data; result = saved; }
     else if (!options) result = tasks;
     else if (options.method === 'POST') { const task = { ...data, id: 'server-id', done: false }; tasks = [...tasks, task]; result = task; }
     else if (options.method === 'DELETE') tasks = [];
@@ -40,7 +41,7 @@ test('failed writes preserve confirmed data and expose failures; failed loads ca
   let fail = true;
   const request: Requester = async <T>(path: string, options?: RequestInit) => {
     if (fail || options) throw new Error('Database unavailable');
-    return (path === '/tasks' ? [] : availability) as T;
+    return (path === '/tasks' ? [] : path === '/plan' ? null : availability) as T;
   };
   const store = createWorkspaceStore(request);
   store.setUser('a'); await tick();
@@ -54,7 +55,7 @@ test('failed writes preserve confirmed data and expose failures; failed loads ca
 test('late responses cannot restore another account’s tasks after logout', async () => {
   let resolveTasks!: (value: Task[]) => void;
   const deferred = new Promise<Task[]>(resolve => { resolveTasks = resolve; });
-  const request: Requester = async <T>(path: string) => (path === '/tasks' ? await deferred : availability) as T;
+  const request: Requester = async <T>(path: string) => (path === '/tasks' ? await deferred : path === '/plan' ? null : availability) as T;
   const store = createWorkspaceStore(request);
   store.setUser('a');
   store.setUser(null);
