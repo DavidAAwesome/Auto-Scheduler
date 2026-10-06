@@ -24,10 +24,11 @@ def connect_database():
 
 
 def initialize_indexes(db):
-    db.users.create_index('email', unique=True, name='unique_user_email')
-    db.sessions.create_index('jti', unique=True)
-    db.sessions.create_index('expires_at', expireAfterSeconds=0)
-    db.sessions.create_index('user_id')
+    # Firebase decides who owns an email; uid is the stable identity here.
+    if 'unique_user_email' in db.users.index_information():
+        db.users.drop_index('unique_user_email')
+    db.users.create_index('firebase_uid', unique=True, sparse=True, name='unique_firebase_uid')
+    db.users.create_index('email', name='user_email')
     db.tasks.create_index([('user_id', 1), ('deadline', 1)])
     db.availability.create_index('user_id', unique=True)
     db.plans.create_index('user_id', unique=True)

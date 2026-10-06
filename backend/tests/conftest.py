@@ -1,5 +1,4 @@
 import os
-import secrets
 import uuid
 
 import mongomock
@@ -7,16 +6,19 @@ import pytest
 from fastapi.testclient import TestClient
 from pymongo import MongoClient
 
+from app import auth
 from app.config import get_settings
+from firebase_tokens import PROJECT_ID, PUBLIC_KEY
 from app.main import create_app
 
 
 @pytest.fixture(params=['mock', 'mongo'])
 def environment(request, monkeypatch):
-    monkeypatch.setenv('JWT_SECRET', secrets.token_urlsafe(48))
+    monkeypatch.setenv('FIREBASE_PROJECT_ID', PROJECT_ID)
     monkeypatch.setenv('MONGODB_URI', 'mongodb://127.0.0.1:27019')
     monkeypatch.setenv('ALLOWED_ORIGINS', 'http://localhost:5173')
-    monkeypatch.setenv('COOKIE_SECURE', 'false')
+    # Use the test key instead of fetching Google's public keys.
+    monkeypatch.setattr(auth, 'signing_key_for', lambda token: PUBLIC_KEY)
     get_settings.cache_clear()
     if request.param == 'mongo':
         uri = os.getenv('TEST_MONGODB_URI')

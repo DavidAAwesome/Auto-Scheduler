@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import pytest
 from app import plans
+from firebase_tokens import sign_in, sign_out
 
 NOW = datetime(2026,10,5,9,tzinfo=timezone.utc)
 REQUEST = {'source':'provided','busyIntervals':[{'start':'2026-10-05T10:00:00Z','end':'2026-10-05T10:30:00Z'}]}
@@ -9,7 +10,7 @@ TASK = {'title':'Plan test','deadline':'2026-10-05','minutes':135,'priority':'Hi
 
 def setup(client, monkeypatch):
     monkeypatch.setattr(plans,'utc_now',lambda:NOW)
-    user=client.post('/auth/signup',json={'name':'Planner','email':'planner@example.com','password':'Plan-test-only 83!'}).json()
+    user=sign_in(client,uid='planner',email='planner@example.com',name='Planner')
     task=client.post('/tasks',json=TASK).json()
     availability=client.get('/availability').json()
     availability['days'][0]['enabled']=True
@@ -32,9 +33,9 @@ def test_plan_persists_replaces_and_restores_after_login(environment,monkeypatch
     assert isinstance(stored['plan']['blocks'][0]['start'],datetime)
     assert 'user_id' not in first and 'input_fingerprint' not in first
     assert len({b['id'] for b in first['blocks']}) == len(first['blocks'])
-    client.post('/auth/logout')
+    sign_out(client)
     assert client.get('/plan').status_code == 401
-    client.post('/auth/login',json={'email':user['email'],'password':'Plan-test-only 83!'})
+    sign_in(client,uid='planner',email='planner@example.com',name='Planner')
     assert client.get('/plan').json() == first
     assert client.get('/plan').headers['cache-control'] == 'no-store'
 
@@ -43,8 +44,8 @@ def test_another_account_cannot_see_or_replace_first_plan(environment,monkeypatc
     client,db=environment
     owner,_=setup(client,monkeypatch)
     first=client.post('/plan/generate',json=REQUEST).json()
-    client.post('/auth/logout')
-    second=client.post('/auth/signup',json={'name':'Other','email':'other@example.com','password':'Plan-test-only 83!'}).json()
+    sign_out(client)
+    second=sign_in(client,uid='other',email='other@example.com',name='Other')
     assert client.get('/plan').json() is None
     assert client.post('/plan/generate',json={**REQUEST,'user_id':owner['id']}).status_code == 422
     own=client.post('/plan/generate',json=REQUEST).json()

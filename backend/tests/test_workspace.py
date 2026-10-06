@@ -1,14 +1,11 @@
 import pytest
-from app.auth import COOKIE_NAME
+from firebase_tokens import make_token, sign_in, sign_out
 
 TASK = {'title': 'Prepare Sprint 1', 'deadline': '2026-10-09', 'minutes': 90, 'priority': 'High', 'category': 'Project'}
-PASSWORD = 'Workspace-test 83!'
 
 
 def register(client, email='workspace@example.com'):
-    result = client.post('/auth/signup', json={'name': 'Workspace Test', 'email': email, 'password': PASSWORD})
-    assert result.status_code == 201
-    return result.json()
+    return sign_in(client, uid=email, email=email, name='Workspace Test')
 
 
 def test_task_crud_persistence_and_completion(environment):
@@ -27,8 +24,8 @@ def test_task_crud_persistence_and_completion(environment):
     assert client.put(path, json={**TASK, 'title': 'Edited', 'deadline': '2026-10-10'}).status_code == 200
     assert client.patch(path+'/completion', json={'done': True}).json()['done'] is True
     assert client.put(path, json=TASK).json()['done'] is True  # Editing must preserve completion.
-    client.post('/auth/logout')
-    assert client.post('/auth/login', json={'email':user['email'], 'password':PASSWORD}).status_code == 200
+    sign_out(client)
+    assert register(client) == user
     assert client.get('/tasks').json()[0]['done'] is True
     assert client.patch(path+'/completion', json={'done':False}).json()['done'] is False
     assert client.delete(path).status_code == 204
@@ -47,8 +44,8 @@ def test_another_account_cannot_access_or_mutate_data(environment):
     availability['timeZone'] = 'America/New_York'
     availability['reminders'] = True
     assert client.put('/availability', json=availability).status_code == 200
-    first_token = client.cookies.get(COOKIE_NAME)
-    client.cookies.clear()
+    first_token = make_token(uid=first['email'], email=first['email'])
+    sign_out(client)
     second = register(client, 'second@example.com')
     assert client.get('/tasks').json() == []
     assert all(not day['enabled'] for day in client.get('/availability').json()['days'])
@@ -79,8 +76,8 @@ def test_availability_saves_all_weekdays_and_reloads(environment):
     assert client.put('/availability', json=data).status_code == 200
     assert db.availability.count_documents({'user_id':user['id']}) == 1
     assert db.availability.find_one({'user_id':user['id']})['days'] == data['days']
-    client.post('/auth/logout')
-    client.post('/auth/login', json={'email':user['email'],'password':PASSWORD})
+    sign_out(client)
+    register(client)
     assert client.get('/availability').json() == data
     assert client.get('/availability').headers['cache-control'] == 'no-store'
 

@@ -1,6 +1,6 @@
 # AutoPlan
 
-React + TypeScript frontend, FastAPI backend, and MongoDB persistence for accounts, tasks, and weekly availability. The existing auth module and database connection now handle accounts and sessions. The unfinished Firebase path and hardcoded demo login have been removed.
+React + TypeScript frontend, FastAPI backend, and MongoDB persistence for accounts, tasks, and weekly availability. Firebase Authentication handles sign-in (email/password and Google); the API verifies Firebase ID tokens and keeps each user's data in MongoDB.
 
 ## Local setup
 
@@ -15,11 +15,12 @@ cp -n frontend/.env.example frontend/.env
 npm ci --prefix frontend
 ```
 
-Generate a signing secret, then put the result in `JWT_SECRET` in `backend/.env`:
+In the [Firebase console](https://console.firebase.google.com/), open your project and:
 
-```sh
-backend/.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(48))'
-```
+1. Under **Authentication → Sign-in method**, enable **Email/Password** and **Google**.
+2. Under **Authentication → Settings → Authorized domains**, make sure `localhost` and `127.0.0.1` are listed.
+3. Under **Project settings → Your apps**, add a Web app if needed and copy its config values into the `VITE_FIREBASE_*` keys in `frontend/.env`.
+4. Set `FIREBASE_PROJECT_ID` in `backend/.env` to the same project ID.
 
 Start the API in one terminal:
 
@@ -42,15 +43,14 @@ Backend (`backend/.env`; never expose these with a `VITE_` prefix):
 
 - `MONGODB_URI`: required connection URI; example `mongodb://127.0.0.1:27017`. Database credentials belong here only.
 - `DATABASE_NAME`: MongoDB database, default `auto_scheduler`.
-- `JWT_SECRET`: required random secret, at least 32 characters. Placeholders are rejected. Changing it signs everyone out.
-- `SESSION_SECONDS`: lifetime, default `604800` (7 days), allowed range 60–2592000.
-- `COOKIE_SECURE`: `false` for local HTTP; `true` for production HTTPS.
+- `FIREBASE_PROJECT_ID`: required; the Firebase project whose ID tokens the API accepts. Must match `VITE_FIREBASE_PROJECT_ID`.
 - `ALLOWED_ORIGINS`: comma-separated exact frontend origins, without paths. Examples include localhost and 127.0.0.1 on ports 5173/5174. Wildcards are rejected.
 
 Frontend (`frontend/.env`):
 
 - `VITE_API_URL`: browser API base URL, default `/api`.
 - `API_PROXY_TARGET`: Vite development proxy target, default `http://127.0.0.1:8000`.
+- `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`: the Firebase Web app config. These are public identifiers, not secrets. If they are missing, the app shows a setup message instead of the login page.
 
 Tests optionally read `TEST_MONGODB_URI`. Tests create randomly named databases prefixed `autoplan_auth_test_`, then delete only those databases. Use a dedicated local/test MongoDB instance with permission to create indexes and databases.
 
@@ -58,15 +58,15 @@ Tests optionally read `TEST_MONGODB_URI`. Tests create randomly named databases 
 
 ## Authentication API
 
-- `POST /auth/signup`: JSON `{name, email, password}`; returns 201 and `{id, name, email}`, and signs in. Passwords must be 8–128 characters and cannot be all whitespace.
-- `POST /auth/login`: JSON `{email, password}`; returns 200 and the public user. Invalid credentials return 401 with a generic error.
-- `GET /auth/me`: returns the signed-in public user, or 401.
-- `POST /auth/logout`: revokes the current MongoDB session, clears the cookie, and returns 204. Repeated logout is safe.
-- `GET /protected`: existing protected endpoint; requires a valid, unrevoked session and returns the current user's ID.
+Signup, login, Google sign-in, password reset and logout happen in the browser through the Firebase SDK. Every API request sends `Authorization: Bearer <Firebase ID token>`.
 
-Emails are trimmed and lowercased with a MongoDB unique index. Duplicate signup returns 409. Passwords use salted Argon2id hashes; responses exclude passwords and hashes. Sessions use HS256 JWTs in an HttpOnly, SameSite=Lax cookie and a MongoDB session record. Expired/revoked sessions are rejected independently of TTL cleanup. The existing bearer dependency accepts the same tokens; the frontend uses cookies and never stores tokens in localStorage. Browser mutations validate Origin; credentialed CORS permits only configured origins.
+- `GET /auth/me`: verifies the token, creates the MongoDB user on first sign-in (keyed by Firebase `uid`), keeps name/email in step with Firebase, and returns `{id, name, email}`; 401 otherwise.
+- `DELETE /auth/account`: deletes the user's tasks, availability, plan and user record, then returns 204. The frontend then deletes the Firebase account.
+- `GET /protected`: requires a valid token and returns the current user's ID.
 
-The frontend restores sessions from `/auth/me` after refresh, gates workspace screens, shows API errors, and supports logout from Profile and the sidebar. Name and email stay on Profile. Signup shares the responsive two-column Login design.
+The API checks the token's RS256 signature against Google's published keys, plus its expiry, audience (`FIREBASE_PROJECT_ID`) and issuer. It returns 503 if Google's keys can't be fetched. Firebase manages passwords; MongoDB stores none. Browser mutations validate Origin, and CORS permits only configured origins.
+
+The frontend restores sessions through Firebase on refresh, gates workspace screens, shows API errors, and supports logout from Profile and the sidebar. Name and email stay on Profile. Signup shares the responsive two-column Login design.
 
 ## Validation
 

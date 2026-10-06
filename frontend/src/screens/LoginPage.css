@@ -196,6 +196,63 @@
   opacity: 0.65;
   cursor: wait;
 }
+.forgot-link {
+  display: block;
+  margin: -6px 0 6px auto;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  color: var(--login-indigo);
+  font-size: 12px;
+  cursor: pointer;
+}
+.forgot-link:hover {
+  text-decoration: underline;
+}
+.login-notice {
+  color: #3f7a52;
+  background: #eef8f1;
+  border: 1px solid #cfe9d7;
+  border-radius: 9px;
+  padding: 9px 12px;
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+  color: var(--login-muted);
+  font-size: 12px;
+}
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid #e3e3e9;
+}
+.google-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #e3e3e9;
+  border-radius: 10px;
+  background: white;
+  color: var(--login-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+.google-button:hover {
+  background: #f7f7fa;
+}
+.google-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
 .login-account-link {
   font-size: 12px;
   color: var(--login-muted);
