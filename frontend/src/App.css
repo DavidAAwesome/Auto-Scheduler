@@ -751,3 +751,56 @@
 .brand-mark {
   flex-shrink: 0;
 }
+.task-duration {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plan-work-fields {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.plan-work-fields label {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-work-fields input {
+  width: 100%;
+}
+.task-duration input,
+.task-duration select {
+  width: 110px;
+  flex: 0 0 110px;
+}
+
+.task-duration span {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.plan-time-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.plan-time-row label {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-time-row input {
+  width: 100%;
+}
+.plan-quick-times {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.plan-quick-times .button {
+  flex: 1;
+}

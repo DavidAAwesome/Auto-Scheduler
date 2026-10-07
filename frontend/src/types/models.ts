@@ -8,6 +8,7 @@ export interface Task {
   id: string;
   title: string;
   deadline: string;
+  dueTime?: string | null;
   minutes: number;
   priority: Priority;
   category: Category;

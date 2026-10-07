@@ -1,5 +1,5 @@
 """Sprint 1 data routes. Ownership always comes from the authenticated session."""
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -18,6 +18,7 @@ class TaskInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=80)
     deadline: str
+    dueTime: str | None = None
     minutes: int = Field(strict=True, ge=15, le=720, multiple_of=15)
     priority: Literal['High', 'Medium', 'Low']
     category: Literal['Project', 'Study', 'Personal', 'Work']
@@ -36,7 +37,16 @@ class TaskInput(BaseModel):
         if date.fromisoformat(value).isoformat() != value:
             raise ValueError('Use a valid YYYY-MM-DD deadline.')
         return value
-
+    @field_validator('dueTime')
+    @classmethod
+    def valid_due_time(cls, value):
+        if value is None or value == '':
+            return None
+        try:
+            datetime.strptime(value, '%H:%M')
+        except ValueError:
+            raise ValueError('Use a valid HH:MM due time.') from None
+        return value
 
 class TaskOutput(TaskInput):
     id: str
@@ -47,11 +57,12 @@ class Completion(BaseModel):
     model_config = ConfigDict(extra='forbid')
     done: bool = Field(strict=True)
 
-
 def task_output(doc):
-    return TaskOutput(**{field: doc[field] for field in TaskInput.model_fields},
-                      id=str(doc['_id']), done=doc['done'])
-
+    return TaskOutput(
+        **{field: doc.get(field) for field in TaskInput.model_fields},
+        id=str(doc['_id']),
+        done=doc['done']
+    )
 
 def owned_task(task_id, user):
     if not ObjectId.is_valid(task_id):

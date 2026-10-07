@@ -1,6 +1,7 @@
 import { useState } from "react";
 import ScreenHeading from "../components/ScreenHeading";
 import TaskForm from "../components/TaskForm";
+import PlanWorkTime from "../components/PlanWorkTime";
 
 import { useWorkspace } from "../hooks/useWorkspace";
 import {
@@ -16,6 +17,7 @@ export default function Tasks() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [editor, setEditor] = useState<Task | "new" | null>(null);
+  const [planningTask, setPlanningTask] = useState<Task | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const shown = selectTasks(tasks, search, filter);
@@ -155,6 +157,15 @@ export default function Tasks() {
             setMessage(message);
             setError("");
           }}
+          onSaveAndPlan={(task) => {
+            setPlanningTask(task);
+       }}
+        />
+      )}
+      {planningTask && (
+        <PlanWorkTime
+          task={planningTask}
+          onClose={() => setPlanningTask(null)}
         />
       )}
     </>
