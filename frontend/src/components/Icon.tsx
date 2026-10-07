@@ -1,5 +1,6 @@
 export type IconName =
   | "home"
+  | "planner"
   | "tasks"
   | "assistant"
   | "analytics"
@@ -9,9 +10,11 @@ export type IconName =
   | "menu"
   | "close"
   | "arrow"
-  | "logout";
+  | "logout"
+  | "chevron";
 const paths: Record<IconName, string> = {
   home: "M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z",
+  planner: "M4 5h16v16H4ZM4 10h16M8 3v4m8-4v4M8 14h3m2 0h3m-8 4h8",
   tasks: "M8 3h8M8 5H5v16h14V5h-3M8 12l3 3 5-6",
   assistant: "m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4Z",
   analytics: "M5 20V11m7 9V4m7 16V8",
@@ -23,6 +26,7 @@ const paths: Record<IconName, string> = {
   close: "m6 6 12 12M6 18 18 6",
   arrow: "M4 12h16m-6-6 6 6-6 6",
   logout: "M9 4H4v16h5m-1-8h13m-5-5 5 5-5 5",
+  chevron: "m6 9 6 6 6-6",
 };
 export default function Icon({
   name,

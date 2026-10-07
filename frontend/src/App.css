@@ -139,12 +139,89 @@
   align-items: center;
   gap: 18px;
 }
+.header-brand {
+  font-family: Manrope, sans-serif;
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: -0.5px;
+  color: var(--text);
+}
 .breadcrumb {
   font-size: 12px;
   color: #92909a;
   display: flex;
   align-items: center;
   gap: 10px;
+}
+.account-menu {
+  position: relative;
+}
+.account-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 999px;
+  padding: 4px 10px 4px 4px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.account-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(280px, 80vw);
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px #2928381a;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  z-index: 40;
+}
+.account-menu-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.account-menu-heading strong {
+  display: block;
+  font-size: 14px;
+}
+.account-menu-heading small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-menu-panel a,
+.account-menu-button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+}
+.account-menu-panel a:hover,
+.account-menu-button:hover {
+  background: #f7f5fd;
+  color: var(--primary);
+}
+.workspace main.planner-main {
+  max-width: 1600px;
 }
 .breadcrumb strong {
   color: var(--text);

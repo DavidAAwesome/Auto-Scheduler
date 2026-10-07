@@ -1,15 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { authSession, useAuth } from "../services/authSession";
 import Icon, { type IconName } from "./Icon";
-const mainLinks: IconName[] = [
-  "home",
-  "tasks",
-  "assistant",
-  "analytics",
-  "calendar",
-];
+
+const mainLinks: IconName[] = ["home", "planner"];
 const accountLinks: IconName[] = ["profile", "settings"];
 const labelFor = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
+
 export default function AppLayout({
   route,
   children,
@@ -21,8 +17,13 @@ export default function AppLayout({
   const [logoutError, setLogoutError] = useState("");
   const initial = user?.name.charAt(0).toUpperCase() || "?";
   const [open, setOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
+  const accountButton = useRef<HTMLButtonElement>(null);
+  const accountMenu = useRef<HTMLDivElement>(null);
   const sidebar = useRef<HTMLElement>(null);
+  const accountMenuId = useId();
+
   useEffect(() => {
     if (!open) return;
     const previousOverflow = document.body.style.overflow;
@@ -63,6 +64,33 @@ export default function AppLayout({
       breakpoint.removeEventListener("change", closeOnDesktop);
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!accountOpen) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (
+        accountMenu.current?.contains(target) ||
+        accountButton.current?.contains(target)
+      ) {
+        return;
+      }
+      setAccountOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setAccountOpen(false);
+        accountButton.current?.focus();
+      }
+    }
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [accountOpen]);
+
   const navLink = (name: IconName) => (
     <a
       key={name}
@@ -80,8 +108,17 @@ export default function AppLayout({
       <span>{labelFor(name)}</span>
     </a>
   );
+
+  async function signOut() {
+    try {
+      await authSession.logout();
+    } catch (error) {
+      setLogoutError((error as Error).message);
+    }
+  }
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${route === "planner" ? "planner-shell" : ""}`}>
       <a
         className="skip-link"
         href="#main-content"
@@ -127,7 +164,7 @@ export default function AppLayout({
               href="#/login"
               onClick={(event) => {
                 event.preventDefault();
-                void authSession.logout().catch((e: Error) => setLogoutError(e.message));
+                void signOut();
               }}
               title="Sign out"
               aria-label="Sign out"
@@ -158,21 +195,83 @@ export default function AppLayout({
             >
               <Icon name="menu" />
             </button>
+            <a className="header-brand" href="#/planner" aria-label="AutoPlan planner">
+              AutoPlan
+            </a>
             <span className="breadcrumb">
               Workspace <span>/</span> <strong>{labelFor(route)}</strong>
             </span>
           </div>
           <div className="header-right">
-            <span className="demo-badge">
-              <span /> Your workspace
+            <span className="demo-badge" title="Google Calendar connection status">
+              <span /> Google Calendar · Not connected
             </span>
-            <a className="avatar" href="#/profile" aria-label="Open profile">
-              {initial}
-            </a>
+            <div className="account-menu">
+              <button
+                ref={accountButton}
+                type="button"
+                className="account-menu-trigger"
+                aria-haspopup="menu"
+                aria-expanded={accountOpen}
+                aria-controls={accountMenuId}
+                onClick={() => setAccountOpen((value) => !value)}
+              >
+                <span className="avatar" aria-hidden="true">
+                  {initial}
+                </span>
+                <span>{user?.name || "User"}</span>
+                <Icon name="chevron" size={16} />
+              </button>
+              {accountOpen && (
+                <div
+                  ref={accountMenu}
+                  id={accountMenuId}
+                  className="account-menu-panel"
+                  role="menu"
+                  aria-label="Account menu"
+                >
+                  <div className="account-menu-heading">
+                    <span className="avatar">{initial}</span>
+                    <div>
+                      <strong>{user?.name || "User"}</strong>
+                      <small>{user?.email}</small>
+                    </div>
+                  </div>
+                  <a role="menuitem" href="#/profile" onClick={() => setAccountOpen(false)}>
+                    Account details
+                  </a>
+                  <a role="menuitem" href="#/home" onClick={() => setAccountOpen(false)}>
+                    Analytics
+                  </a>
+                  <a role="menuitem" href="#/settings" onClick={() => setAccountOpen(false)}>
+                    Settings
+                  </a>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="account-menu-button"
+                    onClick={() => {
+                      setAccountOpen(false);
+                      void signOut();
+                    }}
+                  >
+                    Log out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
-        <main id="main-content" tabIndex={-1}>
-          {logoutError && <p role="alert" className="form-error">{logoutError}</p>}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={route === "planner" ? "planner-main" : undefined}
+        >
+          {logoutError && (
+            <p role="alert" className="form-error">
+              {logoutError}
+            </p>
+          )}
           {children}
         </main>
         <footer>AutoPlan · A little more space for what matters.</footer>

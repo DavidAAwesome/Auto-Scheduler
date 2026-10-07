@@ -5,6 +5,7 @@ import LoginPage from "./screens/LoginPage";
 import { authSession, useAuth } from "./services/authSession";
 import SignupPage from "./screens/SignupPage";
 import Home from "./screens/Home";
+import Planner from "./screens/Planner";
 import Tasks from "./screens/Tasks";
 import Assistant from "./screens/Assistant";
 import Analytics from "./screens/Analytics";
@@ -16,6 +17,7 @@ const screens = {
   login: LoginPage,
   signup: SignupPage,
   home: Home,
+  planner: Planner,
   tasks: Tasks,
   assistant: Assistant,
   analytics: Analytics,

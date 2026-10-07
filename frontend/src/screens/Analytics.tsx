@@ -1,19 +1,13 @@
-import ScreenHeading from "../components/ScreenHeading";
-import EmptyState from "../components/EmptyState";
+import { useEffect } from "react";
+
+/** Analytics lives on Home; keep this route as a friendly redirect. */
 export default function Analytics() {
+  useEffect(() => {
+    window.location.hash = "#/home";
+  }, []);
   return (
-    <>
-      <ScreenHeading
-        title="Small steps. Meaningful progress."
-        description="See how your time adds up and celebrate the progress you make."
-      />
-      <EmptyState
-        icon="analytics"
-        title="Your progress has a home"
-        description="Focus time, completed tasks, and weekly trends will appear here as you use AutoPlan."
-        href="#/home"
-        label="Back to your workspace"
-      />
-    </>
+    <main className="login-page">
+      <p role="status">Taking you to Home analytics…</p>
+    </main>
   );
 }
