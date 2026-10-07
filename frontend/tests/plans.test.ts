@@ -4,7 +4,12 @@ import { createWorkspaceStore, type Requester } from '../src/services/workspaceS
 import type { GeneratedPlan, Availability } from '../src/types/models.ts';
 import { intervalOnDate } from '../src/utils/calendar.ts';
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-const availability: Availability = { days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: true, start: 540, end: 1020 })), timeZone: 'UTC', reminders: false };
+const availability: Availability = {
+  days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: true, periods: [{ start: 540, end: 1020 }] })),
+  weekOverrides: [],
+  timeZone: 'UTC',
+  reminders: false,
+};
 const plan: GeneratedPlan = {
   version: 1, generatedAt: '2026-10-05T09:00:00Z', startDate: '2026-10-05', endDate: '2026-10-11', timeZone: 'UTC', source: 'provided',
   busyIntervals: [{ start: '2026-10-05T10:00:00Z', end: '2026-10-05T11:00:00Z' }],

@@ -1,5 +1,5 @@
 """Sprint 1 data routes. Ownership always comes from the authenticated session."""
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -101,33 +101,93 @@ def delete_task(task_id: str, user=Depends(get_current_user), db=Depends(get_dat
         raise HTTPException(404, 'Task not found.')
 
 
-class AvailableDay(BaseModel):
+class TimePeriod(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    day: int = Field(strict=True, ge=0, le=6)  # Monday = 0
-    enabled: bool = Field(strict=True)
     start: int = Field(strict=True, ge=0, le=1439)
     end: int = Field(strict=True, ge=1, le=1440)
 
     @model_validator(mode='after')
     def valid_range(self):
         if self.end <= self.start:
-            raise ValueError('End time must be later than start time; overnight ranges are not supported.')
+            raise ValueError('Each period end must be later than its start; overnight ranges are not supported.')
+        return self
+
+
+class AvailableDay(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    day: int = Field(strict=True, ge=0, le=6)  # Monday = 0
+    enabled: bool = Field(strict=True)
+    periods: list[TimePeriod] = Field(default_factory=list)
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_window(cls, data):
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if 'periods' not in payload and 'start' in payload and 'end' in payload:
+            payload['periods'] = [{'start': payload.pop('start'), 'end': payload.pop('end')}]
+        else:
+            payload.pop('start', None)
+            payload.pop('end', None)
+        return payload
+
+    @model_validator(mode='after')
+    def valid_periods(self):
+        if not self.enabled:
+            return self
+        if not self.periods:
+            raise ValueError('Enabled days need at least one available period.')
+        ordered = sorted(self.periods, key=lambda period: (period.start, period.end))
+        previous_end = -1
+        for period in ordered:
+            if period.start < previous_end:
+                raise ValueError('Available periods on the same day cannot overlap.')
+            previous_end = period.end
+        self.periods = ordered
+        return self
+
+
+class WeekOverride(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    weekStart: str  # Monday YYYY-MM-DD
+    days: list[AvailableDay] = Field(min_length=7, max_length=7)
+
+    @field_validator('weekStart')
+    @classmethod
+    def monday_date(cls, value):
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError('Week start must be a YYYY-MM-DD date.') from error
+        if parsed.weekday() != 0:
+            raise ValueError('Week start must be a Monday.')
+        return value
+
+    @model_validator(mode='after')
+    def unique_weekdays(self):
+        if sorted(day.day for day in self.days) != list(range(7)):
+            raise ValueError('Include each weekday exactly once in a week override.')
+        self.days.sort(key=lambda day: day.day)
         return self
 
 
 class Availability(BaseModel):
     model_config = ConfigDict(extra='forbid')
     days: list[AvailableDay] = Field(min_length=7, max_length=7)
+    weekOverrides: list[WeekOverride] = Field(default_factory=list)
     timeZone: str = Field(min_length=1, max_length=100)
     reminders: bool = Field(strict=True)
 
     @field_validator('timeZone')
     @classmethod
     def valid_zone(cls, value):
+        aliases = {'GMT': 'Etc/GMT', 'UTC': 'Etc/GMT', 'Etc/UTC': 'Etc/GMT'}
+        value = aliases.get(value.strip(), value.strip())
         try:
             ZoneInfo(value)
         except (ZoneInfoNotFoundError, ValueError):
-            raise ValueError('Choose a valid IANA time zone, such as America/New_York.') from None
+            raise ValueError('Choose a valid IANA time zone, such as America/New_York or GMT.') from None
         return value
 
     @model_validator(mode='after')
@@ -135,11 +195,28 @@ class Availability(BaseModel):
         if sorted(day.day for day in self.days) != list(range(7)):
             raise ValueError('Include each weekday exactly once.')
         self.days.sort(key=lambda day: day.day)
+        starts = [week.weekStart for week in self.weekOverrides]
+        if len(starts) != len(set(starts)):
+            raise ValueError('Each week override must use a unique Monday.')
+        self.weekOverrides.sort(key=lambda week: week.weekStart)
         return self
 
 
 def default_availability():
-    return Availability(days=[AvailableDay(day=day, enabled=False, start=540, end=1020) for day in range(7)], timeZone='UTC', reminders=False)
+    return Availability(
+        days=[AvailableDay(day=day, enabled=False, periods=[TimePeriod(start=540, end=1020)]) for day in range(7)],
+        weekOverrides=[],
+        timeZone='Etc/GMT',
+        reminders=False,
+    )
+
+
+def resolve_available_day(availability: Availability, day: date) -> AvailableDay:
+    monday = (day - timedelta(days=day.weekday())).isoformat()
+    for week in availability.weekOverrides:
+        if week.weekStart == monday:
+            return next(row for row in week.days if row.day == day.weekday())
+    return next(row for row in availability.days if row.day == day.weekday())
 
 
 @router.get('/availability', response_model=Availability)

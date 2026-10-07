@@ -1,4 +1,5 @@
 import type { Availability, BusyInterval, GeneratedPlan, Task, TaskInput } from '../types/models.ts';
+import { normalizeAvailability } from '../utils/availability.ts';
 import { validateTask } from './taskRules.ts';
 
 export type Requester = <T>(path: string, options?: RequestInit) => Promise<T>;
@@ -26,7 +27,7 @@ export function createWorkspaceStore(request: Requester) {
     publish({ ...state, status: 'loading', error: '' });
     try {
       const [tasks, availability, plan] = await Promise.all([request<Task[]>('/tasks'), request<Availability>('/availability'), request<GeneratedPlan | null>('/plan')]);
-      if (current === generation) publish({ status: 'ready', tasks, availability, plan, error: '', saving: false });
+      if (current === generation) publish({ status: 'ready', tasks, availability: normalizeAvailability(availability), plan, error: '', saving: false });
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
     }
@@ -71,10 +72,18 @@ export function createWorkspaceStore(request: Requester) {
       return mutate<void>(`/tasks/${id}`, { method: 'DELETE' }, () => ({ tasks: state.tasks.filter(t => t.id !== id), plan: stalePlan() }));
     },
     saveAvailability(availability: Availability) {
-      return mutate<Availability>('/availability', { method: 'PUT', body: JSON.stringify(availability) }, saved => ({
-        availability: saved,
-        plan: state.availability?.timeZone === saved.timeZone && JSON.stringify(state.availability.days) === JSON.stringify(saved.days) ? state.plan : stalePlan(),
-      }));
+      const payload = normalizeAvailability(availability);
+      return mutate<Availability>('/availability', { method: 'PUT', body: JSON.stringify(payload) }, saved => {
+        const next = normalizeAvailability(saved);
+        return {
+          availability: next,
+          plan: state.availability?.timeZone === next.timeZone
+            && JSON.stringify(state.availability.days) === JSON.stringify(next.days)
+            && JSON.stringify(state.availability.weekOverrides ?? []) === JSON.stringify(next.weekOverrides ?? [])
+            ? state.plan
+            : stalePlan(),
+        };
+      });
     },
     generatePlan(busyIntervals: BusyInterval[], source: GeneratedPlan['source']) {
       return mutate<GeneratedPlan>('/plan/generate', { method: 'POST', body: JSON.stringify({ busyIntervals, source }) }, plan => ({ plan }));

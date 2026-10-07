@@ -10,8 +10,14 @@ from app.workspace import Availability, TaskOutput
 NOW = datetime(2026, 10, 5, 9, tzinfo=timezone.utc)  # Monday
 
 
-def hours(start=540, end=1020, enabled=(0,), zone='UTC'):
-    return Availability(days=[{'day': day, 'enabled': day in enabled, 'start': start, 'end': end} for day in range(7)], timeZone=zone, reminders=False)
+def hours(start=540, end=1020, enabled=(0,), zone='UTC', periods=None):
+    windows = periods or [{'start': start, 'end': end}]
+    return Availability(
+        days=[{'day': day, 'enabled': day in enabled, 'periods': windows if day in enabled else windows} for day in range(7)],
+        weekOverrides=[],
+        timeZone=zone,
+        reminders=False,
+    )
 
 
 def task(id='a', minutes=60, deadline='2026-10-05', priority='High', done=False):
@@ -159,3 +165,17 @@ def test_seeded_schedules_conserve_minutes_and_obey_interval_invariants():
             if types:
                 assert types[0] == types[-1] == 'focus'
                 assert all(a != b for a,b in zip(types,types[1:]))
+
+
+def test_multiple_periods_and_week_override_are_respected():
+    availability = Availability(
+        days=[{'day': day, 'enabled': day == 0, 'periods': [{'start': 540, 'end': 600}, {'start': 780, 'end': 840}]} for day in range(7)],
+        weekOverrides=[{
+            'weekStart': '2026-10-05',
+            'days': [{'day': day, 'enabled': day == 0, 'periods': [{'start': 900, 'end': 960}]} for day in range(7)],
+        }],
+        timeZone='UTC',
+        reminders=False,
+    )
+    plan = generate_plan([task(minutes=30)], availability, [], NOW, source='availability_only')
+    assert [(b.start.strftime('%H:%M'), b.end.strftime('%H:%M')) for b in focus(plan)] == [('15:00', '15:30')]

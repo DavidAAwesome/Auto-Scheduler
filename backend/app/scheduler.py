@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
-from app.workspace import Availability, TaskOutput
+from app.workspace import Availability, TaskOutput, resolve_available_day
 
 UTC = timezone.utc
 STEP = timedelta(minutes=15)
@@ -87,15 +87,19 @@ def free_slots(day, hours, zone, now, busy):
         return []
     midnight = datetime.combine(day, time())
     slots = []
+    periods = getattr(hours, 'periods', None)
+    if periods is None and hasattr(hours, 'start') and hasattr(hours, 'end'):
+        periods = [type('P', (), {'start': hours.start, 'end': hours.end})()]
     # Availability may start/end off-grid. Keep only full local quarter-hours.
-    for minute in range(((hours.start + 14) // 15) * 15, hours.end - 14, 15):
-        start = unique_instant(midnight + timedelta(minutes=minute), zone)
-        end = unique_instant(midnight + timedelta(minutes=minute + 15), zone)
-        if start is None or end is None or end - start != STEP or start < now:
-            continue
-        if any(start < block.end and end > block.start for block in busy):
-            continue
-        slots.append(start)
+    for period in periods or []:
+        for minute in range(((period.start + 14) // 15) * 15, period.end - 14, 15):
+            start = unique_instant(midnight + timedelta(minutes=minute), zone)
+            end = unique_instant(midnight + timedelta(minutes=minute + 15), zone)
+            if start is None or end is None or end - start != STEP or start < now:
+                continue
+            if any(start < block.end and end > block.start for block in busy):
+                continue
+            slots.append(start)
     return slots
 
 
@@ -121,7 +125,7 @@ def generate_plan(tasks: list[TaskOutput], availability: Availability,
     days = []
     for offset in range(7):
         day = first + timedelta(days=offset)
-        hours = next(row for row in availability.days if row.day == day.weekday())
+        hours = resolve_available_day(availability, day)
         days.append({'date': day, 'slots': free_slots(day, hours, zone, now, busy), 'cursor': 0, 'has_focus': False})
     blocks = []
     results = []

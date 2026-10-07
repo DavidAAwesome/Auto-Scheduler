@@ -474,6 +474,28 @@
   padding: 48px 24px;
   text-align: center;
 }
+.profile-avatar-block {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  margin-bottom: 8px;
+}
+.profile-avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.profile-avatar-note {
+  max-width: 320px;
+  text-align: center;
+  font-size: 12px;
+}
+.avatar-image {
+  object-fit: cover;
+  padding: 0;
+  border: 2px solid #e7dcf8;
+}
 .avatar.large {
   height: 76px;
   width: 76px;

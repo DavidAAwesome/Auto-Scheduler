@@ -40,9 +40,10 @@ def test_another_account_cannot_access_or_mutate_data(environment):
     first = register(client)
     task = client.post('/tasks', json=TASK).json()
     availability = client.get('/availability').json()
-    availability['days'][0].update(enabled=True, start=600, end=720)
+    availability['days'][0].update(enabled=True, periods=[{'start': 600, 'end': 720}])
     availability['timeZone'] = 'America/New_York'
     availability['reminders'] = True
+    saved = client.put('/availability', json=availability).json()
     assert client.put('/availability', json=availability).status_code == 200
     first_token = make_token(uid=first['email'], email=first['email'])
     sign_out(client)
@@ -61,24 +62,25 @@ def test_another_account_cannot_access_or_mutate_data(environment):
     assert db.tasks.count_documents({'user_id':second['id']}) == 0
     headers = {'Authorization':'Bearer '+first_token}
     assert client.get('/tasks', headers=headers).json() == [task]
-    assert client.get('/availability', headers=headers).json() == availability
+    assert client.get('/availability', headers=headers).json() == saved
 
 
 def test_availability_saves_all_weekdays_and_reloads(environment):
     client, db = environment
     user = register(client)
     data = client.get('/availability').json()
-    data['days'][1].update(enabled=True, start=480, end=630)
-    data['days'][6].update(enabled=True, start=900, end=1080)
+    data['days'][1].update(enabled=True, periods=[{'start': 480, 'end': 630}])
+    data['days'][6].update(enabled=True, periods=[{'start': 900, 'end': 1080}])
     data['timeZone'] = 'America/Los_Angeles'
     data['reminders'] = True
-    assert client.put('/availability', json=data).json() == data
-    assert client.put('/availability', json=data).status_code == 200
+    saved = client.put('/availability', json=data).json()
+    assert saved['days'][1]['periods'] == [{'start': 480, 'end': 630}]
+    assert client.put('/availability', json=saved).status_code == 200
     assert db.availability.count_documents({'user_id':user['id']}) == 1
-    assert db.availability.find_one({'user_id':user['id']})['days'] == data['days']
+    assert db.availability.find_one({'user_id':user['id']})['days'] == saved['days']
     sign_out(client)
     register(client)
-    assert client.get('/availability').json() == data
+    assert client.get('/availability').json() == saved
     assert client.get('/availability').headers['cache-control'] == 'no-store'
 
 
@@ -108,7 +110,9 @@ def test_invalid_availability_keeps_previous_save(environment, case):
     original = client.get('/availability').json()
     assert client.put('/availability',json=original).status_code == 200
     data = client.get('/availability').json()
-    if case == 'reversed': data['days'][0]['end'] = data['days'][0]['start']
+    if case == 'reversed':
+        period = data['days'][0]['periods'][0]
+        period['end'] = period['start']
     if case == 'duplicate': data['days'][1]['day'] = 0
     if case == 'missing': data['days'].pop()
     if case == 'timezone': data['timeZone'] = 'Not/AZone'

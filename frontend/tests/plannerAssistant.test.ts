@@ -11,9 +11,9 @@ const availability: Availability = {
   days: Array.from({ length: 7 }, (_, day) => ({
     day,
     enabled: true,
-    start: 540,
-    end: 1020,
+    periods: [{ start: 540, end: 1020 }],
   })),
+  weekOverrides: [],
   timeZone: "UTC",
   reminders: false,
 };

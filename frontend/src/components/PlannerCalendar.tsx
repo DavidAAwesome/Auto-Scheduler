@@ -3,6 +3,7 @@ import { useWorkspace } from '../hooks/useWorkspace';
 import { clockTime, dateInZone, intervalOnDate } from '../utils/calendar';
 import { formatDate } from '../utils/dates';
 import { calendarDates, moveDate, type CalendarView } from '../utils/planner';
+import { periodLabel, resolveDay } from '../utils/availability';
 
 export interface PlannerSelection { taskId?: string; title: string; time?: string; kind?: string }
 const HOUR_HEIGHT = 96;
@@ -37,10 +38,17 @@ export default function PlannerCalendar({ onSelect }: { onSelect: (selection: Pl
         <div className="planner-grid-corner">Due</div>{dates.map(day => <div className={`planner-column-heading ${day === today ? 'is-today' : ''}`} key={day}>{dateHeader(day)}{deadlines(day)}</div>)}
         <div className="planner-time-labels">{Array.from({ length: 24 }, (_, hour) => <span key={hour} style={{ top: hour * HOUR_HEIGHT }}>{clockTime(hour * 60)}</span>)}</div>
         {dates.map(day => {
-          const weekday = (new Date(day + 'T12:00:00Z').getUTCDay() + 6) % 7;
-          const hours = availability?.days.find(row => row.day === weekday);
+          const hours = availability ? resolveDay(availability, day) : null;
           return <section className={`planner-time-column ${day === today ? 'is-today' : ''}`} key={day} aria-label={`${day}, ${zone}`}>
-            {hours?.enabled && <div className="planner-available" style={{ top: hours.start * HOUR_HEIGHT / 60, height: (hours.end - hours.start) * HOUR_HEIGHT / 60 }}><span>Available {clockTime(hours.start)}–{clockTime(hours.end)}</span></div>}
+            {hours?.enabled && hours.periods.map((period, index) => (
+              <div
+                key={`${day}-available-${index}`}
+                className="planner-available"
+                style={{ top: period.start * HOUR_HEIGHT / 60, height: (period.end - period.start) * HOUR_HEIGHT / 60 }}
+              >
+                <span>Available {periodLabel(period)}</span>
+              </div>
+            ))}
             {blocks.map(block => {
               const time = intervalOnDate(block, day, zone);
               if (!time) return null;

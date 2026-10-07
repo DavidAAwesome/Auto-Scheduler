@@ -43,9 +43,16 @@ export interface DemoWorkspace {
   scheduledBlocks: ScheduledBlock[];
 }
 
-/** Weekly wall-clock hours in the selected IANA timezone. Monday = 0. */
-export interface AvailableDay { day: number; enabled: boolean; start: number; end: number }
-export interface Availability { days: AvailableDay[]; timeZone: string; reminders: boolean }
+/** Weekly wall-clock hours in the selected IANA timezone. Monday = 0. Times are minutes after midnight (end may be 1440). */
+export interface TimePeriod { start: number; end: number }
+export interface AvailableDay { day: number; enabled: boolean; periods: TimePeriod[] }
+export interface WeekOverride { weekStart: string; days: AvailableDay[] }
+export interface Availability {
+  days: AvailableDay[];
+  weekOverrides: WeekOverride[];
+  timeZone: string;
+  reminders: boolean;
+}
 
 /** Live API plans use timezone-aware ISO instants, unlike legacy demo fixtures. */
 export interface BusyInterval { start: string; end: string }

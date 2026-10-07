@@ -1,12 +1,24 @@
-.availability-form { max-width: 850px; }
+.availability-form { max-width: 920px; }
 .availability-form fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0; }
-.availability-row { display: grid; grid-template-columns: minmax(130px, 1fr) 1fr 1fr; gap: 18px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
-.availability-row label:not(.day-toggle), .timezone-field { display: grid; gap: 6px; font-size: 13px; }
-.day-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
+.availability-week-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.availability-week-bar button { border: 1px solid var(--border); background: white; border-radius: 999px; padding: 8px 12px; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.availability-week-bar button.is-active { background: var(--lavender); color: var(--primary); border-color: transparent; }
+.availability-week-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+.availability-week-add label { display: grid; gap: 6px; font-size: 13px; }
+.availability-day { display: grid; grid-template-columns: minmax(120px, 160px) 1fr; gap: 14px; align-items: start; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.availability-periods { display: grid; gap: 10px; }
+.availability-period { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+.availability-period label, .timezone-field, .availability-week-add label { display: grid; gap: 6px; font-size: 13px; }
+.day-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; padding-top: 8px; }
 .availability-form input[type='checkbox'] { accent-color: var(--primary); }
-.availability-form input[type='text'], .availability-form input[type='time'], .timezone-field input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--text); font: inherit; }
+.availability-form input[type='text'], .availability-form input[type='date'], .availability-form select, .timezone-field input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
 .availability-form .settings-row { margin: 18px 0; }
-.availability-form input:disabled { opacity: .45; }
+.availability-form input:disabled, .availability-form select:disabled { opacity: .45; }
+@media (max-width: 640px) {
+  .availability-day { grid-template-columns: 1fr; }
+  .availability-period { grid-template-columns: 1fr 1fr; }
+  .availability-period .button { grid-column: 1 / -1; }
+}
 .calendar-toolbar, .calendar-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .calendar-toolbar { justify-content: space-between; margin-bottom: 20px; }
 .calendar-toolbar h2 { font-size: 18px; }
@@ -25,7 +37,7 @@
 .calendar-agenda { margin-top: 20px; }
 button:disabled { cursor: wait; opacity: .6; }
 @media (max-width: 1100px) { .calendar-week { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .calendar-week { grid-template-columns: 1fr; } .calendar-day { min-height: 0; } .availability-row { grid-template-columns: 1fr 1fr; gap: 10px; } .day-toggle { grid-column: 1 / -1; } }
+@media (max-width: 640px) { .calendar-week { grid-template-columns: 1fr; } .calendar-day { min-height: 0; } }
 .plan-summary { margin-bottom: 20px; }
 .plan-summary p { line-height: 1.7; }
 .plan-notice { padding: 12px 16px; background: #fff4db; color: #785c27; border-radius: 10px; font-size: 13px; }

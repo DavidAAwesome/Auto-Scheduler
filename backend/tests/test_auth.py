@@ -13,8 +13,9 @@ def bearer(token):
 def test_first_request_creates_user_and_later_requests_reuse_it(environment):
     client, db = environment
     user = sign_in(client, email=' ALICE@Example.com ', name=' Alice ')
-    assert set(user) == {'id', 'name', 'email'}
+    assert set(user) == {'id', 'name', 'email', 'avatarUrl'}
     assert user['name'] == 'Alice' and user['email'] == 'alice@example.com'
+    assert user['avatarUrl'] is None
     saved = db.users.find_one({'firebase_uid': 'alice-uid'})
     assert str(saved['_id']) == user['id']
     assert 'password_hash' not in saved
@@ -87,3 +88,16 @@ def test_cross_origin_mutations_rejected_and_cors_allows_frontend(environment):
                                                   'Access-Control-Request-Headers': 'authorization'})
     assert response.status_code == 200
     assert response.headers['access-control-allow-origin'] == 'http://localhost:5173'
+
+
+def test_avatar_url_is_stored_and_cleared(environment):
+    client, db = environment
+    sign_in(client)
+    url = 'https://firebasestorage.googleapis.com/v0/b/demo/o/avatars%2Falice%2Favatar.jpg'
+    saved = client.put('/auth/avatar', json={'avatarUrl': url}).json()
+    assert saved['avatarUrl'] == url
+    assert db.users.find_one({'firebase_uid': 'alice-uid'})['avatarUrl'] == url
+    assert client.get('/auth/me').json()['avatarUrl'] == url
+    cleared = client.put('/auth/avatar', json={'avatarUrl': None}).json()
+    assert cleared['avatarUrl'] is None
+    assert client.put('/auth/avatar', json={'avatarUrl': 'http://insecure.example/a.png'}).status_code == 422

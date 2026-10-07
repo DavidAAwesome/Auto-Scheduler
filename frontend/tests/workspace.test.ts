@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { createWorkspaceStore, type Requester } from '../src/services/workspaceStore.ts';
 import type { Availability, TaskInput, Task } from '../src/types/models.ts';
 import { dateInZone, weekStart } from '../src/utils/calendar.ts';
-const availability: Availability = { days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: false, start: 540, end: 1020 })), timeZone: 'UTC', reminders: false };
+const availability: Availability = {
+  days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: false, periods: [{ start: 540, end: 1020 }] })),
+  weekOverrides: [],
+  timeZone: 'UTC',
+  reminders: false,
+};
 const input: TaskInput = { title: 'Test task', deadline: '2026-10-09', minutes: 60, priority: 'High', category: 'Project' };
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 

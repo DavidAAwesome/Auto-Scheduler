@@ -2,7 +2,8 @@ import { useState } from 'react';
 import ScreenHeading from '../components/ScreenHeading';
 import { useWorkspace } from '../hooks/useWorkspace';
 import { addDays, formatDate } from '../utils/dates';
-import { WEEKDAYS, clockTime, dateInZone, weekStart, intervalOnDate } from '../utils/calendar';
+import { WEEKDAYS, dateInZone, weekStart, intervalOnDate } from '../utils/calendar';
+import { periodLabel, resolveDay } from '../utils/availability';
 import './Tasks.css';
 import './Planning.css';
 export default function Calendar() {
@@ -22,11 +23,11 @@ export default function Calendar() {
     <div className="calendar-week">
       {WEEKDAYS.map((day, index) => {
         const date = addDays(start, index);
-        const hours = availability.days.find(row => row.day === index)!;
+        const hours = resolveDay(availability, date);
         const due = tasks.filter(task => task.deadline === date);
         return <section className={`card calendar-day ${date === today ? 'calendar-today' : ''}`} key={day} aria-label={`${day} ${date}`}>
           <h2>{day.slice(0, 3)} <span>{formatDate(date)}</span></h2>
-          <p className="calendar-hours">{hours.enabled ? `Available ${clockTime(hours.start)}–${clockTime(hours.end)}` : 'No available hours'}</p>
+          <p className="calendar-hours">{hours.enabled ? `Available ${hours.periods.map(periodLabel).join(', ')}` : 'No available hours'}</p>
           {plan && [...plan.blocks.map(block => ({ ...block, label: block.title })), ...plan.busyIntervals.map((busy, i) => ({ ...busy, id: `busy-${i}`, type: 'busy', label: 'Busy calendar time' }))].sort((a, b) => a.start.localeCompare(b.start)).map(block => {
             const time = intervalOnDate(block, date, availability.timeZone);
             return time && <div className={`calendar-block ${block.type}`} key={block.id}><small>{time} · {block.type}</small><strong>{block.label}</strong></div>;

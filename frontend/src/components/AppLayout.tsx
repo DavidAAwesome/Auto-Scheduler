@@ -16,6 +16,14 @@ export default function AppLayout({
   const { user } = useAuth();
   const [logoutError, setLogoutError] = useState("");
   const initial = user?.name.charAt(0).toUpperCase() || "?";
+  const avatar = (className: string, label?: string) =>
+    user?.photoURL ? (
+      <img className={`avatar avatar-image ${className}`} src={user.photoURL} alt={label || ""} />
+    ) : (
+      <span className={`avatar ${className}`} aria-hidden={label ? undefined : true}>
+        {initial}
+      </span>
+    );
   const [open, setOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -174,7 +182,7 @@ export default function AppLayout({
             </a>
           </nav>
           <a className="sidebar-user" href="#/profile">
-            <span className="avatar">{initial}</span>
+            {avatar("", `${user?.name || "User"} avatar`)}
             <span className="user-details">
               <strong>{user?.name}’s workspace</strong>
               <small>Personal account</small>
@@ -216,9 +224,7 @@ export default function AppLayout({
                 aria-controls={accountMenuId}
                 onClick={() => setAccountOpen((value) => !value)}
               >
-                <span className="avatar" aria-hidden="true">
-                  {initial}
-                </span>
+                {avatar("", undefined)}
                 <span>{user?.name || "User"}</span>
                 <Icon name="chevron" size={16} />
               </button>
@@ -231,7 +237,7 @@ export default function AppLayout({
                   aria-label="Account menu"
                 >
                   <div className="account-menu-heading">
-                    <span className="avatar">{initial}</span>
+                    {avatar("", `${user?.name || "User"} avatar`)}
                     <div>
                       <strong>{user?.name || "User"}</strong>
                       <small>{user?.email}</small>

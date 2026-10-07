@@ -25,7 +25,10 @@ export function explainPlan(question: string, tasks: Task[], availability: Avail
       ` It considered ${plan.busyIntervals.length} supplied busy intervals. Live Google Calendar events have not been checked.` + stale;
   }
   if (/hour|availab|zone/.test(text)) {
-    const minutes = availability.days.filter(day => day.enabled).reduce((sum, day) => sum + day.end - day.start, 0);
+    const minutes = availability.days.filter(day => day.enabled).reduce(
+      (sum, day) => sum + day.periods.reduce((total, period) => total + period.end - period.start, 0),
+      0,
+    );
     return `You have ${minutes / 60} hours of weekly availability in ${availability.timeZone}. Change these hours in Settings; saved blocks only move when you confirm a new plan.`;
   }
   if (/today|task|deadline/.test(text)) {

@@ -5,8 +5,10 @@ import {
 } from 'firebase/auth';
 import { auth, firebaseConfigError, googleProvider } from '../firebase';
 import { ApiError, apiRequest, setTokenProvider } from './api';
+import { deleteAvatarFile, uploadAvatar } from './avatarStorage';
 import { workspaceService } from './workspace';
 export interface User { id: string; name: string; email: string; photoURL: string | null; provider: 'google' | 'password' }
+type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null };
 type Session = { status: 'loading' | 'authenticated' | 'anonymous' | 'error'; user: User | null; error: string };
 let session: Session = firebaseConfigError
   ? { status: 'error', user: null, error: firebaseConfigError }
@@ -27,10 +29,19 @@ async function syncWithServer(firebaseUser: FirebaseUser | null) {
   if (!firebaseUser) { publish({ status: 'anonymous', user: null, error: '' }); return; }
   if (session.status !== 'authenticated') publish({ status: 'loading', user: null, error: '' });
   try {
-    const profile = await apiRequest<{ id: string; name: string; email: string }>('/auth/me');
+    const profile = await apiRequest<ServerProfile>('/auth/me');
     if (current !== revision) return;
     const provider = firebaseUser.providerData.some(p => p.providerId === 'google.com') ? 'google' : 'password';
-    publish({ status: 'authenticated', user: { ...profile, photoURL: firebaseUser.photoURL, provider }, error: '' });
+    // Prefer MongoDB avatarUrl (custom upload); fall back to Firebase/Google photoURL.
+    publish({
+      status: 'authenticated',
+      user: {
+        ...profile,
+        photoURL: profile.avatarUrl ?? firebaseUser.photoURL,
+        provider,
+      },
+      error: '',
+    });
   } catch (error) {
     if (current !== revision) return;
     const message = error instanceof ApiError && error.status === 401
@@ -99,10 +110,61 @@ export const authSession = {
     const user = requireAuth().currentUser;
     if (!user) throw new Error('Please sign in again.');
     try {
+      try { await deleteAvatarFile(); } catch { /* best-effort Storage cleanup */ }
       await apiRequest<void>('/auth/account', { method: 'DELETE' });
       await deleteUser(user);
     } catch (e) { throw friendlyError(e); }
     window.location.hash = '/login';
+  },
+  /**
+   * Upload flow: image → Firebase Storage → https URL in MongoDB users.avatarUrl
+   * (+ Firebase Auth photoURL for clients that read Auth only).
+   */
+  async setAvatar(file: File) {
+    const firebaseUser = requireAuth().currentUser;
+    if (!firebaseUser) throw new Error('Please sign in again.');
+    try {
+      const avatarUrl = await uploadAvatar(file);
+      const profile = await apiRequest<ServerProfile>('/auth/avatar', {
+        method: 'PUT',
+        body: JSON.stringify({ avatarUrl }),
+      });
+      try { await updateProfile(firebaseUser, { photoURL: avatarUrl }); } catch { /* Auth photo sync is optional */ }
+      publish({
+        status: 'authenticated',
+        user: {
+          id: profile.id,
+          name: profile.name,
+          email: profile.email,
+          photoURL: profile.avatarUrl ?? avatarUrl,
+          provider: session.user?.provider ?? 'password',
+        },
+        error: '',
+      });
+    } catch (e) { throw friendlyError(e); }
+  },
+  async clearAvatar() {
+    const firebaseUser = requireAuth().currentUser;
+    if (!firebaseUser) throw new Error('Please sign in again.');
+    try {
+      try { await deleteAvatarFile(); } catch { /* ignore missing object */ }
+      const profile = await apiRequest<ServerProfile>('/auth/avatar', {
+        method: 'PUT',
+        body: JSON.stringify({ avatarUrl: null }),
+      });
+      try { await updateProfile(firebaseUser, { photoURL: null }); } catch { /* optional */ }
+      publish({
+        status: 'authenticated',
+        user: {
+          id: profile.id,
+          name: profile.name,
+          email: profile.email,
+          photoURL: null,
+          provider: session.user?.provider ?? 'password',
+        },
+        error: '',
+      });
+    } catch (e) { throw friendlyError(e); }
   },
 };
 window.addEventListener('autoplan:unauthorized', () => {
