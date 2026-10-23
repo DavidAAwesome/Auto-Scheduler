@@ -500,3 +500,32 @@ main:focus { outline: none; }
 .today-sessions li, .today-sessions button { min-width: 0; }
 .today-sessions button { overflow: hidden; }
 .today-sessions small { flex-shrink: 0; max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Connected calendars (Google / Outlook) ---------- */
+:root { --google: #1a73e8; --outlook: #0f6cbd; }
+:root[data-theme="dark"] { --google: #8ab4f8; --outlook: #6cb8f6; }
+/* Imported events keep the solid event look, with a provider-colored edge (US8: source is identifiable). */
+.event-block.source-google, .event-line.source-google { box-shadow: inset 4px 0 0 var(--google); padding-left: 10px; }
+.event-block.source-outlook, .event-line.source-outlook { box-shadow: inset 4px 0 0 var(--outlook); padding-left: 10px; }
+.today-sessions .today-event.source-google { border-left-color: var(--google); }
+.today-sessions .today-event.source-outlook { border-left-color: var(--outlook); }
+.event-popover.source-google { border-top-color: var(--google); }
+.event-popover.source-outlook { border-top-color: var(--outlook); }
+.source-tag { align-self: center; margin-left: 8px; font-size: 11.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--hover); }
+.source-tag.google { color: var(--google); }
+.source-tag.outlook { color: var(--outlook); }
+.imported-note { flex-direction: column; align-items: flex-start; gap: 6px; }
+.soon-badge.on { background: var(--available-bg); color: var(--available-text); }
+.provider-card { margin-bottom: 16px; }
+.provider-head { display: flex; align-items: center; gap: 14px; }
+.provider-head > div { flex: 1; min-width: 0; }
+.provider-head .calendar-dot { width: 18px; height: 18px; border-radius: 6px; margin: 0; }
+.provider-head p strong { color: var(--text); }
+.status-pill { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--hover); color: var(--muted); }
+.status-pill.on { background: var(--available-bg); color: var(--available-text); }
+.provider-card > .muted { margin: 10px 0 0 32px; }
+.provider-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.provider-notes ul { margin: 10px 0 0; padding-left: 18px; display: grid; gap: 8px; font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+.provider-notes strong { color: var(--text); }
+.swatch.source-google { box-shadow: inset 3px 0 0 var(--google); }
+.swatch.source-outlook { box-shadow: inset 3px 0 0 var(--outlook); }

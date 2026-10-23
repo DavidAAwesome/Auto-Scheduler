@@ -1,4 +1,4 @@
-import type { Availability, BusyInterval, CalendarEvent, CalendarEventInput, GeneratedPlan, Task, TaskInput, WorkSession, WorkSessionInput } from '../types/models.ts';
+import type { Availability, BusyInterval, CalendarConnection, CalendarEvent, CalendarEventInput, CalendarProvider, GeneratedPlan, ImportedEvent, Task, TaskInput, WorkSession, WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
@@ -8,12 +8,13 @@ export interface WorkspaceState {
   tasks: Task[];
   sessions: WorkSession[];
   events: CalendarEvent[];
+  connections: CalendarConnection[];
   availability: Availability | null;
   plan: GeneratedPlan | null;
   error: string;
   saving: boolean;
 }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], availability: null, plan: null, error: '', saving: false });
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, plan: null, error: '', saving: false });
 
 // Injectable transport lets tests exercise request failures and account-change races.
 export function createWorkspaceStore(request: Requester) {
@@ -28,8 +29,8 @@ export function createWorkspaceStore(request: Requester) {
     const current = ++generation;
     publish({ ...state, status: 'loading', error: '' });
     try {
-      const [tasks, sessions, events, availability, plan] = await Promise.all([request<Task[]>('/tasks'), request<WorkSession[]>('/sessions'), request<CalendarEvent[]>('/events'), request<Availability>('/availability'), request<GeneratedPlan | null>('/plan')]);
-      if (current === generation) publish({ status: 'ready', tasks, sessions, events, availability: normalizeAvailability(availability), plan, error: '', saving: false });
+      const [tasks, sessions, events, connections, availability, plan] = await Promise.all([request<Task[]>('/tasks'), request<WorkSession[]>('/sessions'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<Availability>('/availability'), request<GeneratedPlan | null>('/plan')]);
+      if (current === generation) publish({ status: 'ready', tasks, sessions, events, connections, availability: normalizeAvailability(availability), plan, error: '', saving: false });
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
     }
@@ -95,6 +96,20 @@ export function createWorkspaceStore(request: Requester) {
     /** Removes one occurrence of a repeating event (e.g. a cancelled class). */
     skipEventOccurrence(id: string, date: string) {
       return mutate<CalendarEvent>(`/events/${id}/skip`, { method: 'POST', body: JSON.stringify({ date }) }, event => ({ events: state.events.map(e => e.id === id ? event : e) }));
+    },
+    /** Uploads a fresh snapshot of an external calendar, then reloads events (the server replaced the old copies). */
+    async syncCalendar(provider: CalendarProvider, payload: { account: string; rangeStart: string; rangeEnd: string; events: ImportedEvent[] }) {
+      const connection = await mutate<CalendarConnection>(`/calendar/${provider}/sync`, { method: 'PUT', body: JSON.stringify(payload) },
+        saved => ({ connections: [...state.connections.filter(c => c.provider !== provider), saved] }));
+      const events = await request<CalendarEvent[]>('/events');
+      publish({ ...state, events });
+      return connection;
+    },
+    disconnectCalendar(provider: CalendarProvider) {
+      return mutate<void>(`/calendar/${provider}`, { method: 'DELETE' }, () => ({
+        connections: state.connections.filter(c => c.provider !== provider),
+        events: state.events.filter(e => e.source !== provider),
+      }));
     },
     deleteEvent(id: string) {
       return mutate<void>(`/events/${id}`, { method: 'DELETE' }, () => ({ events: state.events.filter(e => e.id !== id) }));

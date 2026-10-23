@@ -8,14 +8,16 @@ import Home from "./screens/Home";
 import Analytics from "./screens/Analytics";
 import Profile from "./screens/Profile";
 import Settings from "./screens/Settings";
+import Calendars from "./screens/Calendars";
 import "./App.css";
 const screens = {
   home: Home,
   analytics: Analytics,
   profile: Profile,
   settings: Settings,
+  calendars: Calendars,
 };
-const titles: Record<string, string> = { home: "Calendar", analytics: "Analytics", profile: "Account", settings: "Settings" };
+const titles: Record<string, string> = { home: "Calendar", analytics: "Analytics", profile: "Account", settings: "Settings", calendars: "Calendars" };
 function subscribe(callback: () => void) {
   window.addEventListener("hashchange", callback);
   return () => window.removeEventListener("hashchange", callback);

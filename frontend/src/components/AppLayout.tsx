@@ -10,6 +10,7 @@ import { categoryIcon } from "../utils/taskDisplay";
 import { eventIcon, occurrencesOn } from "../utils/events";
 
 const pageTitles: Record<string, string> = {
+  calendars: "Connected calendars",
   settings: "Availability & settings",
   profile: "Account details",
   analytics: "Analytics",
@@ -26,6 +27,7 @@ export function Avatar({ size = 32 }: { size?: number }) {
 
 function MenuDrawer({ open, onClose, route }: { open: boolean; onClose: () => void; route: string }) {
   const panel = useRef<HTMLElement>(null);
+  const { connections } = useWorkspace();
   useEffect(() => {
     if (!open) return;
     panel.current?.querySelector<HTMLElement>("a, button")?.focus();
@@ -34,6 +36,7 @@ function MenuDrawer({ open, onClose, route }: { open: boolean; onClose: () => vo
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
   if (!open) return null;
+  const connected = new Set(connections.map(c => c.provider));
   const link = (href: string, icon: IconName, label: string, active: boolean) => (
     <a className={`drawer-link ${active ? "active" : ""}`} href={href} aria-current={active ? "page" : undefined} onClick={onClose}>
       <Icon name={icon} size={19} /> {label}
@@ -49,11 +52,11 @@ function MenuDrawer({ open, onClose, route }: { open: boolean; onClose: () => vo
         </div>
         {link("#/home", "home", "Home", route === "home")}
         <p className="drawer-caption">CONNECTED CALENDARS</p>
-        {(["Google Calendar", "Outlook Calendar"] as const).map(name => (
-          <button key={name} className="drawer-link" disabled title="Calendar sync arrives in Sprint 2">
-            <span className={`calendar-dot ${name.startsWith("Google") ? "google" : "outlook"}`} /> {name}
-            <span className="soon-badge">Sprint 2</span>
-          </button>
+        {([["google", "Google Calendar"], ["outlook", "Outlook Calendar"]] as const).map(([provider, name]) => (
+          <a key={provider} className={`drawer-link ${route === "calendars" ? "active" : ""}`} href="#/calendars" onClick={onClose}>
+            <span className={`calendar-dot ${provider}`} /> {name}
+            <span className={`soon-badge ${connected.has(provider) ? "on" : ""}`}>{connected.has(provider) ? "Connected" : "Connect"}</span>
+          </a>
         ))}
         <p className="drawer-caption">PLANNING</p>
         {link("#/settings", "clock", "Availability", route === "settings")}

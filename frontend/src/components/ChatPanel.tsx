@@ -16,13 +16,13 @@ const PLAN_DAYS = 7; // the scheduler plans a seven-day window starting today
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const { user } = useAuth();
-  const { tasks, sessions, events, availability, plan, saving } = useWorkspace();
+  const { tasks, sessions, events, connections, availability, plan, saving } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
-  const context = { tasks, plan, availability };
+  const context = { tasks, plan, availability, connections };
   const welcome = buildWelcome(context);
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages]);
 

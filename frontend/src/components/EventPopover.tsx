@@ -26,10 +26,14 @@ export default function EventPopover({ event, date, anchor, onClose, onEdit }: {
     catch (e) { setError((e as Error).message); setBusy(false); }
   }
   const days = event.repeat?.weekdays.map(d => WEEKDAYS[d].slice(0, 3)).join(", ");
+  const imported = event.source !== "manual";
+  const sourceName = event.source === "google" ? "Google Calendar" : "Outlook";
   return (
-    <div ref={attach} className="task-popover event-popover" role="dialog" aria-label={event.title} tabIndex={-1} style={position}>
+    <div ref={attach} className={`task-popover event-popover source-${event.source}`} role="dialog" aria-label={event.title} tabIndex={-1} style={position}>
       <div className="task-popover-bar">
-        <button className="icon-button ghost small" aria-label="Edit event" title={event.repeat ? "Edit every occurrence" : "Edit event"} onClick={() => onEdit(event)}><Icon name="pencil" size={16} /></button>
+        {imported
+          ? <span className={`source-tag ${event.source}`}>{sourceName}{event.calendarName && event.calendarName !== sourceName ? ` · ${event.calendarName}` : ""}</span>
+          : <button className="icon-button ghost small" aria-label="Edit event" title={event.repeat ? "Edit every occurrence" : "Edit event"} onClick={() => onEdit(event)}><Icon name="pencil" size={16} /></button>}
         <button className="icon-button ghost small" aria-label="Close" onClick={onClose}><Icon name="close" size={16} /></button>
       </div>
       <h3><span className="task-icon event-icon"><Icon name={eventIcon[event.kind]} size={18} /></span>{event.title}</h3>
@@ -41,7 +45,12 @@ export default function EventPopover({ event, date, anchor, onClose, onEdit }: {
         {event.repeat && <div><dt>Repeats</dt><dd>Every {days} until {longDate(event.repeat.until)}</dd></div>}
       </dl>
       {error && <p role="alert" className="form-error">{error}</p>}
-      {confirming ? (
+      {imported ? (
+        <div className="task-popover-actions imported-note">
+          <span className="muted small">Read-only copy. Change it in {sourceName}, then sync.</span>
+          {event.link && <a className="button ghost small" href={event.link} target="_blank" rel="noopener noreferrer">Open in {sourceName} ↗</a>}
+        </div>
+      ) : confirming ? (
         <div className="task-popover-actions">
           {event.repeat ? (
             <>

@@ -86,8 +86,10 @@ class EventOutput(EventInput):
     id: str
     # Single occurrences removed from a repeating series (e.g. a cancelled class).
     skipDates: list[str] = []
-    # 'manual' = created in AutoPlan; external calendar sync (Sprint 2) will add 'google' / 'outlook'.
+    # 'manual' = created in AutoPlan; 'google' / 'outlook' = imported by calendar sync (read-only here).
     source: Literal['manual', 'google', 'outlook'] = 'manual'
+    calendarName: str | None = None  # imported events: which external calendar it came from
+    link: str | None = None  # imported events: open the original in Google Calendar / Outlook
 
 
 class SkipInput(BaseModel):
@@ -102,7 +104,8 @@ class SkipInput(BaseModel):
 
 def event_output(doc):
     return EventOutput(**{field: doc.get(field) for field in EventInput.model_fields}, id=str(doc['_id']),
-                       skipDates=doc.get('skipDates', []), source=doc.get('source', 'manual'))
+                       skipDates=doc.get('skipDates', []), source=doc.get('source', 'manual'),
+                       calendarName=doc.get('calendarName'), link=doc.get('link'))
 
 
 def occurs_on(doc, day):
@@ -129,6 +132,20 @@ def owned_event(event_id, user):
     return {'_id': ObjectId(event_id), 'user_id': str(user['_id'])}
 
 
+PROVIDER_NAMES = {'google': 'Google Calendar', 'outlook': 'Outlook'}
+
+
+def editable_event(event_id, user, db):
+    """The user's own AutoPlan event. Imported events are read-only copies; they change on the next sync."""
+    query = owned_event(event_id, user)
+    doc = db.events.find_one(query, {'source': 1})
+    if not doc:
+        raise HTTPException(404, 'Event not found.')
+    if doc.get('source', 'manual') != 'manual':
+        raise HTTPException(409, f"This event comes from {PROVIDER_NAMES[doc['source']]}. Change it there, then sync again.")
+    return query
+
+
 @router.get('/events', response_model=list[EventOutput])
 def list_events(user=Depends(get_current_user), db=Depends(get_database)):
     return [event_output(doc) for doc in db.events.find({'user_id': str(user['_id'])}).sort([('date', 1), ('start', 1)])]
@@ -144,19 +161,15 @@ def create_event(data: EventInput, user=Depends(get_current_user), db=Depends(ge
 @router.put('/events/{event_id}', response_model=EventOutput)
 def update_event(event_id: str, data: EventInput, user=Depends(get_current_user), db=Depends(get_database)):
     """Edits the whole event (every occurrence of a repeating series)."""
-    doc = db.events.find_one_and_update(owned_event(event_id, user), {'$set': data.model_dump()}, return_document=ReturnDocument.AFTER)
-    if not doc:
-        raise HTTPException(404, 'Event not found.')
+    doc = db.events.find_one_and_update(editable_event(event_id, user, db), {'$set': data.model_dump()}, return_document=ReturnDocument.AFTER)
     return event_output(doc)
 
 
 @router.post('/events/{event_id}/skip', response_model=EventOutput)
 def skip_occurrence(event_id: str, data: SkipInput, user=Depends(get_current_user), db=Depends(get_database)):
     """Removes one occurrence of a repeating event, leaving the rest of the series."""
-    query = owned_event(event_id, user)
+    query = editable_event(event_id, user, db)
     doc = db.events.find_one(query)
-    if not doc:
-        raise HTTPException(404, 'Event not found.')
     if not doc.get('repeat'):
         raise HTTPException(422, 'Only repeating events have single occurrences. Delete the event instead.')
     if not occurs_on(doc, data.date):
@@ -167,5 +180,4 @@ def skip_occurrence(event_id: str, data: SkipInput, user=Depends(get_current_use
 
 @router.delete('/events/{event_id}', status_code=204)
 def delete_event(event_id: str, user=Depends(get_current_user), db=Depends(get_database)):
-    if not db.events.delete_one(owned_event(event_id, user)).deleted_count:
-        raise HTTPException(404, 'Event not found.')
+    db.events.delete_one(editable_event(event_id, user, db))

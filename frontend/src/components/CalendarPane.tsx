@@ -96,10 +96,10 @@ function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date
   const length = event.end - event.start;
   return (
     <button
-      className={`event-block kind-${event.kind.toLowerCase()} ${length < 45 ? "compact" : ""}`}
+      className={`event-block kind-${event.kind.toLowerCase()} source-${event.source} ${length < 45 ? "compact" : ""}`}
       style={laneStyle(place, event.start, event.end)}
       onClick={e => { e.stopPropagation(); onOpen(event, date, e.currentTarget.getBoundingClientRect()); }}
-      title={`${event.title} · ${range(event.start, event.end)}${event.location ? ` · ${event.location}` : ""}`}
+      title={`${event.title} · ${range(event.start, event.end)}${event.location ? ` · ${event.location}` : ""}${event.source === "google" ? " · from Google Calendar" : event.source === "outlook" ? " · from Outlook" : ""}`}
     >
       <span className="event-title"><Icon name={eventIcon[event.kind]} size={13} /> {event.title}</span>
       <span className="event-meta">{range(event.start, event.end)}{event.location && length >= 60 ? ` · ${event.location}` : ""}</span>
@@ -221,7 +221,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
               <button className="day-add" aria-label={`Add task due ${longDate(date)}`} onClick={() => onAdd(date)}><Icon name="plus" size={14} /></button>
             </div>
             {shownEvents.map(({ event }) => (
-              <button key={event.id} className={`event-line kind-${event.kind.toLowerCase()}`} onClick={e => onOpenEvent(event, date, e.currentTarget.getBoundingClientRect())}>
+              <button key={event.id} className={`event-line kind-${event.kind.toLowerCase()} source-${event.source}`} onClick={e => onOpenEvent(event, date, e.currentTarget.getBoundingClientRect())}>
                 <Icon name={eventIcon[event.kind]} size={12} /> {clock12(event.start)} {event.title}
               </button>
             ))}
@@ -244,6 +244,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
 
 export default function CalendarPane({ today, ...handlers }: CalendarHandlers & { today: string }) {
   const view = useCalendarView();
+  const { connections } = useWorkspace();
   const dates = visibleDates(view.mode, view.anchor);
   const showsToday = view.mode === "month" ? view.anchor.slice(0, 7) === today.slice(0, 7) : dates.includes(today);
   const setMode = (mode: CalendarMode) => calendarViewStore.set({ mode, anchor: showsToday ? today : view.anchor });
@@ -282,6 +283,8 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
         <span><i className="swatch plan" /> Auto-planned</span>
         <span><i className="swatch due" /> Task due</span>
         <span><i className="swatch available" /> Available hours</span>
+        {connections.some(c => c.provider === "google") && <span><i className="swatch event source-google" /> From Google</span>}
+        {connections.some(c => c.provider === "outlook") && <span><i className="swatch event source-outlook" /> From Outlook</span>}
         <span className="muted">Click an empty time slot to plan work or add an event.</span>
       </div>
     </section>

@@ -38,6 +38,8 @@ def initialize_indexes(db):
     db.sessions.create_index([('user_id', 1), ('date', 1), ('start', 1)])
     db.sessions.create_index([('user_id', 1), ('task_id', 1)])
     db.events.create_index([('user_id', 1), ('date', 1)])
+    db.events.create_index([('user_id', 1), ('source', 1), ('date', 1)])
+    db.calendar_connections.create_index([('user_id', 1), ('provider', 1)], unique=True)
 
 
 def get_database(request: Request):

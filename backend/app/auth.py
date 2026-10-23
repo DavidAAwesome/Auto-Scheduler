@@ -121,6 +121,6 @@ def update_avatar(data: AvatarUpdate, user=Depends(get_current_user), db=Depends
 def delete_account(user=Depends(get_current_user), db=Depends(get_database)):
     """Removes AutoPlan data; the client then deletes the Firebase account itself."""
     uid = str(user['_id'])
-    for collection in (db.tasks, db.sessions, db.events, db.availability, db.plans):
+    for collection in (db.tasks, db.sessions, db.events, db.calendar_connections, db.availability, db.plans):
         collection.delete_many({'user_id': uid})
     db.users.delete_one({'_id': user['_id']})

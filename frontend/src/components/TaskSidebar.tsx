@@ -80,7 +80,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                 const event = item.event;
                 return (
                   <li key={item.key}>
-                    <button className={`today-event kind-${event.kind.toLowerCase()}`} onClick={e => onOpenEvent(event, today, e.currentTarget.getBoundingClientRect())}>
+                    <button className={`today-event kind-${event.kind.toLowerCase()} source-${event.source}`} onClick={e => onOpenEvent(event, today, e.currentTarget.getBoundingClientRect())}>
                       <span className="today-session-time">{clock12(event.start)}</span>
                       <span className="today-session-title"><Icon name={eventIcon[event.kind]} size={13} /> {event.title}</span>
                       <small>{event.location ?? duration(event.end - event.start)}</small>

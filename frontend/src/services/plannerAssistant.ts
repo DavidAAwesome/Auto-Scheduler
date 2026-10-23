@@ -1,4 +1,4 @@
-import type { Availability, GeneratedPlan, Task } from "../types/models.ts";
+import type { Availability, CalendarConnection, GeneratedPlan, Task } from "../types/models.ts";
 import { formatDate } from "../utils/dates.ts";
 import { dateInZone } from "../utils/calendar.ts";
 
@@ -14,10 +14,25 @@ export type PendingAction =
   | { type: "none"; label: string };
 
 export type AssistantContext = {
+  /** Connected Google Calendar / Outlook accounts (their events are imported as busy time). */
+  connections?: CalendarConnection[];
   tasks: Task[];
   plan: GeneratedPlan | null;
   availability: Availability | null;
 };
+
+const PROVIDER = { google: "Google Calendar", outlook: "Outlook" } as const;
+
+/** Honest one-line status of external calendars. */
+export function calendarStatus(context: AssistantContext) {
+  const connections = context.connections ?? [];
+  if (!connections.length) {
+    return "No external calendar is connected. Connect Google Calendar or Outlook from the ☰ menu → Calendars to import your events as busy time.";
+  }
+  return connections
+    .map((c) => `${PROVIDER[c.provider]} is connected (${c.account}): ${c.eventCount} event(s) imported, last synced ${new Date(c.lastSynced).toLocaleString()}. Sync again from Calendars to pick up changes.`)
+    .join(" ");
+}
 
 function openTasks(tasks: Task[]) {
   return tasks.filter((task) => !task.done);
@@ -85,8 +100,8 @@ export function replyToPrompt(
       id,
       role: "assistant",
       text: context.plan
-        ? `I can replace your saved plan (${context.plan.startDate} – ${context.plan.endDate}) using ${context.plan.source === "provided" ? "the saved busy-time snapshot" : "availability only"}. Google Calendar is not connected, so this will not pull live events. Confirm to continue.`
-        : "I can generate a 7-day plan from your open tasks and available hours. Google Calendar is not connected, so this uses availability only. Confirm to continue.",
+        ? `I can replace your saved plan (${context.plan.startDate} – ${context.plan.endDate}). It plans around your events (including any imported from connected calendars) and work sessions. Confirm to continue.`
+        : "I can generate a 7-day plan from your open tasks and available hours, around your events (including any imported from connected calendars) and work sessions. Confirm to continue.",
       pendingAction: { type: "generate_plan", label },
     };
   }
@@ -154,9 +169,10 @@ export function replyToPrompt(
       id,
       role: "assistant",
       text:
-        context.plan?.source === "provided"
-          ? `Using a saved busy-time snapshot (${context.plan.busyIntervals.length} interval(s)). Live Google Calendar sync is not connected. Outlook is not available in this app. Busy blocks on the calendar are read-only.`
-          : "Google Calendar sync is not connected. Plans currently use availability only. Outlook is not available in this app.",
+        calendarStatus(context) +
+        (context.plan?.source === "provided"
+          ? ` The saved plan was generated around ${context.plan.busyIntervals.length} busy interval(s).`
+          : ""),
       pendingAction: null,
     };
   }

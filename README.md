@@ -108,10 +108,28 @@ All workspace routes use the Firebase authentication dependency. Owners are take
 
 Unknown tasks and tasks owned by other users both return 404. Missing or revoked authentication returns 401. Invalid input returns 422. MongoDB creates an owner/deadline index for tasks, owner/date and owner/task indexes for sessions, an owner/date index for events, and a unique owner index for availability at startup. Calendar derives its view from the same tasks and settings; it needs no separate duplicate database collection.
 
+## Calendar sync (Google Calendar and Outlook)
+
+Users connect their own calendar on the **Calendars** page (☰ menu → Google Calendar / Outlook Calendar). The browser signs in with **read-only** access (Google Identity Services with `calendar.readonly`; Microsoft MSAL + Graph with `Calendars.Read`), fetches timed events from 1 week ago to 8 weeks ahead, converts them to the user's time zone (splitting events that cross midnight), and uploads the snapshot. OAuth tokens stay in browser memory and never reach the API. All-day events, events marked free, cancelled events and declined invitations are skipped.
+
+Imported events are stored as read-only `events` with `source: "google" | "outlook"`, so they block work sessions and count as busy time for plan generation like any event. Syncing again replaces the previous copy (no duplicates); disconnecting removes them. AutoPlan never writes to the external calendar.
+
+- `GET /calendar/connections`: `[{provider, account, lastSynced, rangeStart, rangeEnd, eventCount}]`.
+- `PUT /calendar/{google|outlook}/sync`: `{account, rangeStart, rangeEnd, events: [{externalId, title, kind, date, start, end, location?, calendarName?, link?}]}`. Replaces that provider's events in the range (all of them if a different account is connected). At most 120 days and 3000 event-days per sync; every event must fall inside the range; non-https links are dropped.
+- `DELETE /calendar/{google|outlook}`: removes the connection and its imported events.
+- Editing, skipping or deleting an imported event returns 409 ("change it in Google Calendar / Outlook, then sync").
+
+One-time setup per team (values go in `frontend/.env`; see `frontend/.env.example`):
+
+1. **Google** (`VITE_GOOGLE_CLIENT_ID`): in [Google Cloud Console](https://console.cloud.google.com/) (the Firebase project works), enable the **Google Calendar API**, configure the OAuth consent screen (add the `.../auth/calendar.readonly` scope; while the app is in *Testing*, add each teammate as a test user), then create an OAuth client of type **Web application** with authorized JavaScript origins `http://localhost:5173` and `http://127.0.0.1:5173`.
+2. **Outlook** (`VITE_MICROSOFT_CLIENT_ID`, optional `VITE_MICROSOFT_TENANT`, default `common`): in the [Azure portal](https://portal.azure.com/) → Microsoft Entra ID → App registrations → New registration, choose "Accounts in any organizational directory and personal Microsoft accounts", add a **Single-page application** redirect URI `http://localhost:5173/msal-redirect.html`, and under API permissions add Microsoft Graph delegated **Calendars.Read**. No client secret is needed. School tenants may require an admin to approve the permission.
+
+Restart `npm run dev` after editing `.env`. Without these values the Calendars page explains what's missing and everything else works.
+
 ## Current scope
 
 Sprint 1 includes Firebase login/signup (email/password and Google), password reset, logout, and account deletion; MongoDB task CRUD and completion; saved weekday availability and time zone; and the sketch-based workspace: a top bar (menu, month title, reminders bell, user menu with theme toggle), a Today's Tasks sidebar with Add Task, a day/week/month calendar, and an AI chatbox panel. New accounts start empty.
 
 Tasks have a due date and an optional due time (11:59 PM if left blank). The user splits each task's work into **work sessions** on any days before it is due, by clicking an empty calendar slot, using "Plan work time", or from the task card. Sessions show as blocks in the time grid, and each task shows how much of its estimate is planned. Placing sessions automatically is future-sprint work.
 
-**Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date, which covers a class schedule. They appear as solid teal blocks, are listed with work sessions in Today's Tasks, and block work sessions from being planned over them. One occurrence of a repeating event can be removed without deleting the series. External calendar sync and the scheduling engine belong to Sprint 2 (the Google/Outlook menu entries are placeholders). Reminder delivery and natural-language entry belong to Sprint 3 (the bell lists tasks due today/tomorrow; the chatbox is a placeholder).
+**Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date, which covers a class schedule. They appear as solid teal blocks, are listed with work sessions in Today's Tasks, and block work sessions from being planned over them. One occurrence of a repeating event can be removed without deleting the series. External calendar sync and the scheduling engine belong to Sprint 2 (Google Calendar and Outlook import is available on the Calendars page). Reminder delivery and natural-language entry belong to Sprint 3 (the bell lists tasks due today/tomorrow; the chatbox is a placeholder).

@@ -85,13 +85,14 @@ test("unscheduled replies reflect plan task statuses", () => {
 });
 
 test("calendar and outlook prompts stay honest about integrations", () => {
-  const reply = replyToPrompt("google calendar outlook", {
-    tasks,
-    plan,
-    availability,
-  }, "a3");
-  assert.match(reply.text, /not connected/i);
-  assert.match(reply.text, /Outlook is not available/i);
+  const none = replyToPrompt("google calendar outlook", { tasks, plan, availability }, "a3");
+  assert.match(none.text, /No external calendar is connected/i);
+  const connected = replyToPrompt("is google calendar connected?", {
+    tasks, plan, availability,
+    connections: [{ provider: "google", account: "alice@gmail.com", lastSynced: "2026-10-23T12:00:00Z", rangeStart: "2026-10-16", rangeEnd: "2026-12-18", eventCount: 12 }],
+  }, "a4");
+  assert.match(connected.text, /Google Calendar is connected \(alice@gmail\.com\): 12 event/);
+  assert.doesNotMatch(connected.text, /Outlook is connected/);
 });
 
 test("month grid and shift helpers stay stable", () => {

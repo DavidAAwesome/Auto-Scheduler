@@ -41,8 +41,33 @@ export interface CalendarEvent {
   repeat: Repeat | null;
   /** Cancelled single occurrences of a repeating event. */
   skipDates: string[];
-  /** "manual" = created in AutoPlan; calendar sync will add "google" / "outlook". */
+  /** "manual" = created in AutoPlan; "google" / "outlook" = imported by calendar sync (read-only). */
   source: "manual" | "google" | "outlook";
+  /** Imported events: the external calendar's name and a link to the original. */
+  calendarName?: string | null;
+  link?: string | null;
+}
+export type CalendarProvider = "google" | "outlook";
+/** An external calendar the user connected; its events are imported as read-only CalendarEvents. */
+export interface CalendarConnection {
+  provider: CalendarProvider;
+  account: string;
+  lastSynced: string;
+  rangeStart: string;
+  rangeEnd: string;
+  eventCount: number;
+}
+/** One day's part of an external event, converted to the user's time zone, as sent to /calendar/{provider}/sync. */
+export interface ImportedEvent {
+  externalId: string;
+  title: string;
+  kind: EventKind;
+  date: string;
+  start: number;
+  end: number;
+  location: string | null;
+  calendarName: string | null;
+  link: string | null;
 }
 export type CalendarEventInput = Pick<CalendarEvent, "title" | "kind" | "date" | "start" | "end" | "location" | "repeat">;
 /** One occurrence of an event on a specific date (repeating events have many). */
