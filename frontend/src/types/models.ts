@@ -1,47 +1,52 @@
-/** Task fields verified against the prototype's rendered task form.
- * Availability/event/block shapes are provisional until app.js is supplied.
- * Dates are local YYYY-MM-DD strings; start/end are minutes after midnight.
- */
+/** Dates are local YYYY-MM-DD strings; start/end are minutes after midnight. */
 export type Priority = "High" | "Medium" | "Low";
 export type Category = "Project" | "Study" | "Personal" | "Work";
 export interface Task {
   id: string;
   title: string;
   deadline: string;
+  /** Total estimated work, which can be split across several work sessions. */
   minutes: number;
+  /** Due time in minutes after midnight; 1439 (11:59 PM) when the user leaves it blank. */
+  dueTime: number;
   priority: Priority;
   category: Category;
   done: boolean;
 }
 export type TaskInput = Omit<Task, "id" | "done">;
-export interface DemoAvailability {
+export const DEFAULT_DUE_TIME = 23 * 60 + 59;
+/** Time set aside on a specific day to work on a task. */
+export interface WorkSession {
+  id: string;
+  taskId: string;
+  date: string;
   start: number;
   end: number;
-  weekends: boolean;
+  /** "manual" = placed by the user; "auto" = placed by the future AI scheduler. */
+  source: "manual" | "auto";
 }
+export type WorkSessionInput = Omit<WorkSession, "id" | "source">;
+export type EventKind = "Class" | "Meeting" | "Appointment" | "Social" | "Other";
+/** Repeats every week on `weekdays` (Monday = 0) from the event's date through `until`. */
+export interface Repeat { weekdays: number[]; until: string }
+/** A fixed-time commitment you attend (class, meeting, meetup). Not "due"; work is never planned on top of it. */
 export interface CalendarEvent {
   id: string;
   title: string;
+  kind: EventKind;
   date: string;
   start: number;
   end: number;
+  location: string | null;
+  repeat: Repeat | null;
+  /** Cancelled single occurrences of a repeating event. */
+  skipDates: string[];
+  /** "manual" = created in AutoPlan; calendar sync will add "google" / "outlook". */
+  source: "manual" | "google" | "outlook";
 }
-export interface ScheduledBlock {
-  id: string;
-  taskId: string | null;
-  title: string;
-  date: string;
-  start: number;
-  end: number;
-  type: "focus" | "break";
-}
-export interface DemoWorkspace {
-  version: 2;
-  tasks: Task[];
-  availability: DemoAvailability;
-  calendarEvents: CalendarEvent[];
-  scheduledBlocks: ScheduledBlock[];
-}
+export type CalendarEventInput = Pick<CalendarEvent, "title" | "kind" | "date" | "start" | "end" | "location" | "repeat">;
+/** One occurrence of an event on a specific date (repeating events have many). */
+export interface EventOccurrence { event: CalendarEvent; date: string }
 
 /** Weekly wall-clock hours in the selected IANA timezone. Monday = 0. */
 export interface AvailableDay { day: number; enabled: boolean; start: number; end: number }

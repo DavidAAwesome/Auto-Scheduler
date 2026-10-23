@@ -1,33 +1,101 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
 :root {
   font-family: "DM Sans", system-ui, sans-serif;
-  color: #292838;
-  background: #f7f6f3;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
   --bg: #f7f6f3;
   --surface: #fff;
+  --surface-2: #faf9fc;
+  --hover: #f3f1fb;
   --text: #292838;
   --muted: #777784;
   --primary: #5c54cf;
   --primary-dark: #4941b5;
+  --on-primary: #fff;
   --lavender: #ece9fb;
   --border: #eeedf1;
-  --radius: 20px;
+  --border-strong: #e1dfe8;
+  --danger: #c43c52;
+  --danger-bg: #fdecef;
+  --available-bg: #e8f6ee;
+  --available-text: #3f7a5f;
+  --now: #e5484d;
+  --shadow: 0 18px 50px #28223b24;
+  --cat-project: #5c54cf;
+  --cat-project-bg: #eeecfd;
+  --cat-study: #2f72c9;
+  --cat-study-bg: #e6f0fc;
+  --cat-personal: #c2457a;
+  --cat-personal-bg: #fbe9f1;
+  --cat-work: #b06f0c;
+  --cat-work-bg: #fbf0dc;
+  --prio-high: #e5484d;
+  --prio-medium: #f0a020;
+  --prio-low: #a3a3b2;
+  /* Events (classes, meetings) are solid so they read as fixed commitments, unlike tinted tasks. */
+  --event: #0f766e;
+  --event-text: #ffffff;
+  --event-soft: #ddf3ef;
+  --event-strong: #0f766e; /* teal text on light/soft backgrounds */
+  --radius: 16px;
+  color: var(--text);
+  background: var(--bg);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15141c;
+  --surface: #1e1d27;
+  --surface-2: #23222d;
+  --hover: #2a2836;
+  --text: #ecebf3;
+  --muted: #a3a2b1;
+  --primary: #8b83ff;
+  --primary-dark: #a29cff;
+  --on-primary: #15141c;
+  --lavender: #2b2841;
+  --border: #302e3c;
+  --border-strong: #3c3a4a;
+  --danger: #ff7a8c;
+  --danger-bg: #3a2027;
+  --available-bg: #1b3027;
+  --available-text: #8fd0b0;
+  --now: #ff6b6f;
+  --shadow: 0 18px 50px #00000080;
+  --cat-project: #a9a3ff;
+  --cat-project-bg: #2d2a4a;
+  --cat-study: #7fb3f5;
+  --cat-study-bg: #1f2d42;
+  --cat-personal: #f19bc0;
+  --cat-personal-bg: #3d2230;
+  --cat-work: #f0bb63;
+  --cat-work-bg: #3a2e18;
+  --event: #1f8a80;
+  --event-text: #f2fffd;
+  --event-soft: #173a36;
+  --event-strong: #5fd8c9;
 }
 * {
   box-sizing: border-box;
 }
+html,
+body,
+#root {
+  height: 100%;
+}
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--text);
 }
 button,
 input,
 select,
 textarea {
   font: inherit;
+  color: inherit;
 }
 button,
 a,
@@ -53,35 +121,41 @@ h3 {
   font-family: Manrope, system-ui, sans-serif;
 }
 h1 {
-  font-size: clamp(26px, 3vw, 34px);
-  letter-spacing: -1.3px;
+  font-size: clamp(24px, 3vw, 32px);
+  letter-spacing: -1px;
   line-height: 1.3;
   font-weight: 800;
 }
 h2 {
-  font-size: 20px;
-  letter-spacing: -0.6px;
+  font-size: 18px;
+  letter-spacing: -0.4px;
   line-height: 1.4;
 }
 h3 {
-  font-size: 16px;
+  font-size: 15px;
 }
 p {
-  line-height: 1.65;
+  line-height: 1.6;
 }
 a,
 button,
-input {
-  outline-offset: 4px;
+input,
+select,
+summary {
+  outline-offset: 2px;
 }
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
-  outline: 3px solid #8d83e4;
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--primary);
 }
 svg {
   flex-shrink: 0;
 }
 ::selection {
   background: #ddd6ff;
+  color: #292838;
 }

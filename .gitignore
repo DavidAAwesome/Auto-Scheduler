@@ -20,5 +20,10 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Prototype source
 AutoPlan-prototype-source.zip
 AutoPlan-prototype-source/
+
+# Claude Code project context (local only)
+CLAUDE.md

@@ -6,13 +6,14 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pymongo.errors import PyMongoError
 
-from app.auth import get_current_user, router
+from app.auth import firebase_verifier, get_current_user, router
 from app.config import get_settings
 from app.database import connect_database, initialize_indexes
 from app.workspace import router as workspace_router
+from app.events import router as events_router
 
 
-def create_app(database=None):
+def create_app(database=None, verify_token=None):
     @asynccontextmanager
     async def lifespan(app):
         get_settings()  # Fail startup clearly on missing or unsafe configuration.
@@ -24,6 +25,7 @@ def create_app(database=None):
                 db = database
             initialize_indexes(db)
             app.state.db = db
+            app.state.verify_token = verify_token or firebase_verifier()
             yield
         finally:
             if client is not None:
@@ -43,7 +45,7 @@ def create_app(database=None):
             if (origin and origin not in origins) or (not origin and request.headers.get('sec-fetch-site') == 'cross-site'):
                 return JSONResponse(status_code=403, content={'detail': 'Request origin is not allowed.'})
         response = await call_next(request)
-        if request.url.path.startswith(('/auth', '/tasks', '/availability', '/protected')):
+        if request.url.path.startswith(('/auth', '/tasks', '/sessions', '/events', '/availability', '/protected')):
             response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -64,6 +66,7 @@ def create_app(database=None):
 
     app.include_router(router)
     app.include_router(workspace_router)
+    app.include_router(events_router)
 
     @app.get('/')
     def root():
@@ -75,7 +78,7 @@ def create_app(database=None):
 
     @app.get('/protected')
     def protected(user=Depends(get_current_user)):
-        return {'message': 'You are authenticated!', 'uid': str(user['_id'])}
+        return {'message': 'You are authenticated!', 'uid': user['_id']}
 
     return app
 

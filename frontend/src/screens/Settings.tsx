@@ -46,7 +46,7 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
 
 export default function Settings() {
   const { availability } = useWorkspace();
-  return <><ScreenHeading title="Planning, on your terms." description="Make AutoPlan fit the way you work and the life you live." />
+  return <><ScreenHeading eyebrow="SETTINGS" title="Planning, on your terms." description="Set the hours you’re available each week. They show on your calendar, and the Sprint 2 scheduler will plan inside them." />
     {availability && <AvailabilityForm initial={availability} />}
     <p className="settings-note">Your name and email live on <a className="text-link" href="#/profile">Profile →</a></p>
   </>;
