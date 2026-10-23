@@ -1,17 +1,19 @@
-import type { Availability, BusyInterval, GeneratedPlan, Task, TaskInput } from '../types/models.ts';
+import type { Availability, BusyInterval, CalendarEvent, CalendarEventInput, GeneratedPlan, Task, TaskInput, WorkSession, WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
-import { validateTask } from './taskRules.ts';
+import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
 export type Requester = <T>(path: string, options?: RequestInit) => Promise<T>;
 export interface WorkspaceState {
   status: 'idle' | 'loading' | 'ready' | 'error';
   tasks: Task[];
+  sessions: WorkSession[];
+  events: CalendarEvent[];
   availability: Availability | null;
   plan: GeneratedPlan | null;
   error: string;
   saving: boolean;
 }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], availability: null, plan: null, error: '', saving: false });
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], availability: null, plan: null, error: '', saving: false });
 
 // Injectable transport lets tests exercise request failures and account-change races.
 export function createWorkspaceStore(request: Requester) {
@@ -26,8 +28,8 @@ export function createWorkspaceStore(request: Requester) {
     const current = ++generation;
     publish({ ...state, status: 'loading', error: '' });
     try {
-      const [tasks, availability, plan] = await Promise.all([request<Task[]>('/tasks'), request<Availability>('/availability'), request<GeneratedPlan | null>('/plan')]);
-      if (current === generation) publish({ status: 'ready', tasks, availability: normalizeAvailability(availability), plan, error: '', saving: false });
+      const [tasks, sessions, events, availability, plan] = await Promise.all([request<Task[]>('/tasks'), request<WorkSession[]>('/sessions'), request<CalendarEvent[]>('/events'), request<Availability>('/availability'), request<GeneratedPlan | null>('/plan')]);
+      if (current === generation) publish({ status: 'ready', tasks, sessions, events, availability: normalizeAvailability(availability), plan, error: '', saving: false });
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
     }
@@ -69,7 +71,33 @@ export function createWorkspaceStore(request: Requester) {
       return mutate<Task>(`/tasks/${id}/completion`, { method: 'PATCH', body: JSON.stringify({ done }) }, task => ({ tasks: state.tasks.map(t => t.id === id ? task : t), plan: stalePlan() }));
     },
     deleteTask(id: string) {
-      return mutate<void>(`/tasks/${id}`, { method: 'DELETE' }, () => ({ tasks: state.tasks.filter(t => t.id !== id), plan: stalePlan() }));
+      return mutate<void>(`/tasks/${id}`, { method: 'DELETE' }, () => ({ tasks: state.tasks.filter(t => t.id !== id), sessions: state.sessions.filter(s => s.taskId !== id), plan: stalePlan() }));
+    },
+    createSession(input: WorkSessionInput) {
+      validateSession(input);
+      return mutate<WorkSession>('/sessions', { method: 'POST', body: JSON.stringify(input) }, session => ({ sessions: [...state.sessions, session] }));
+    },
+    updateSession(id: string, input: WorkSessionInput) {
+      validateSession(input);
+      return mutate<WorkSession>(`/sessions/${id}`, { method: 'PUT', body: JSON.stringify(input) }, session => ({ sessions: state.sessions.map(s => s.id === id ? session : s) }));
+    },
+    deleteSession(id: string) {
+      return mutate<void>(`/sessions/${id}`, { method: 'DELETE' }, () => ({ sessions: state.sessions.filter(s => s.id !== id) }));
+    },
+    createEvent(input: CalendarEventInput) {
+      validateEvent(input);
+      return mutate<CalendarEvent>('/events', { method: 'POST', body: JSON.stringify(input) }, event => ({ events: [...state.events, event] }));
+    },
+    updateEvent(id: string, input: CalendarEventInput) {
+      validateEvent(input);
+      return mutate<CalendarEvent>(`/events/${id}`, { method: 'PUT', body: JSON.stringify(input) }, event => ({ events: state.events.map(e => e.id === id ? event : e) }));
+    },
+    /** Removes one occurrence of a repeating event (e.g. a cancelled class). */
+    skipEventOccurrence(id: string, date: string) {
+      return mutate<CalendarEvent>(`/events/${id}/skip`, { method: 'POST', body: JSON.stringify({ date }) }, event => ({ events: state.events.map(e => e.id === id ? event : e) }));
+    },
+    deleteEvent(id: string) {
+      return mutate<void>(`/events/${id}`, { method: 'DELETE' }, () => ({ events: state.events.filter(e => e.id !== id) }));
     },
     saveAvailability(availability: Availability) {
       const payload = normalizeAvailability(availability);

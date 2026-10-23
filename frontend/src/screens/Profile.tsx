@@ -1,5 +1,6 @@
 import { useRef, useState, type ChangeEvent } from "react";
 import ScreenHeading from "../components/ScreenHeading";
+import { Avatar } from "../components/AppLayout";
 import { authSession, useAuth } from "../services/authSession";
 
 export default function Profile() {
@@ -9,7 +10,6 @@ export default function Profile() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
-  const initial = user?.name.charAt(0).toUpperCase() || "?";
 
   async function logout() {
     setLoading(true);
@@ -18,11 +18,11 @@ export default function Profile() {
       await authSession.logout();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not sign out.");
-    } finally {
       setLoading(false);
     }
   }
 
+  /** Image → Firebase Storage → https link saved on the MongoDB user (never the image bytes). */
   async function onPick(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -56,80 +56,39 @@ export default function Profile() {
 
   return (
     <>
-      <ScreenHeading
-        title="A space that’s yours."
-        description="Your account and personal details, all in one place."
-      />
+      <ScreenHeading eyebrow="ACCOUNT" title="Account details" description="Your sign-in details and avatar. Tasks, events, and availability are saved to this account." />
       <section className="card profile-card">
-        <div className="profile-avatar-block">
-          {user?.photoURL ? (
-            <img
-              className="avatar large avatar-image"
-              src={user.photoURL}
-              alt={`${user.name}’s avatar`}
-            />
-          ) : (
-            <span className="avatar large" aria-hidden="true">
-              {initial}
-            </span>
-          )}
-          <div className="profile-avatar-actions">
-            <input
-              ref={fileInput}
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/gif"
-              hidden
-              onChange={(event) => void onPick(event)}
-            />
-            <button
-              type="button"
-              className="button"
-              disabled={avatarBusy}
-              onClick={() => fileInput.current?.click()}
-            >
-              {avatarBusy
-                ? "Saving…"
-                : user?.photoURL
-                  ? "Change avatar"
-                  : "Add avatar"}
-            </button>
-            {user?.photoURL && (
-              <button
-                type="button"
-                className="button secondary"
-                disabled={avatarBusy}
-                onClick={() => void removeAvatar()}
-              >
-                Delete avatar
-              </button>
-            )}
-          </div>
-          <p className="muted profile-avatar-note">
-            Photos upload to Firebase Storage. AutoPlan saves only the secure
-            https link in MongoDB (not the image bytes).
-          </p>
+        <Avatar size={72} />
+        <div className="profile-details">
+          <h2>{user?.name}</h2>
+          <p className="muted">{user?.email}</p>
+          <p className="provider-pill">{user?.provider === "google" ? "Signed in with Google" : "Email & password"}</p>
         </div>
-        <h2>{user?.name}</h2>
-        <p className="muted">{user?.email}</p>
-        <a className="button secondary" href="#/settings">
-          Workspace settings →
-        </a>
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        <p className="task-status" role="status">
-          {message}
-        </p>
-        <button
-          className="button secondary"
-          disabled={loading}
-          onClick={() => void logout()}
-        >
-          {loading ? "Signing out…" : "Log out"}
-        </button>
       </section>
+      <section className="card profile-avatar">
+        <div>
+          <h2>Avatar</h2>
+          <p className="muted small">JPG, PNG, WebP or GIF. Photos upload to Firebase Storage; AutoPlan saves only the secure link.</p>
+        </div>
+        <div className="profile-avatar-actions">
+          <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={(event) => void onPick(event)} />
+          <button type="button" className="button" disabled={avatarBusy} onClick={() => fileInput.current?.click()}>
+            {avatarBusy ? "Saving…" : user?.photoURL ? "Change avatar" : "Add avatar"}
+          </button>
+          {user?.photoURL && (
+            <button type="button" className="button secondary" disabled={avatarBusy} onClick={() => void removeAvatar()}>
+              Delete avatar
+            </button>
+          )}
+        </div>
+      </section>
+      <section className="card profile-actions">
+        <a className="button secondary" href="#/settings">Availability & settings →</a>
+        <button className="button secondary" disabled={loading} onClick={() => void logout()}>{loading ? "Signing out…" : "Log out"}</button>
+      </section>
+      {error && <p role="alert" className="form-error">{error}</p>}
+      <p className="task-status" role="status">{message}</p>
+      <p className="settings-note">To delete your account, open the menu under your name in the top-right corner.</p>
     </>
   );
 }

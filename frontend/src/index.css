@@ -1,33 +1,141 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
 :root {
   font-family: "DM Sans", system-ui, sans-serif;
-  color: #292838;
-  background: #f7f6f3;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
+  /* Light theme = the team's original AutoPlan palette (cream, purple/lavender, soft green and peach). */
   --bg: #f7f6f3;
   --surface: #fff;
+  --surface-2: #faf9fe;
+  --hover: #f7f5fd;
   --text: #292838;
   --muted: #777784;
   --primary: #5c54cf;
   --primary-dark: #4941b5;
+  --on-primary: #fff;
   --lavender: #ece9fb;
+  --secondary-bg: #f4f1ff;
+  --secondary-hover: #e8e2ff;
   --border: #eeedf1;
+  --border-strong: #e3e3e9;
+  --danger: #b34258;
+  --danger-bg: #fdecef;
+  --available-bg: #e7f5ee;
+  --available-text: #467b64;
+  --available-line: #b4d3bf;
+  --now: #e5484d;
+  --shadow: 0 16px 40px #2928381a;
+  --card-shadow: 0 6px 20px #29283803;
+  --avatar-bg: #e7dcf8;
+  --avatar-text: #6d579a;
+  --notice-bg: #fff4db;
+  --notice-text: #785c27;
+  --tone-purple-bg: #efedfd;
+  --tone-purple: #5c54cf;
+  --tone-green-bg: #e6f3eb;
+  --tone-green: #558875;
+  --tone-peach-bg: #fcf0e5;
+  --tone-peach: #c99067;
+  --cat-project: #5c54cf;
+  --cat-project-bg: #efedfd;
+  --cat-study: #4a72a8;
+  --cat-study-bg: #e9f0fa;
+  --cat-personal: #b0607a;
+  --cat-personal-bg: #fbedf1;
+  --cat-work: #a86a3c;
+  --cat-work-bg: #fcf0e5;
+  --prio-high: #e5484d;
+  --prio-medium: #f0a020;
+  --prio-low: #a3a3b2;
+  /* Auto-planned blocks from the scheduler (focus / break). */
+  --plan-focus-bg: #eae5fc;
+  --plan-focus-line: #d6cef0;
+  --plan-focus-text: #51428a;
+  --plan-break-bg: #e5f1e8;
+  --plan-break-text: #38634b;
+  /* Events (classes, meetings) are solid so they read as fixed commitments, unlike tinted tasks. */
+  --event: #4a7a62;
+  --event-text: #ffffff;
+  --event-soft: #e6f3eb;
+  --event-strong: #3f6e57; /* event-green text on light/soft backgrounds */
   --radius: 20px;
+  color: var(--text);
+  background: var(--bg);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15141c;
+  --surface: #1e1d27;
+  --surface-2: #23222d;
+  --hover: #2a2836;
+  --text: #ecebf3;
+  --muted: #a3a2b1;
+  --primary: #8b83ff;
+  --primary-dark: #a29cff;
+  --on-primary: #15141c;
+  --lavender: #2b2841;
+  --border: #302e3c;
+  --border-strong: #3c3a4a;
+  --danger: #ff7a8c;
+  --danger-bg: #3a2027;
+  --available-bg: #1b3027;
+  --available-text: #8fd0b0;
+  --now: #ff6b6f;
+  --shadow: 0 18px 50px #00000080;
+  --cat-project: #a9a3ff;
+  --cat-project-bg: #2d2a4a;
+  --cat-study: #7fb3f5;
+  --cat-study-bg: #1f2d42;
+  --cat-personal: #f19bc0;
+  --cat-personal-bg: #3d2230;
+  --cat-work: #f0bb63;
+  --cat-work-bg: #3a2e18;
+  --event: #1f8a80;
+  --event-text: #f2fffd;
+  --event-soft: #173a36;
+  --event-strong: #5fd8c9;
+  --secondary-bg: #2b2841;
+  --secondary-hover: #36324f;
+  --available-line: #3f7a5f;
+  --card-shadow: none;
+  --avatar-bg: #2b2841;
+  --avatar-text: #a9a3ff;
+  --notice-bg: #3a3018;
+  --notice-text: #f0cf8a;
+  --tone-purple-bg: #2d2a4a;
+  --tone-purple: #a9a3ff;
+  --tone-green-bg: #1b3027;
+  --tone-green: #8fd0b0;
+  --tone-peach-bg: #3a2c1f;
+  --tone-peach: #f0b98a;
+  --plan-focus-bg: #2d2a4a;
+  --plan-focus-line: #4a4475;
+  --plan-focus-text: #c9c4ff;
+  --plan-break-bg: #1b3027;
+  --plan-break-text: #8fd0b0;
 }
 * {
   box-sizing: border-box;
 }
+html,
+body,
+#root {
+  height: 100%;
+}
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--text);
 }
 button,
 input,
 select,
 textarea {
   font: inherit;
+  color: inherit;
 }
 button,
 a,
@@ -53,35 +161,46 @@ h3 {
   font-family: Manrope, system-ui, sans-serif;
 }
 h1 {
-  font-size: clamp(26px, 3vw, 34px);
-  letter-spacing: -1.3px;
+  font-size: clamp(24px, 3vw, 32px);
+  letter-spacing: -1px;
   line-height: 1.3;
   font-weight: 800;
 }
 h2 {
-  font-size: 20px;
-  letter-spacing: -0.6px;
+  font-size: 18px;
+  letter-spacing: -0.4px;
   line-height: 1.4;
 }
 h3 {
-  font-size: 16px;
+  font-size: 15px;
 }
 p {
-  line-height: 1.65;
+  line-height: 1.6;
 }
 a,
 button,
-input {
-  outline-offset: 4px;
+input,
+select,
+summary {
+  outline-offset: 2px;
 }
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
-  outline: 3px solid #8d83e4;
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--primary);
 }
 svg {
   flex-shrink: 0;
 }
 ::selection {
   background: #ddd6ff;
+  color: #292838;
+}
+:root:not([data-theme="dark"]) a:focus-visible,
+:root:not([data-theme="dark"]) button:focus-visible,
+:root:not([data-theme="dark"]) input:focus-visible {
+  outline: 3px solid #8d83e4; /* original focus ring in light mode */
 }

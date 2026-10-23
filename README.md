@@ -22,6 +22,8 @@ In the [Firebase console](https://console.firebase.google.com/), open your proje
 3. Under **Project settings → Your apps**, add a Web app if needed and copy its config values into the `VITE_FIREBASE_*` keys in `frontend/.env`.
 4. Set `FIREBASE_PROJECT_ID` in `backend/.env` to the same project ID.
 
+If you use MongoDB Atlas, add your current IP address under **Network Access**; otherwise the API fails at startup with an SSL handshake error.
+
 Start the API in one terminal:
 
 ```sh
@@ -35,7 +37,7 @@ Start the frontend in another terminal, from the repository root:
 npm run dev --prefix frontend -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-Open <http://127.0.0.1:5173/#/signup> and create an account. There are no built-in demo credentials. Stop any existing development server using these ports before starting another. To restart the persistent MongoDB container later, run `docker start autoplan-mongo`.
+Open <http://127.0.0.1:5173/#/signup> and create an account, or use **Continue with Google**. There are no built-in demo credentials. Stop any existing development server using these ports before starting another. To restart the persistent MongoDB container later, run `docker start autoplan-mongo`.
 
 ## Environment variables
 
@@ -61,12 +63,13 @@ Tests optionally read `TEST_MONGODB_URI`. Tests create randomly named databases 
 Signup, login, Google sign-in, password reset and logout happen in the browser through the Firebase SDK. Every API request sends `Authorization: Bearer <Firebase ID token>`.
 
 - `GET /auth/me`: verifies the token, creates the MongoDB user on first sign-in (keyed by Firebase `uid`), keeps name/email in step with Firebase, and returns `{id, name, email}`; 401 otherwise.
-- `DELETE /auth/account`: deletes the user's tasks, availability, plan and user record, then returns 204. The frontend then deletes the Firebase account.
+- `PUT /auth/avatar`: saves (or clears with `null`) the https link of an avatar uploaded to Firebase Storage; image bytes never go in MongoDB.
+- `DELETE /auth/account`: deletes the user's tasks, work sessions, events, availability, plan and user record, then returns 204. The frontend then deletes the Firebase account.
 - `GET /protected`: requires a valid token and returns the current user's ID.
 
 The API checks the token's RS256 signature against Google's published keys, plus its expiry, audience (`FIREBASE_PROJECT_ID`) and issuer. It returns 503 if Google's keys can't be fetched. Firebase manages passwords; MongoDB stores none. Browser mutations validate Origin, and CORS permits only configured origins.
 
-The frontend restores sessions through Firebase on refresh, gates workspace screens, shows API errors, and supports logout from Profile and the sidebar. Name and email stay on Profile. Signup shares the responsive two-column Login design.
+The frontend restores sessions through Firebase on refresh, gates workspace screens, shows API errors, and supports logout from the user menu (top right) and the Account page. Signup shares the responsive two-column Login design.
 
 ## Validation
 
@@ -80,29 +83,35 @@ cd backend
 TEST_MONGODB_URI=mongodb://127.0.0.1:27017 .venv/bin/python -m pytest -q
 ```
 
-Without `TEST_MONGODB_URI`, mock-database tests run and real-MongoDB tests explicitly skip. Coverage includes signup persistence/hash verification, unique emails, wrong passwords, validation, current user, forged/expired/revoked tokens, session rotation, logout replay rejection, user isolation, cookie flags, and CORS/origin checks.
+Without `TEST_MONGODB_URI`, mock-database tests run and real-MongoDB tests explicitly skip. Tests replace Firebase with a fake token verifier (`tests/conftest.py`). Coverage includes profile creation, invalid/missing tokens, account deletion, user isolation, validation, and CORS/origin checks.
 
-Sprint 1 verification: 68 backend tests passed (34 mock, 34 real MongoDB 8), plus 14 frontend tests, lint, and production build. Browser checks covered signup, login, task creation/edit/completion/deletion, availability save/load, refresh, calendar display, logout, and a second account with no access to the first account’s data. MongoDB records from the browser-created accounts were inspected directly. No Atlas or production deployment has been tested. See [SPRINT1.md](SPRINT1.md) for the detailed report and Codex disclosure draft.
+Lan's original Sprint 1 verification (before the Firebase switch): 68 backend tests passed (34 mock, 34 real MongoDB 8), plus 14 frontend tests, lint, and production build. Browser checks covered signup, login, task creation/edit/completion/deletion, availability save/load, refresh, calendar display, logout, and a second account with no access to the first account’s data. MongoDB records from the browser-created accounts were inspected directly. No Atlas or production deployment has been tested. See [SPRINT1.md](SPRINT1.md) for the detailed report and Codex disclosure draft.
 
 ## Workspace API
 
-All workspace routes use the existing authentication dependency. Owners are taken only from the session; extra input fields such as `user_id` are rejected. Responses have `Cache-Control: no-store`.
+All workspace routes use the Firebase authentication dependency. Owners are taken only from the verified token; extra input fields such as `user_id` are rejected. Responses have `Cache-Control: no-store`.
 
 - `GET /tasks`: current user's tasks, ordered by deadline.
-- `POST /tasks`: create `{title, deadline, minutes, priority, category}`; returns 201 with task `{id, title, deadline, minutes, priority, category, done}`.
+- `POST /tasks`: create `{title, deadline, dueTime?, minutes, priority, category}`; returns 201 with task `{id, title, deadline, dueTime, minutes, priority, category, done}`. `dueTime` is minutes after midnight and is optional (default 1439 = 11:59 PM). `minutes` is the total estimated work (15 to 6000, in steps of 15).
 - `GET /tasks/{id}`: get an owned task.
 - `PUT /tasks/{id}`: edit its fields, preserving completion.
 - `PATCH /tasks/{id}/completion`: `{done: true}` or `{done: false}`.
-- `DELETE /tasks/{id}`: delete owned task; returns 204.
+- `DELETE /tasks/{id}`: delete owned task and its work sessions; returns 204.
+- `GET /sessions`: the user's work sessions, ordered by date and start.
+- `POST /sessions`: plan work time `{taskId, date, start, end, source?}`; returns 201. A task can have any number of sessions on different days (e.g. 30m one day, 2h30m another). `start`/`end` are minutes after midnight in 5-minute steps; `source` is `manual` (default) or `auto` (reserved for the future AI scheduler). Sessions must end by the task's due time (422) and cannot overlap another of the user's sessions or events (409).
+- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned session.
+- `GET /events`: the user's events. Events are fixed-time commitments you attend (classes, meetings, appointments, meetups); they have no due date.
+- `POST /events`: create `{title, kind, date, start, end, location?, repeat?}`; returns 201 with `{id, ..., skipDates, source}`. `kind` is `Class`, `Meeting`, `Appointment`, `Social`, or `Other`. `repeat` is `{weekdays, until}` (Monday = 0) for a weekly series such as a class schedule, up to one year long.
+- `PUT /events/{id}`: edit the event (every occurrence of a series). `POST /events/{id}/skip` with `{date}`: remove one occurrence of a series (e.g. a cancelled class). `DELETE /events/{id}`: delete the event or whole series.
 - `GET /availability`: saved settings, or defaults (all days disabled, UTC, reminders off).
 - `PUT /availability`: save `{days, timeZone, reminders}`. Each day has `{day, enabled, start, end}`. Include all seven weekdays exactly once, Monday=0 through Sunday=6. Start/end are integer minutes after midnight. End must follow start and may equal 1440 (24:00). Overnight windows are not supported. `timeZone` is a valid IANA identifier.
 
-Unknown tasks and tasks owned by other users both return 404. Missing or revoked authentication returns 401. Invalid input returns 422. MongoDB creates an owner/deadline index for tasks and a unique owner index for availability at startup. Calendar derives its view from the same tasks and settings; it needs no separate duplicate database collection.
+Unknown tasks and tasks owned by other users both return 404. Missing or revoked authentication returns 401. Invalid input returns 422. MongoDB creates an owner/deadline index for tasks, owner/date and owner/task indexes for sessions, an owner/date index for events, and a unique owner index for availability at startup. Calendar derives its view from the same tasks and settings; it needs no separate duplicate database collection.
 
 ## Current scope
 
-Sprint 1 includes real login/signup/logout, MongoDB task CRUD and completion, saved weekday availability/timezone, and a responsive weekly calendar plus deadline agenda. Name and email remain on Profile. New accounts start empty. The production app no longer imports the old browser demo store; it is retained only for prototype fixtures and regression tests. Existing localStorage tasks are not automatically migrated or uploaded.
+Sprint 1 includes Firebase login/signup (email/password and Google), password reset, logout, and account deletion; MongoDB task CRUD and completion; saved weekday availability and time zone; and the sketch-based workspace: a top bar (menu, month title, reminders bell, user menu with theme toggle), a Today's Tasks sidebar with Add Task, a day/week/month calendar, and an AI chatbox panel. New accounts start empty.
 
-The calendar displays due dates and recurring available hours; it does not allocate tasks into time slots. External calendar sync and the scheduling engine belong to Sprint 2. Reminder preferences save, but actual reminders belong to Sprint 3. Assistant and Analytics remain placeholders. Password reset and email verification are not implemented and are outside the supplied Sprint 1 checklist.
+Tasks have a due date and an optional due time (11:59 PM if left blank). The user splits each task's work into **work sessions** on any days before it is due, by clicking an empty calendar slot, using "Plan work time", or from the task card. Sessions show as blocks in the time grid, and each task shows how much of its estimate is planned. Placing sessions automatically is future-sprint work.
 
-The current verification preview uses temporary local MongoDB on port 27019, with a runtime-generated signing secret. For durable local use, follow Local setup above: its MongoDB container uses a named data volume and `backend/.env` preserves the signing secret. Do not treat the temporary verification container as your permanent project database.
+**Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date, which covers a class schedule. They appear as solid teal blocks, are listed with work sessions in Today's Tasks, and block work sessions from being planned over them. One occurrence of a repeating event can be removed without deleting the series. External calendar sync and the scheduling engine belong to Sprint 2 (the Google/Outlook menu entries are placeholders). Reminder delivery and natural-language entry belong to Sprint 3 (the bell lists tasks due today/tomorrow; the chatbox is a placeholder).

@@ -1,3 +1,6 @@
+from urllib.parse import parse_qsl, urlsplit
+
+import certifi
 from fastapi import Request
 import certifi
 from pymongo import MongoClient
@@ -32,6 +35,9 @@ def initialize_indexes(db):
     db.tasks.create_index([('user_id', 1), ('deadline', 1)])
     db.availability.create_index('user_id', unique=True)
     db.plans.create_index('user_id', unique=True)
+    db.sessions.create_index([('user_id', 1), ('date', 1), ('start', 1)])
+    db.sessions.create_index([('user_id', 1), ('task_id', 1)])
+    db.events.create_index([('user_id', 1), ('date', 1)])
 
 
 def get_database(request: Request):

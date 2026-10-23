@@ -65,7 +65,7 @@ def test_input_changes_mark_stale_without_moving_saved_blocks(environment,monkey
     assert stale['stale'] and stale['blocks'] == first['blocks']
     assert client.post('/plan/generate',json=REQUEST).json()['blocks'] == []
     availability=client.get('/availability').json()
-    availability['days'][0]['start']=600
+    availability['days'][0]['periods']=[{'start':600,'end':1020}]  # periods replaced the single start/end window
     client.put('/availability',json=availability)
     assert client.get('/plan').json()['stale']
 

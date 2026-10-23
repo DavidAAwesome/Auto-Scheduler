@@ -9,7 +9,7 @@ const availability: Availability = {
   timeZone: 'UTC',
   reminders: false,
 };
-const input: TaskInput = { title: 'Test task', deadline: '2026-10-09', minutes: 60, priority: 'High', category: 'Project' };
+const input: TaskInput = { title: 'Test task', deadline: '2026-10-09', dueTime: 1439, minutes: 60, priority: 'High', category: 'Project' };
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
 test('API-backed tasks, completion and availability survive a fresh store', async () => {
@@ -20,6 +20,7 @@ test('API-backed tasks, completion and availability survive a fresh store', asyn
     let result: unknown;
     if (path === '/plan') result = null;
     else if (path === '/availability') { if (data) saved = data; result = saved; }
+    else if ((path === '/sessions' || path === '/events') && !options) result = [];
     else if (!options) result = tasks;
     else if (options.method === 'POST') { const task = { ...data, id: 'server-id', done: false }; tasks = [...tasks, task]; result = task; }
     else if (options.method === 'DELETE') tasks = [];
@@ -46,7 +47,7 @@ test('failed writes preserve confirmed data and expose failures; failed loads ca
   let fail = true;
   const request: Requester = async <T>(path: string, options?: RequestInit) => {
     if (fail || options) throw new Error('Database unavailable');
-    return (path === '/tasks' ? [] : path === '/plan' ? null : availability) as T;
+    return (path === '/tasks' || path === '/sessions' || path === '/events' ? [] : path === '/plan' ? null : availability) as T;
   };
   const store = createWorkspaceStore(request);
   store.setUser('a'); await tick();
@@ -60,7 +61,7 @@ test('failed writes preserve confirmed data and expose failures; failed loads ca
 test('late responses cannot restore another account’s tasks after logout', async () => {
   let resolveTasks!: (value: Task[]) => void;
   const deferred = new Promise<Task[]>(resolve => { resolveTasks = resolve; });
-  const request: Requester = async <T>(path: string) => (path === '/tasks' ? await deferred : path === '/plan' ? null : availability) as T;
+  const request: Requester = async <T>(path: string) => (path === '/tasks' ? await deferred : path === '/sessions' || path === '/events' ? [] : path === '/plan' ? null : availability) as T;
   const store = createWorkspaceStore(request);
   store.setUser('a');
   store.setUser(null);
@@ -74,4 +75,27 @@ test('calendar uses saved timezone and Monday-based weeks across DST and year bo
   assert.equal(dateInZone('America/New_York', new Date('2026-01-01T02:00:00Z')), '2025-12-31');
   assert.equal(weekStart('2026-01-01'), '2025-12-29');
   assert.equal(weekStart('2026-03-08'), '2026-03-02');
+});
+
+test('work sessions split a task across days; deleting the task removes its sessions', async () => {
+  let id = 0;
+  const request: Requester = async <T>(path: string, options?: RequestInit): Promise<T> => {
+    const data = options?.body ? JSON.parse(String(options.body)) : null;
+    if (!options) return (path === '/availability' ? availability : path === '/plan' ? null : []) as T;
+    if (options.method === 'DELETE') return null as T;
+    if (path === '/tasks') return { ...data, id: 'task', done: false } as T;
+    return { ...data, id: path === '/sessions' ? `s${++id}` : path.split('/')[2], source: 'manual' } as T;
+  };
+  const store = createWorkspaceStore(request);
+  store.setUser('a'); await tick();
+  const task = await store.createTask({ ...input, minutes: 180 });
+  await store.createSession({ taskId: task.id, date: '2026-10-06', start: 1080, end: 1110 });
+  await store.createSession({ taskId: task.id, date: '2026-10-07', start: 540, end: 690 });
+  await store.updateSession('s1', { taskId: task.id, date: '2026-10-08', start: 600, end: 630 });
+  assert.deepEqual(store.getSnapshot().sessions.map(s => s.date), ['2026-10-08', '2026-10-07']);
+  assert.throws(() => store.createSession({ taskId: task.id, date: '2026-10-08', start: 600, end: 600 }), /end after it starts/);
+  await store.deleteSession('s2');
+  assert.equal(store.getSnapshot().sessions.length, 1);
+  await store.deleteTask(task.id);
+  assert.deepEqual(store.getSnapshot().sessions, []);
 });

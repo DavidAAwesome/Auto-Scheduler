@@ -449,7 +449,11 @@ export default function Settings() {
   const { availability } = useWorkspace();
   return (
     <>
-      <ScreenHeading title="Settings" />
+      <ScreenHeading
+        eyebrow="SETTINGS"
+        title="Planning, on your terms."
+        description="Set the hours you’re available. They show on your calendar, and the scheduler plans inside them."
+      />
       {availability && (
         <AvailabilityForm
           key={`${availability.timeZone}-${availability.days.length}-${availability.weekOverrides?.length ?? 0}`}
