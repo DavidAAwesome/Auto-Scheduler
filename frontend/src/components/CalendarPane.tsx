@@ -23,9 +23,8 @@ export interface CalendarHandlers {
   onAdd: (date: string) => void;
   /** An empty time slot was clicked: offer to plan work or add an event there. */
   onSlot: (date: string, start: number, rect: DOMRect) => void;
-  /** Toolbar buttons: plan work time / add an event (no specific slot). */
+  /** Toolbar button: plan work time (no specific slot). Events are added from the sidebar or an empty slot. */
   onPlan: (date: string) => void;
-  onAddEvent: (date: string) => void;
 }
 
 const dueLabel = (task: Task) => (task.dueTime === DEFAULT_DUE_TIME ? "" : clock12(task.dueTime));
@@ -262,9 +261,6 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           {view.mode === "day" && <span className="range-label">{longDate(view.anchor)}</span>}
         </div>
         <div className="calendar-actions">
-          <button className="button secondary small" onClick={() => handlers.onAddEvent(focusDate)} aria-label="Add event">
-            <Icon name="calendar" size={15} /> <span>Add event</span>
-          </button>
           <button className="button secondary small" onClick={() => handlers.onPlan(focusDate)} aria-label="Plan work time">
             <Icon name="clock" size={15} /> <span>Plan work time</span>
           </button>

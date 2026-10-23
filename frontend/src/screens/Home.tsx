@@ -53,7 +53,6 @@ export default function Home() {
         onAdd={deadline => setTaskForm({ deadline })}
         onSlot={(date, start, rect) => { closeFloating(); setSlot({ date, start, rect }); }}
         onPlan={date => plan({ date })}
-        onAddEvent={date => addEvent({ date })}
       />
       <ChatPanel />
       {selectedTask && (
