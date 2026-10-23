@@ -9,7 +9,7 @@ Prerequisites: Python 3.13, Node.js 24 LTS, and MongoDB (local, Docker, or Atlas
 ```sh
 docker run -d --name autoplan-mongo -p 127.0.0.1:27017:27017 -v autoplan-mongo-data:/data/db mongo:8
 python3 -m venv backend/.venv
-backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
+backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt   # Windows: backend\.venv\Scripts\python
 cp -n backend/.env.example backend/.env
 cp -n frontend/.env.example frontend/.env
 npm ci --prefix frontend
@@ -34,10 +34,10 @@ cd backend
 Start the frontend in another terminal, from the repository root:
 
 ```sh
-npm run dev --prefix frontend -- --host 127.0.0.1 --port 5173 --strictPort
+npm run dev --prefix frontend -- --port 5173 --strictPort
 ```
 
-Open <http://127.0.0.1:5173/#/signup> and create an account, or use **Continue with Google**. There are no built-in demo credentials. Stop any existing development server using these ports before starting another. To restart the persistent MongoDB container later, run `docker start autoplan-mongo`.
+Open <http://localhost:5173/#/signup> and create an account, or use **Continue with Google**. Use `localhost` (not `127.0.0.1`) so Outlook sign-in matches its registered redirect URI. There are no built-in demo credentials. Stop any existing development server using these ports before starting another. To restart the persistent MongoDB container later, run `docker start autoplan-mongo`.
 
 ## Environment variables
 
