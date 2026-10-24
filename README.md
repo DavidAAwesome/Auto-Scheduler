@@ -47,6 +47,8 @@ Backend (`backend/.env`; never expose these with a `VITE_` prefix):
 - `DATABASE_NAME`: MongoDB database, default `auto_scheduler`.
 - `FIREBASE_PROJECT_ID`: required; the Firebase project whose ID tokens the API accepts. Must match `VITE_FIREBASE_PROJECT_ID`.
 - `ALLOWED_ORIGINS`: comma-separated exact frontend origins, without paths. Examples include localhost and 127.0.0.1 on ports 5173/5174. Wildcards are rejected.
+- `OPENAI_API_KEY`: optional. Enables `/assistant/chat` and `/schedule/interpret` via the OpenAI Responses API. Never commit a real key; leave blank to use structured scheduling without AI.
+- `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`).
 
 Frontend (`frontend/.env`):
 
@@ -126,10 +128,43 @@ One-time setup per team (values go in `frontend/.env`; see `frontend/.env.exampl
 
 Restart `npm run dev` after editing `.env`. Without these values the Calendars page explains what's missing and everything else works.
 
+## AI-assisted scheduling
+
+Responsibilities are separated on purpose:
+
+1. **OpenAI service** (`openai_interpret.py`, `/assistant/chat`): interprets natural language into structured preferences / intents with the Responses API and Structured Outputs. Model output never writes the database.
+2. **Scheduling engine** (`scheduling_engine.py`): deterministic placement of work sessions from tasks, deadlines, priorities, availability, events, dependencies, and split rules.
+3. **Validator** (`scheduling_validator.py`): independently rechecks hard constraints before a preview is trusted or applied.
+4. **Persistence / UI**: `POST /schedule/preview` stores a pending preview; the calendar shows proposed sessions; **Apply** / **Cancel** call `/schedule/apply` or discard. Apply re-fingerprints current data, rejects stale previews, and is idempotent.
+
+The engine works with structured tasks even when `OPENAI_API_KEY` is unset. OpenAI is never used to invent conflict-free timestamps.
+
+### Heuristic (preferences, not proofs)
+
+Ready tasks are ordered by dependency readiness, then deadline/due time, then priority (High → Low), then stable task id. Free time is availability minus events and fixed (manual/locked) sessions. Split tasks pack 15-minute-aligned sessions up to `maxSessionMinutes` (prefer fewer, larger chunks, earlier starts). Unsplit tasks need one contiguous free block. Remainders smaller than `minSessionMinutes` are reported as unscheduled (`remainder_below_min_session`) — never silently dropped. Failure to place work is reported with reason codes such as `insufficient_availability` or `no_contiguous_slot`; that is **not** a claim of mathematical infeasibility unless a validator/cycle check establishes it (for example `dependency_cycle`).
+
+### Schedule API
+
+- `POST /schedule/preview` `{horizonDays?}` → `{previewId, schedule}` (no session writes).
+- `POST /schedule/apply` `{previewId}` → creates `source: "auto"` sessions; replaces unlocked auto sessions; keeps manual/locked.
+- `POST /schedule/replan` — same as preview after task/availability changes.
+- `POST /schedule/interpret` — OpenAI structured interpretation; optional preview when `runScheduler` and no clarification needed.
+
+### Manual check
+
+1. Set availability (e.g. Mon 6–9 PM) and add a calendar event 7–8 PM.
+2. Add a 120-minute task due that day at 9 PM with **Allow splitting** on (60-minute max sessions).
+3. Click **Generate Schedule** on the calendar: expect proposed 6–7 and 8–9 PM.
+4. **Apply**, then refresh — sessions persist. Repeat Apply — no duplicates.
+5. Create the same task with splitting off — preview reports `no_contiguous_slot`.
+6. Optional: set `OPENAI_API_KEY` and ask the chat to schedule; without a key, structured preview still works.
+
+Live OpenAI calls are **not** covered by CI; interpret/chat OpenAI paths are unit-tested with mocks only.
+
 ## Current scope
 
 Sprint 1 includes Firebase login/signup (email/password and Google), password reset, logout, and account deletion; MongoDB task CRUD and completion; saved weekday availability and time zone; and the sketch-based workspace: a top bar (menu, month title, reminders bell, user menu with theme toggle), a Today's Tasks sidebar with Add Task, a day/week/month calendar, and an AI chatbox panel. New accounts start empty.
 
-Tasks have a due date and an optional due time (11:59 PM if left blank). The user splits each task's work into **work sessions** on any days before it is due, by clicking an empty calendar slot, using "Plan work time", or from the task card. Sessions show as blocks in the time grid, and each task shows how much of its estimate is planned. Placing sessions automatically is future-sprint work.
+Tasks have a due date and an optional due time (11:59 PM if left blank), remaining duration, split limits, optional earliest start, and dependencies. The user can place **work sessions** manually or generate them with **Generate Schedule**. Sessions show as blocks in the time grid; locked/manual sessions are preserved when replanning.
 
-**Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date, which covers a class schedule. They appear as solid teal blocks, are listed with work sessions in Today's Tasks, and block work sessions from being planned over them. One occurrence of a repeating event can be removed without deleting the series. External calendar sync and the scheduling engine belong to Sprint 2 (Google Calendar and Outlook import is available on the Calendars page). Reminder delivery and natural-language entry belong to Sprint 3 (the bell lists tasks due today/tomorrow; the chatbox is a placeholder).
+**Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date. They block work sessions and auto-scheduling. Google Calendar and Outlook import is available on the Calendars page. Reminder delivery remains limited to the bell list for due today/tomorrow.

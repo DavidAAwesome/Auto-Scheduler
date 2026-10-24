@@ -9,7 +9,11 @@ const availability: Availability = {
   timeZone: 'UTC',
   reminders: false,
 };
-const input: TaskInput = { title: 'Test task', deadline: '2026-10-09', dueTime: 1439, minutes: 60, priority: 'High', category: 'Project' };
+const input: TaskInput = {
+  title: 'Test task', deadline: '2026-10-09', dueTime: 1439, minutes: 60, remainingMinutes: 60,
+  priority: 'High', category: 'Project', earliestStart: null, allowSplit: true,
+  minSessionMinutes: 15, maxSessionMinutes: 60, dependsOn: [],
+};
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
 test('API-backed tasks, completion and availability survive a fresh store', async () => {

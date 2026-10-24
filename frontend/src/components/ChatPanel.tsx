@@ -104,10 +104,16 @@ export default function ChatPanel() {
         <p className="bubble assistant">Hi{user?.name ? ` ${user.name.split(" ")[0]}` : ""}! {welcome.text}</p>
         {messages.map(m => <p key={m.id} className={`bubble ${m.role}`}>{m.text}</p>)}
         {thinking && <p className="bubble assistant muted">Thinking…</p>}
-        {pending?.type === "generate_plan" && (
-          <div className="chat-confirm" role="group" aria-label="Confirm plan generation">
-            <button className="button small" disabled={saving || thinking} onClick={() => void generate()}>{saving ? "Planning…" : pending.label}</button>
-            <span className="muted small">Replaces the saved plan. Your tasks, events and sessions aren’t changed.</span>
+        {(pending?.type === "generate_plan" || pending?.type === "generate_schedule") && (
+          <div className="chat-confirm" role="group" aria-label="Confirm schedule generation">
+            <button className="button small" disabled={saving || thinking} onClick={() => void (pending.type === "generate_schedule" ? workspaceService.previewSchedule(7) : generate())}>
+              {saving ? "Planning…" : pending.label}
+            </button>
+            <span className="muted small">
+              {pending.type === "generate_schedule"
+                ? "Builds a preview on the calendar. Apply it there to save sessions."
+                : "Replaces the saved plan. Your tasks, events and sessions aren’t changed."}
+            </span>
           </div>
         )}
         {plan?.stale && <p className="plan-notice small">Saved plan needs review. {plan.staleReasons.join(" ")}</p>}

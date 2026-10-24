@@ -41,7 +41,10 @@ test('time and duration formatting', () => {
 });
 
 test('tasks group by due date with open, high-priority tasks first', () => {
-  const base = { deadline: '2026-10-07', minutes: 60, category: 'Study' } as const;
+  const base = {
+    deadline: '2026-10-07', minutes: 60, remainingMinutes: 60, dueTime: 1439, category: 'Study' as const,
+    earliestStart: null, allowSplit: true, minSessionMinutes: 15, maxSessionMinutes: 60, dependsOn: [] as string[],
+  };
   const tasks: Task[] = [
     { ...base, id: 'a', title: 'Low', priority: 'Low', done: false },
     { ...base, id: 'b', title: 'Done high', priority: 'High', done: true },

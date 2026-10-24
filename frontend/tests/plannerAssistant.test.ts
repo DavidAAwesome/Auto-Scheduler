@@ -18,24 +18,36 @@ const availability: Availability = {
   reminders: false,
 };
 
+const scheduling = {
+  dueTime: 1439,
+  earliestStart: null as string | null,
+  allowSplit: true,
+  minSessionMinutes: 15,
+  maxSessionMinutes: 60,
+  dependsOn: [] as string[],
+};
 const tasks: Task[] = [
   {
     id: "1",
     title: "Essay",
     deadline: "2026-10-06",
     minutes: 60,
+    remainingMinutes: 60,
     priority: "High",
     category: "Study",
     done: false,
+    ...scheduling,
   },
   {
     id: "2",
     title: "Laundry",
     deadline: "2026-10-07",
     minutes: 30,
+    remainingMinutes: 30,
     priority: "Low",
     category: "Personal",
     done: false,
+    ...scheduling,
   },
 ];
 

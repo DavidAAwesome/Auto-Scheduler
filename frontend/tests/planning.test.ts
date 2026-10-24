@@ -45,10 +45,13 @@ test('sessions group by day in start order', () => {
 });
 
 test('tasks accept multi-day estimates and an optional due time', () => {
-  const base = { title: 'Project', deadline: '2026-10-20', priority: 'High', category: 'Project' } as const;
-  assert.doesNotThrow(() => validateTask({ ...base, minutes: 40 * 60, dueTime: 1439 }));
-  assert.throws(() => validateTask({ ...base, minutes: 6015, dueTime: 1439 }), /100 hours/);
-  assert.throws(() => validateTask({ ...base, minutes: 60, dueTime: 1440 }), /due time/);
+  const base = {
+    title: 'Project', deadline: '2026-10-20', priority: 'High', category: 'Project',
+    earliestStart: null, allowSplit: true, minSessionMinutes: 15, maxSessionMinutes: 60, dependsOn: [],
+  } as const;
+  assert.doesNotThrow(() => validateTask({ ...base, minutes: 40 * 60, remainingMinutes: 40 * 60, dueTime: 1439 }));
+  assert.throws(() => validateTask({ ...base, minutes: 6015, remainingMinutes: 6015, dueTime: 1439 }), /100 hours/);
+  assert.throws(() => validateTask({ ...base, minutes: 60, remainingMinutes: 60, dueTime: 1440 }), /due time/);
 });
 
 test('wall-clock times convert to UTC instants in the user zone, including DST change days', async () => {

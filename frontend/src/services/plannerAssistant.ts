@@ -11,6 +11,7 @@ export type AssistantMessage = {
 
 export type PendingAction =
   | { type: "generate_plan"; label: string }
+  | { type: "generate_schedule"; label: string }
   | { type: "none"; label: string };
 
 export type AssistantContext = {

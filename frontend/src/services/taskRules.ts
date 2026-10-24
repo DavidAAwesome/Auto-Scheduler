@@ -24,6 +24,15 @@ export function validateTask(input: TaskInput) {
     throw new Error("Choose a valid priority.");
   if (!["Project", "Study", "Personal", "Work"].includes(input.category))
     throw new Error("Choose a valid category.");
+  if (
+    !Number.isInteger(input.remainingMinutes) ||
+    input.remainingMinutes < 0 ||
+    input.remainingMinutes > input.minutes ||
+    input.remainingMinutes % 15 !== 0
+  )
+    throw new Error("Remaining time must be a multiple of 15 minutes and not exceed the estimate.");
+  if (input.minSessionMinutes > input.maxSessionMinutes)
+    throw new Error("Minimum session length cannot exceed the maximum.");
 }
 export type TaskFilter = "all" | "open" | "done";
 export function selectTasks(

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
-import { DEFAULT_DUE_TIME, type CalendarEvent, type PlanBlock, type Task, type WorkSession } from "../types/models";
+import { DEFAULT_DUE_TIME, type CalendarEvent, type PlanBlock, type ProposedSession, type Task, type WorkSession } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
+import { workspaceService } from "../services/workspace";
 import { calendarViewStore, useCalendarView } from "../services/uiState";
 import {
   clock12, intervalOnDate, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
@@ -107,14 +108,28 @@ function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date
   );
 }
 
+function PreviewBlock({ session, place }: { session: ProposedSession; place: Placed }) {
+  return (
+    <div
+      className={`plan-block focus preview ${session.end - session.start < 45 ? "compact" : ""}`}
+      style={laneStyle(place, session.start, session.end)}
+      title={`Proposed: ${session.title} · ${range(session.start, session.end)}`}
+    >
+      <span className="session-title">✦ {session.title}</span>
+      <span className="session-time">{range(session.start, session.end)} · proposed</span>
+    </div>
+  );
+}
+
 function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
-  const { tasks, sessions, events, availability, plan } = useWorkspace();
+  const { tasks, sessions, events, availability, plan, schedulePreview } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
   const zone = availability?.timeZone ?? "UTC";
   const [now, setNow] = useState(() => minutesInZone(zone));
   const byDate = tasksByDate(tasks);
   const sessionsOn = sessionsByDate(sessions);
   const taskById = new Map(tasks.map(t => [t.id, t]));
+  const previewSessions = schedulePreview?.schedule.sessions ?? [];
   useEffect(() => {
     const timer = setInterval(() => setNow(minutesInZone(zone)), 60_000);
     return () => clearInterval(timer);
@@ -157,10 +172,12 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
           const hours = availability ? resolveDay(availability, date) : null;
           const work = (sessionsOn.get(date) ?? []).filter(s => taskById.has(s.taskId));
           const occurrences = occurrencesOn(events, date);
-          const planned = (plan?.blocks ?? []).flatMap(block => { const r = planRange(block, date, zone); return r ? [{ block, ...r }] : []; });
+          const planned = schedulePreview ? [] : (plan?.blocks ?? []).flatMap(block => { const r = planRange(block, date, zone); return r ? [{ block, ...r }] : []; });
+          const proposed = previewSessions.filter(s => s.date === date);
           const items = [...occurrences.map(o => ({ kind: "event" as const, start: o.event.start, end: o.event.end, event: o.event })),
             ...work.map(s => ({ kind: "session" as const, start: s.start, end: s.end, session: s })),
-            ...planned.map(p => ({ kind: "plan" as const, start: p.start, end: p.end, block: p.block }))];
+            ...planned.map(p => ({ kind: "plan" as const, start: p.start, end: p.end, block: p.block })),
+            ...proposed.map(s => ({ kind: "preview" as const, start: s.start, end: s.end, session: s }))];
           const lanes = layoutLanes(items);
           return (
             <div key={date} className={`day-col ${date === today ? "is-today" : ""}`} onClick={e => slotAt(date, e)} title="Click to plan work or add an event">
@@ -178,7 +195,9 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
                 ? <EventBlock key={item.event.id} event={item.event} date={date} place={lanes.get(item)!} onOpen={onOpenEvent} />
                 : item.kind === "session"
                   ? <SessionBlock key={item.session.id} session={item.session} task={taskById.get(item.session.taskId)!} place={lanes.get(item)!} onOpen={onOpen} />
-                  : <PlanBlockView key={item.block.id} block={item.block} start={item.start} end={item.end} task={item.block.taskId ? taskById.get(item.block.taskId) : undefined} place={lanes.get(item)!} onOpen={onOpen} />)}
+                  : item.kind === "preview"
+                    ? <PreviewBlock key={`preview-${item.session.taskId}-${item.start}`} session={item.session} place={lanes.get(item)!} />
+                    : <PlanBlockView key={item.block.id} block={item.block} start={item.start} end={item.end} task={item.block.taskId ? taskById.get(item.block.taskId) : undefined} place={lanes.get(item)!} onOpen={onOpen} />)}
               {date === today && <div className="now-line" style={{ top: (now / 60) * HOUR_HEIGHT }} aria-hidden="true" />}
             </div>
           );
@@ -244,12 +263,33 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
 
 export default function CalendarPane({ today, ...handlers }: CalendarHandlers & { today: string }) {
   const view = useCalendarView();
-  const { connections } = useWorkspace();
+  const { connections, availability, schedulePreview, saving, error } = useWorkspace();
+  const [scheduleError, setScheduleError] = useState("");
   const dates = visibleDates(view.mode, view.anchor);
   const showsToday = view.mode === "month" ? view.anchor.slice(0, 7) === today.slice(0, 7) : dates.includes(today);
   const setMode = (mode: CalendarMode) => calendarViewStore.set({ mode, anchor: showsToday ? today : view.anchor });
   const step = (direction: 1 | -1) => calendarViewStore.set({ ...view, anchor: shiftAnchor(view.mode, view.anchor, direction) });
   const focusDate = view.mode === "day" ? view.anchor : today;
+  const zone = availability?.timeZone ?? "UTC";
+  const unscheduled = schedulePreview?.schedule.tasks.filter(t => t.unscheduledMinutes > 0) ?? [];
+
+  async function generateSchedule() {
+    setScheduleError("");
+    try {
+      await workspaceService.previewSchedule(7);
+    } catch (e) {
+      setScheduleError((e as Error).message);
+    }
+  }
+  async function applySchedule() {
+    setScheduleError("");
+    try {
+      await workspaceService.applySchedulePreview();
+    } catch (e) {
+      setScheduleError((e as Error).message);
+    }
+  }
+
   return (
     <section className="calendar-pane" aria-label="Calendar">
       <div className="calendar-toolbar">
@@ -260,8 +300,12 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           <button className="icon-button ghost small" aria-label="Previous" onClick={() => step(-1)}><Icon name="chevronLeft" size={18} /></button>
           <button className="icon-button ghost small" aria-label="Next" onClick={() => step(1)}><Icon name="chevronRight" size={18} /></button>
           {view.mode === "day" && <span className="range-label">{longDate(view.anchor)}</span>}
+          <span className="range-label muted small">{zone}</span>
         </div>
         <div className="calendar-actions">
+          <button className="button small" disabled={saving} onClick={() => void generateSchedule()} aria-label="Generate schedule">
+            <Icon name="assistant" size={15} /> <span>{saving ? "Scheduling…" : "Generate Schedule"}</span>
+          </button>
           <button className="button secondary small" onClick={() => handlers.onPlan(focusDate)} aria-label="Plan work time">
             <Icon name="clock" size={15} /> <span>Plan work time</span>
           </button>
@@ -274,13 +318,32 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
         </div>
       </div>
+      {schedulePreview && (
+        <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
+          <div>
+            <strong>Preview</strong> {schedulePreview.schedule.startDate} – {schedulePreview.schedule.endDate} ({schedulePreview.schedule.timeZone})
+            {" · "}{schedulePreview.schedule.sessions.length} proposed session{schedulePreview.schedule.sessions.length === 1 ? "" : "s"}
+            {unscheduled.length > 0 && (
+              <span className="form-warning"> · {unscheduled.length} task(s) not fully scheduled: {unscheduled.map(t => t.title).join(", ")}</span>
+            )}
+            {schedulePreview.schedule.explanations[0] && (
+              <p className="muted small">{schedulePreview.schedule.explanations[0]}</p>
+            )}
+          </div>
+          <div className="schedule-preview-actions">
+            <button className="button small" disabled={saving} onClick={() => void applySchedule()}>{saving ? "Applying…" : "Apply"}</button>
+            <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {(scheduleError || error) && <p role="alert" className="form-error">{scheduleError || error}</p>}
       {view.mode === "month"
         ? <MonthGrid anchor={view.anchor} today={today} onOpen={handlers.onOpen} onOpenEvent={handlers.onOpenEvent} onAdd={handlers.onAdd} />
         : <TimeGrid dates={dates} today={today} {...handlers} />}
       <div className="calendar-legend">
         <span><i className="swatch event" /> Event</span>
         <span><i className="swatch session" /> Work session</span>
-        <span><i className="swatch plan" /> Auto-planned</span>
+        <span><i className="swatch plan" /> Auto-planned / proposed</span>
         <span><i className="swatch due" /> Task due</span>
         <span><i className="swatch available" /> Available hours</span>
         {connections.some(c => c.provider === "google") && <span><i className="swatch event source-google" /> From Google</span>}

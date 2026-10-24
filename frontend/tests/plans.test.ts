@@ -37,7 +37,11 @@ test('plans load, replace rather than append, preserve busy input, and survive s
 });
 
 test('task edits flag a plan for review without moving blocks; failed generation retains it', async () => {
-  const input = { title: 'Edited', deadline: '2026-10-06', dueTime: 1439, minutes: 60, priority: 'High', category: 'Project' } as const;
+  const input = {
+    title: 'Edited', deadline: '2026-10-06', dueTime: 1439, minutes: 60, remainingMinutes: 60,
+    priority: 'High', category: 'Project', earliestStart: null, allowSplit: true,
+    minSessionMinutes: 15, maxSessionMinutes: 60, dependsOn: [],
+  } as const;
   const request: Requester = async <T>(path: string, options?: RequestInit) => {
     if (path === '/plan/generate') throw new Error('Calendar unavailable');
     return structuredClone(path === '/plan' ? plan : path === '/availability' ? availability : options ? { ...input, id: 'task', done: false } : []) as T;

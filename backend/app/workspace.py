@@ -22,9 +22,16 @@ class TaskInput(BaseModel):
     deadline: str
     # Total estimated work. Tasks can be split into several work sessions, so allow up to 100 hours.
     minutes: int = Field(strict=True, ge=15, le=6000, multiple_of=15)
+    # Work still to schedule; defaults to minutes. Fixed/manual sessions consume from this.
+    remainingMinutes: int | None = Field(default=None, strict=True, ge=0, le=6000)
     dueTime: int = Field(default=DEFAULT_DUE_TIME, strict=True, ge=0, le=1439)  # minutes after midnight
     priority: Literal['High', 'Medium', 'Low']
     category: Literal['Project', 'Study', 'Personal', 'Work']
+    earliestStart: str | None = None  # ISO-8601 datetime; null = as soon as allowed
+    allowSplit: bool = Field(default=True, strict=True)
+    minSessionMinutes: int = Field(default=15, strict=True, ge=15, le=6000, multiple_of=15)
+    maxSessionMinutes: int = Field(default=60, strict=True, ge=15, le=6000, multiple_of=15)
+    dependsOn: list[str] = Field(default_factory=list, max_length=32)
 
     @field_validator('title')
     @classmethod
@@ -41,6 +48,28 @@ class TaskInput(BaseModel):
             raise ValueError('Use a valid YYYY-MM-DD deadline.')
         return value
 
+    @field_validator('dependsOn')
+    @classmethod
+    def unique_deps(cls, value):
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError('Duplicate dependencies are not allowed.')
+        return cleaned
+
+    @model_validator(mode='after')
+    def scheduling_fields(self):
+        remaining = self.minutes if self.remainingMinutes is None else self.remainingMinutes
+        if remaining > self.minutes:
+            raise ValueError('remainingMinutes cannot exceed estimated minutes.')
+        if remaining % 15:
+            raise ValueError('remainingMinutes must be a multiple of 15.')
+        if self.minSessionMinutes > self.maxSessionMinutes:
+            raise ValueError('minSessionMinutes cannot exceed maxSessionMinutes.')
+        if not self.allowSplit and self.minutes < self.minSessionMinutes:
+            raise ValueError('Unsplit tasks need at least minSessionMinutes of work.')
+        self.remainingMinutes = remaining
+        return self
+
 
 class TaskOutput(TaskInput):
     id: str
@@ -52,10 +81,30 @@ class Completion(BaseModel):
     done: bool = Field(strict=True)
 
 
+TASK_DEFAULTS = {
+    'dueTime': DEFAULT_DUE_TIME,
+    'remainingMinutes': None,
+    'earliestStart': None,
+    'allowSplit': True,
+    'minSessionMinutes': 15,
+    'maxSessionMinutes': 60,
+    'dependsOn': [],
+}
+
+
 def task_output(doc):
-    # Tasks saved before due times existed fall back to the default.
-    return TaskOutput(**{field: doc.get(field, DEFAULT_DUE_TIME) if field == 'dueTime' else doc[field] for field in TaskInput.model_fields},
-                      id=str(doc['_id']), done=doc['done'])
+    # Older task documents omit newer scheduling fields; fill defaults.
+    payload = {}
+    for field in TaskInput.model_fields:
+        if field in doc:
+            payload[field] = doc[field]
+        elif field in TASK_DEFAULTS:
+            payload[field] = TASK_DEFAULTS[field]
+        else:
+            payload[field] = doc[field]
+    if payload.get('remainingMinutes') is None:
+        payload['remainingMinutes'] = payload['minutes']
+    return TaskOutput(**payload, id=str(doc['_id']), done=doc['done'])
 
 
 def owned_task(task_id, user):
@@ -114,8 +163,9 @@ class SessionInput(BaseModel):
     date: str
     start: int = Field(strict=True, ge=0, le=1435, multiple_of=5)
     end: int = Field(strict=True, ge=5, le=1440, multiple_of=5)
-    # 'manual' sessions are placed by the user; the future AI scheduler will create 'auto' ones.
+    # 'manual' sessions are placed by the user; 'auto' sessions come from the scheduling engine.
     source: Literal['manual', 'auto'] = 'manual'
+    locked: bool = Field(default=False, strict=True)
 
     @field_validator('date')
     @classmethod
@@ -169,7 +219,8 @@ def session_doc(data, user):
 
 def session_output(doc):
     return SessionOutput(taskId=doc['task_id'], date=doc['date'], start=doc['start'], end=doc['end'],
-                         source=doc.get('source', 'manual'), id=str(doc['_id']))
+                         source=doc.get('source', 'manual'), locked=bool(doc.get('locked', False)),
+                         id=str(doc['_id']))
 
 
 def owned_session(session_id, user):

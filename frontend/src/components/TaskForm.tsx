@@ -35,13 +35,20 @@ export default function TaskForm({
     if (saving) return;
     const planNext = (event.nativeEvent as SubmitEvent).submitter?.getAttribute("value") === "plan";
     const data = new FormData(event.currentTarget);
+    const minutes = Number(data.get("hours")) * 60 + Number(data.get("extraMinutes"));
     const input: TaskInput = {
       title: String(data.get("title")),
       deadline,
       dueTime: dueMinutes,
-      minutes: Number(data.get("hours")) * 60 + Number(data.get("extraMinutes")),
+      minutes,
+      remainingMinutes: task?.remainingMinutes ?? minutes,
       priority: data.get("priority") as TaskInput["priority"],
       category: data.get("category") as TaskInput["category"],
+      earliestStart: task?.earliestStart ?? null,
+      allowSplit: data.get("allowSplit") === "on",
+      minSessionMinutes: Number(data.get("minSessionMinutes") || task?.minSessionMinutes || 15),
+      maxSessionMinutes: Number(data.get("maxSessionMinutes") || task?.maxSessionMinutes || 60),
+      dependsOn: task?.dependsOn ?? [],
     };
     setSaving(true);
     setError("");
@@ -98,6 +105,12 @@ export default function TaskForm({
             </select>
           </label>
         </div>
+        <label className="checkbox-row">
+          <input type="checkbox" name="allowSplit" value="on" defaultChecked={task?.allowSplit ?? true} />
+          Allow splitting into multiple sessions (respects min/max session length)
+        </label>
+        <input type="hidden" name="minSessionMinutes" value={task?.minSessionMinutes ?? 15} />
+        <input type="hidden" name="maxSessionMinutes" value={task?.maxSessionMinutes ?? 60} />
         {task && (
           <p className="muted">
             {taskSessions.length

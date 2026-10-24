@@ -7,11 +7,18 @@ export interface Task {
   deadline: string;
   /** Total estimated work, which can be split across several work sessions. */
   minutes: number;
+  /** Work still to schedule; defaults to minutes. */
+  remainingMinutes: number;
   /** Due time in minutes after midnight; 1439 (11:59 PM) when the user leaves it blank. */
   dueTime: number;
   priority: Priority;
   category: Category;
   done: boolean;
+  earliestStart: string | null;
+  allowSplit: boolean;
+  minSessionMinutes: number;
+  maxSessionMinutes: number;
+  dependsOn: string[];
 }
 export type TaskInput = Omit<Task, "id" | "done">;
 export const DEFAULT_DUE_TIME = 23 * 60 + 59;
@@ -22,10 +29,11 @@ export interface WorkSession {
   date: string;
   start: number;
   end: number;
-  /** "manual" = placed by the user; "auto" = placed by the future AI scheduler. */
+  /** "manual" = placed by the user; "auto" = placed by the scheduling engine. */
   source: "manual" | "auto";
+  locked: boolean;
 }
-export type WorkSessionInput = Omit<WorkSession, "id" | "source">;
+export type WorkSessionInput = Omit<WorkSession, "id" | "source" | "locked"> & { locked?: boolean };
 export type EventKind = "Class" | "Meeting" | "Appointment" | "Social" | "Other";
 /** Repeats every week on `weekdays` (Monday = 0) from the event's date through `until`. */
 export interface Repeat { weekdays: number[]; until: string }
@@ -99,4 +107,41 @@ export interface GeneratedPlan {
   version: 1; generatedAt: string; startDate: string; endDate: string; timeZone: string;
   source: 'provided' | 'availability_only'; busyIntervals: BusyInterval[];
   blocks: PlanBlock[]; tasks: PlanTaskResult[]; stale: boolean; staleReasons: string[];
+}
+
+export interface ProposedSession {
+  taskId: string;
+  title: string;
+  date: string;
+  start: number;
+  end: number;
+  source: 'auto';
+  locked: boolean;
+  kept: boolean;
+}
+export interface ScheduleTaskResult {
+  taskId: string;
+  title: string;
+  remainingMinutes: number;
+  scheduledMinutes: number;
+  unscheduledMinutes: number;
+  status: 'scheduled' | 'partial' | 'unscheduled';
+  reason: string;
+  message: string;
+}
+export interface SchedulePreviewPayload {
+  version: 1;
+  generatedAt: string;
+  startDate: string;
+  endDate: string;
+  timeZone: string;
+  sessions: ProposedSession[];
+  tasks: ScheduleTaskResult[];
+  explanations: string[];
+  inputFingerprint: string;
+}
+export interface SchedulePreview {
+  previewId: string;
+  status: 'pending';
+  schedule: SchedulePreviewPayload;
 }

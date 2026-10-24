@@ -1,4 +1,4 @@
-import type { Availability, BusyInterval, CalendarConnection, CalendarEvent, CalendarEventInput, CalendarProvider, GeneratedPlan, ImportedEvent, Task, TaskInput, WorkSession, WorkSessionInput } from '../types/models.ts';
+import type { Availability, BusyInterval, CalendarConnection, CalendarEvent, CalendarEventInput, CalendarProvider, GeneratedPlan, ImportedEvent, SchedulePreview, Task, TaskInput, WorkSession, WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
@@ -11,10 +11,11 @@ export interface WorkspaceState {
   connections: CalendarConnection[];
   availability: Availability | null;
   plan: GeneratedPlan | null;
+  schedulePreview: SchedulePreview | null;
   error: string;
   saving: boolean;
 }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, plan: null, error: '', saving: false });
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, plan: null, schedulePreview: null, error: '', saving: false });
 
 // Injectable transport lets tests exercise request failures and account-change races.
 export function createWorkspaceStore(request: Requester) {
@@ -30,7 +31,7 @@ export function createWorkspaceStore(request: Requester) {
     publish({ ...state, status: 'loading', error: '' });
     try {
       const [tasks, sessions, events, connections, availability, plan] = await Promise.all([request<Task[]>('/tasks'), request<WorkSession[]>('/sessions'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<Availability>('/availability'), request<GeneratedPlan | null>('/plan')]);
-      if (current === generation) publish({ status: 'ready', tasks, sessions, events, connections, availability: normalizeAvailability(availability), plan, error: '', saving: false });
+      if (current === generation) publish({ status: 'ready', tasks, sessions, events, connections, availability: normalizeAvailability(availability), plan, schedulePreview: null, error: '', saving: false });
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
     }
@@ -76,11 +77,13 @@ export function createWorkspaceStore(request: Requester) {
     },
     createSession(input: WorkSessionInput) {
       validateSession(input);
-      return mutate<WorkSession>('/sessions', { method: 'POST', body: JSON.stringify(input) }, session => ({ sessions: [...state.sessions, session] }));
+      const payload = { ...input, locked: input.locked ?? false };
+      return mutate<WorkSession>('/sessions', { method: 'POST', body: JSON.stringify(payload) }, session => ({ sessions: [...state.sessions, session] }));
     },
     updateSession(id: string, input: WorkSessionInput) {
       validateSession(input);
-      return mutate<WorkSession>(`/sessions/${id}`, { method: 'PUT', body: JSON.stringify(input) }, session => ({ sessions: state.sessions.map(s => s.id === id ? session : s) }));
+      const payload = { ...input, locked: input.locked ?? false };
+      return mutate<WorkSession>(`/sessions/${id}`, { method: 'PUT', body: JSON.stringify(payload) }, session => ({ sessions: state.sessions.map(s => s.id === id ? session : s) }));
     },
     deleteSession(id: string) {
       return mutate<void>(`/sessions/${id}`, { method: 'DELETE' }, () => ({ sessions: state.sessions.filter(s => s.id !== id) }));
@@ -131,12 +134,46 @@ export function createWorkspaceStore(request: Requester) {
     generatePlan(busyIntervals: BusyInterval[], source: GeneratedPlan['source']) {
       return mutate<GeneratedPlan>('/plan/generate', { method: 'POST', body: JSON.stringify({ busyIntervals, source }) }, plan => ({ plan }));
     },
+    /** Deterministic schedule preview — does not mutate saved sessions until apply. */
+    async previewSchedule(horizonDays = 7) {
+      if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
+      if (state.saving) throw new Error('A change is still saving. Please try again shortly.');
+      const current = generation;
+      publish({ ...state, saving: true, error: '' });
+      try {
+        const preview = await request<SchedulePreview>('/schedule/preview', {
+          method: 'POST',
+          body: JSON.stringify({ horizonDays }),
+        });
+        if (current !== generation) throw new Error('Your account changed. Please try again.');
+        publish({ ...state, schedulePreview: preview, saving: false });
+        return preview;
+      } catch (error) {
+        if (current === generation) publish({ ...state, saving: false, error: (error as Error).message });
+        throw error;
+      }
+    },
+    clearSchedulePreview() {
+      publish({ ...state, schedulePreview: null });
+    },
+    async applySchedulePreview() {
+      const preview = state.schedulePreview;
+      if (!preview) throw new Error('Generate a schedule preview first.');
+      await mutate<{ previewId: string; status: 'applied'; sessions: WorkSession[] }>(
+        '/schedule/apply',
+        { method: 'POST', body: JSON.stringify({ previewId: preview.previewId }) },
+        () => ({ schedulePreview: null }),
+      );
+      const sessions = await request<WorkSession[]>('/sessions');
+      publish({ ...state, sessions, schedulePreview: null });
+      return sessions;
+    },
     /** OpenAI assistant; does not mutate workspace state. Falls through to caller on 503 when unset. */
     chatAssistant(message: string, history: { role: 'user' | 'assistant'; text: string }[]) {
       if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
       return request<{
         reply: string;
-        pendingAction: { type: 'generate_plan'; label: string } | null;
+        pendingAction: { type: 'generate_plan' | 'generate_schedule'; label: string } | null;
         provider: 'openai';
       }>('/assistant/chat', {
         method: 'POST',
