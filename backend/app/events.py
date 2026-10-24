@@ -10,6 +10,7 @@ from pymongo import ReturnDocument
 
 from app.auth import get_current_user
 from app.database import get_database
+from app.schedule_version import bump_schedule_version
 
 router = APIRouter(tags=['events'])
 MAX_REPEAT_DAYS = 366
@@ -155,6 +156,7 @@ def list_events(user=Depends(get_current_user), db=Depends(get_database)):
 def create_event(data: EventInput, user=Depends(get_current_user), db=Depends(get_database)):
     doc = {**data.model_dump(), 'user_id': str(user['_id']), 'skipDates': [], 'source': 'manual'}
     doc['_id'] = db.events.insert_one(doc).inserted_id
+    bump_schedule_version(db, str(user['_id']))
     return event_output(doc)
 
 
@@ -162,6 +164,7 @@ def create_event(data: EventInput, user=Depends(get_current_user), db=Depends(ge
 def update_event(event_id: str, data: EventInput, user=Depends(get_current_user), db=Depends(get_database)):
     """Edits the whole event (every occurrence of a repeating series)."""
     doc = db.events.find_one_and_update(editable_event(event_id, user, db), {'$set': data.model_dump()}, return_document=ReturnDocument.AFTER)
+    bump_schedule_version(db, str(user['_id']))
     return event_output(doc)
 
 
@@ -175,9 +178,11 @@ def skip_occurrence(event_id: str, data: SkipInput, user=Depends(get_current_use
     if not occurs_on(doc, data.date):
         raise HTTPException(422, 'The event does not happen on that date.')
     doc = db.events.find_one_and_update(query, {'$addToSet': {'skipDates': data.date}}, return_document=ReturnDocument.AFTER)
+    bump_schedule_version(db, str(user['_id']))
     return event_output(doc)
 
 
 @router.delete('/events/{event_id}', status_code=204)
 def delete_event(event_id: str, user=Depends(get_current_user), db=Depends(get_database)):
     db.events.delete_one(editable_event(event_id, user, db))
+    bump_schedule_version(db, str(user['_id']))

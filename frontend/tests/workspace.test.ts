@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorkspaceStore, type Requester } from '../src/services/workspaceStore.ts';
-import type { Availability, TaskInput, Task } from '../src/types/models.ts';
+import { DEFAULT_PREFERENCES, type Availability, type TaskInput, type Task } from '../src/types/models.ts';
 import { dateInZone, weekStart } from '../src/utils/calendar.ts';
 const availability: Availability = {
   days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: false, periods: [{ start: 540, end: 1020 }] })),
@@ -10,7 +10,7 @@ const availability: Availability = {
   reminders: false,
 };
 const input: TaskInput = {
-  title: 'Test task', deadline: '2026-10-09', dueTime: 1439, minutes: 60, remainingMinutes: 60,
+  title: 'Test task', deadline: '2026-10-09', dueTime: 1439, minutes: 60, completedMinutes: 0,
   priority: 'High', category: 'Project', earliestStart: null, allowSplit: true,
   minSessionMinutes: 15, maxSessionMinutes: 60, dependsOn: [],
 };
@@ -22,9 +22,10 @@ test('API-backed tasks, completion and availability survive a fresh store', asyn
   const request: Requester = async <T>(path: string, options?: RequestInit): Promise<T> => {
     const data = options?.body ? JSON.parse(String(options.body)) : null;
     let result: unknown;
-    if (path === '/plan') result = null;
+    if (path === '/schedule') result = { scheduleVersion: 0, timeZone: 'UTC', sessions: [] };
+    else if (path === '/schedule/preferences') result = DEFAULT_PREFERENCES;
     else if (path === '/availability') { if (data) saved = data; result = saved; }
-    else if ((path === '/sessions' || path === '/events' || path === '/calendar/connections') && !options) result = [];
+    else if ((path === '/events' || path === '/calendar/connections') && !options) result = [];
     else if (!options) result = tasks;
     else if (options.method === 'POST') { const task = { ...data, id: 'server-id', done: false }; tasks = [...tasks, task]; result = task; }
     else if (options.method === 'DELETE') tasks = [];
@@ -51,7 +52,7 @@ test('failed writes preserve confirmed data and expose failures; failed loads ca
   let fail = true;
   const request: Requester = async <T>(path: string, options?: RequestInit) => {
     if (fail || options) throw new Error('Database unavailable');
-    return (path === '/tasks' || path === '/sessions' || path === '/events' || path === '/calendar/connections' ? [] : path === '/plan' ? null : availability) as T;
+    return (path === '/tasks' || path === '/events' || path === '/calendar/connections' ? [] : path === '/schedule' ? { scheduleVersion: 0, timeZone: 'UTC', sessions: [] } : path === '/schedule/preferences' ? DEFAULT_PREFERENCES : availability) as T;
   };
   const store = createWorkspaceStore(request);
   store.setUser('a'); await tick();
@@ -65,7 +66,7 @@ test('failed writes preserve confirmed data and expose failures; failed loads ca
 test('late responses cannot restore another account’s tasks after logout', async () => {
   let resolveTasks!: (value: Task[]) => void;
   const deferred = new Promise<Task[]>(resolve => { resolveTasks = resolve; });
-  const request: Requester = async <T>(path: string) => (path === '/tasks' ? await deferred : path === '/sessions' || path === '/events' || path === '/calendar/connections' ? [] : path === '/plan' ? null : availability) as T;
+  const request: Requester = async <T>(path: string) => (path === '/tasks' ? await deferred : path === '/events' || path === '/calendar/connections' ? [] : path === '/schedule' ? { scheduleVersion: 0, timeZone: 'UTC', sessions: [] } : path === '/schedule/preferences' ? DEFAULT_PREFERENCES : availability) as T;
   const store = createWorkspaceStore(request);
   store.setUser('a');
   store.setUser(null);
@@ -85,7 +86,7 @@ test('work sessions split a task across days; deleting the task removes its sess
   let id = 0;
   const request: Requester = async <T>(path: string, options?: RequestInit): Promise<T> => {
     const data = options?.body ? JSON.parse(String(options.body)) : null;
-    if (!options) return (path === '/availability' ? availability : path === '/plan' ? null : []) as T;
+    if (!options) return (path === '/availability' ? availability : path === '/schedule' ? { scheduleVersion: 0, timeZone: 'UTC', sessions: [] } : path === '/schedule/preferences' ? DEFAULT_PREFERENCES : []) as T;
     if (options.method === 'DELETE') return null as T;
     if (path === '/tasks') return { ...data, id: 'task', done: false } as T;
     return { ...data, id: path === '/sessions' ? `s${++id}` : path.split('/')[2], source: 'manual' } as T;

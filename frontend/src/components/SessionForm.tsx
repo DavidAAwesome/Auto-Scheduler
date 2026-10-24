@@ -30,7 +30,7 @@ export default function SessionForm({ session, taskId, date, start, onClose, onS
   const initialDate = session?.date ?? date ?? (task && task.deadline < today ? task.deadline : today);
   const hours = availability ? resolveDay(availability, initialDate) : null;
   const initialStart = session?.start ?? start ?? (hours?.enabled && hours.periods.length ? hours.periods[0].start : 9 * 60);
-  const left = task ? task.minutes - plannedMinutes(task.id, sessions) + (session ? session.end - session.start : 0) : 60;
+  const left = task ? task.remainingMinutes - plannedMinutes(task.id, sessions) + (session ? session.end - session.start : 0) : 60;
   const initialLength = session ? session.end - session.start : left > 0 ? Math.min(left, 120) : 60;
   const [day, setDay] = useState(initialDate);
   const [from, setFrom] = useState(clockTime(initialStart));

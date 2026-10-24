@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import ScreenHeading from "../components/ScreenHeading";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import type { Availability, AvailableDay } from "../types/models";
+import type { Availability, AvailableDay, SchedulePreferences } from "../types/models";
 import {
   cloneDays,
   emptyWeekDays,
@@ -445,8 +445,76 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
   );
 }
 
+/** Focus length, break length, daily cap and an optional protected lunch. The scheduler and validator both use these. */
+function PreferencesForm({ initial }: { initial: SchedulePreferences }) {
+  const { saving } = useWorkspace();
+  const [focus, setFocus] = useState(String(initial.focusMinutes));
+  const [rest, setRest] = useState(String(initial.breakMinutes));
+  const [daily, setDaily] = useState(String(initial.maxDailyWorkMinutes / 60));
+  const [lunchOn, setLunchOn] = useState(initial.lunch !== null);
+  const [lunchStart, setLunchStart] = useState(clock(initial.lunch?.start ?? 720));
+  const [lunchEnd, setLunchEnd] = useState(clock(initial.lunch?.end ?? 780));
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    const focusMinutes = Number(focus);
+    const breakMinutes = Number(rest);
+    const maxDailyWorkMinutes = Math.round(Number(daily) * 60);
+    const lunch = lunchOn ? { start: parseClock(lunchStart), end: parseClock(lunchEnd) } : null;
+    if (!Number.isInteger(focusMinutes) || focusMinutes < 10 || focusMinutes > 240) return setError("Focus length must be 10 to 240 minutes.");
+    if (!Number.isInteger(breakMinutes) || breakMinutes < 5 || breakMinutes > 120) return setError("Break length must be 5 to 120 minutes.");
+    if (!Number.isFinite(maxDailyWorkMinutes) || maxDailyWorkMinutes < 15 || maxDailyWorkMinutes > 1440) return setError("Daily task work must be between 0.25 and 24 hours.");
+    if (lunch && !(lunch.end > lunch.start)) return setError("Lunch must end after it starts.");
+    setError("");
+    try {
+      await workspaceService.savePreferences({ focusMinutes, breakMinutes, maxDailyWorkMinutes, lunch });
+      setMessage("Saved. Generate or repair your schedule to apply the new pacing.");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <form className="card availability-form" onSubmit={save} aria-label="Focus and breaks">
+      <fieldset disabled={saving}>
+        <legend>Focus &amp; breaks</legend>
+        <p className="muted small">Defaults: 50 minutes of focus, then a 10-minute break, up to 4 hours of task work a day. Adjust them to suit you.</p>
+        <div className="availability-meta">
+          <label>Focus length (min)
+            <input type="number" min={10} max={240} value={focus} onChange={e => { setFocus(e.target.value); setMessage(""); }} />
+          </label>
+          <label>Break length (min)
+            <input type="number" min={5} max={120} value={rest} onChange={e => { setRest(e.target.value); setMessage(""); }} />
+          </label>
+          <label>Task work per day (hours)
+            <input type="number" min={0.25} max={24} step={0.25} value={daily} onChange={e => { setDaily(e.target.value); setMessage(""); }} />
+          </label>
+        </div>
+        <div className="availability-meta">
+          <label>
+            <input type="checkbox" checked={lunchOn} onChange={e => { setLunchOn(e.target.checked); setMessage(""); }} /> Protect a lunch break
+          </label>
+          {lunchOn && <>
+            <label>From
+              <select value={lunchStart} onChange={e => setLunchStart(e.target.value)}>{START_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}</select>
+            </label>
+            <label>To
+              <select value={lunchEnd} onChange={e => setLunchEnd(e.target.value)}>{END_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}</select>
+            </label>
+          </>}
+        </div>
+        <button className="button" type="submit">{saving ? "Saving…" : "Save focus & breaks"}</button>
+      </fieldset>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <p className="task-status" role="status">{message}</p>
+    </form>
+  );
+}
+
 export default function Settings() {
-  const { availability } = useWorkspace();
+  const { availability, preferences } = useWorkspace();
   return (
     <>
       <ScreenHeading
@@ -460,6 +528,7 @@ export default function Settings() {
           initial={normalizeAvailability(availability)}
         />
       )}
+      <PreferencesForm key={JSON.stringify(preferences)} initial={preferences} />
     </>
   );
 }

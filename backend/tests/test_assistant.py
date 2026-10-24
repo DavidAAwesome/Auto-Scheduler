@@ -1,34 +1,30 @@
-"""Chat grounding and the shared scheduling path. OpenAI is replaced by a fake client; no live calls."""
+"""Chat grounding: the assistant reads the same schedule as the calendar. OpenAI is a fake client; no live calls."""
 import json
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app import assistant, schedule_routes
+from app import assistant
 from app.config import get_settings
 from firebase_tokens import sign_in
-from test_schedule_api import _setup
-
-NOW = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+from schedule_fixtures import ACCEPTANCE, TODAY, TOMORROW, acceptance_tasks, add_event, setup_user
 
 
 class FakeResponses:
-    def __init__(self, captured, reply, intent):
-        self.captured = captured
-        self.reply = reply
-        self.intent = intent
+    def __init__(self, captured, reply, intent, params):
+        self.captured, self.reply, self.intent, self.params = captured, reply, intent, params
 
     def parse(self, **kwargs):
         self.captured.append(kwargs)
-        parsed = assistant.ChatResponseModel(reply=self.reply, intent=self.intent)
+        parsed = assistant.ChatResponseModel(reply=self.reply, intent=self.intent,
+                                             params=assistant.IntentParams(**self.params))
         return SimpleNamespace(output=[], output_parsed=parsed)
 
 
-def _fake_openai(monkeypatch, reply='You have dinner at 7 PM.', intent='busy_time'):
+def fake_openai(monkeypatch, reply='Here is your day.', intent='none', **params):
     captured = []
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
-            self.responses = FakeResponses(captured, reply, intent)
+            self.responses = FakeResponses(captured, reply, intent, params)
 
     monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
     get_settings.cache_clear()
@@ -36,48 +32,82 @@ def _fake_openai(monkeypatch, reply='You have dinner at 7 PM.', intent='busy_tim
     return captured
 
 
-def _snapshot_from(captured):
-    snapshot_message = captured[0]['input'][1]['content']
-    return json.loads(snapshot_message.split('\n', 1)[1])
+def snapshot_from(captured):
+    return json.loads(captured[0]['input'][1]['content'].split('\n', 1)[1])
 
 
-def test_chat_snapshot_contains_real_events_and_saved_sessions(environment, monkeypatch):
+def as_rows(items):
+    def hhmm(text):
+        clock, half = text.split()
+        hour, minute = map(int, clock.split(':'))
+        return (hour % 12 + (12 if half == 'PM' else 0)) * 60 + minute
+    return [(s['date'], f"{hhmm(s['start']) // 60:02d}:{hhmm(s['start']) % 60:02d}-{hhmm(s['end']) // 60:02d}:"
+             f"{hhmm(s['end']) % 60:02d}", s['type'], s['task'] or 'Break') for s in items]
+
+
+def test_todays_tasks_in_chat_match_the_calendar_preview_then_the_saved_schedule(transaction_environment, monkeypatch):
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    proposal = client.post('/schedule/preview', json={'horizonDays': 1}).json()
+    captured = fake_openai(monkeypatch)
+
+    assert client.post('/assistant/chat', json={'message': "Today's tasks", 'previewId': proposal['previewId']}).status_code == 200
+    snapshot = snapshot_from(captured)
+    assert snapshot['today'] == TODAY
+    assert snapshot['todaySavedSessions'] == []
+    assert snapshot['pendingPreview']['note'].startswith('PROPOSED, NOT SAVED')
+    assert as_rows(snapshot['pendingPreview']['sessions']) == ACCEPTANCE
+    # Deadlines are reported as deadlines, separately from when work happens.
+    assert {t['title']: t['dueDate'] for t in snapshot['tasks']} == {'Asm': TOMORROW, 'Test revision': TOMORROW}
+
+    assert client.post('/schedule/apply', json={'previewId': proposal['previewId']}).status_code == 200
+    captured.clear()
+    client.post('/assistant/chat', json={'message': "Today's tasks"})
+    snapshot = snapshot_from(captured)
+    assert as_rows(snapshot['todaySavedSessions']) == ACCEPTANCE
+    assert {s['status'] for s in snapshot['todaySavedSessions']} == {'saved'}
+    assert snapshot['pendingPreview'] is None
+    assert 'DEADLINE' in captured[0]['input'][0]['content']
+
+
+def test_events_are_in_the_snapshot(environment, monkeypatch):
     client, _ = environment
-    monkeypatch.setattr(schedule_routes, 'utc_now', lambda: NOW)
-    monkeypatch.setattr(assistant, 'datetime', _FixedDatetime)
-    task = _setup(client, monkeypatch, allow_split=True)
-    client.post('/sessions', json={'taskId': task['id'], 'date': '2026-10-05', 'start': 18 * 60, 'end': 18 * 60 + 60})
-    captured = _fake_openai(monkeypatch)
-
-    response = client.post('/assistant/chat', json={'message': 'What is busy on Monday?'})
-
-    assert response.status_code == 200, response.text
+    setup_user(client, monkeypatch)
+    add_event(client, 'Dinner', 19 * 60, 20 * 60)
+    captured = fake_openai(monkeypatch, intent='busy_time')
+    response = client.post('/assistant/chat', json={'message': 'What is busy today?'})
     assert response.json()['intent'] == 'busy_time'
-    snapshot = _snapshot_from(captured)
-    assert snapshot['events'] == [{
-        'date': '2026-10-05', 'start': 19 * 60, 'end': 20 * 60, 'title': 'Dinner',
-        'kind': 'Other', 'source': 'manual',
-    }]
-    assert snapshot['sessions'] == [{
-        'taskTitle': 'Essay', 'date': '2026-10-05', 'start': 18 * 60, 'end': 19 * 60,
-        'source': 'manual', 'locked': False,
-    }]
+    assert snapshot_from(captured)['events'] == [{'title': 'Dinner', 'date': TODAY, 'start': '7:00 PM', 'end': '8:00 PM'}]
 
 
-def test_chat_response_never_carries_a_schedule_or_preview(environment, monkeypatch):
+def test_chat_never_generates_or_saves_by_itself(environment, monkeypatch):
     client, db = environment
-    monkeypatch.setattr(schedule_routes, 'utc_now', lambda: NOW)
-    monkeypatch.setattr(assistant, 'datetime', _FixedDatetime)
-    _setup(client, monkeypatch)
-    _fake_openai(monkeypatch, reply='Building your preview now.', intent='generate_schedule')
-
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    fake_openai(monkeypatch, reply='I scheduled everything!', intent='generate_schedule')
     response = client.post('/assistant/chat', json={'message': 'plan my week'})
-
     assert response.status_code == 200
-    assert set(response.json()) == {'reply', 'intent', 'provider'}
     assert response.json()['intent'] == 'generate_schedule'
     assert db.schedule_previews.count_documents({}) == 0
-    assert client.get('/sessions').json() == []
+    assert client.get('/schedule').json()['sessions'] == []
+
+
+def test_change_intents_are_validated_before_the_client_acts(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    asm, _ = acceptance_tasks(client)
+    fake_openai(monkeypatch, intent='request_break', breakMinutes=None)
+    assert client.post('/assistant/chat', json={'message': 'I need a break'}).json()['intent'] == 'clarify'
+    fake_openai(monkeypatch, intent='request_break', breakMinutes=30)
+    body = client.post('/assistant/chat', json={'message': 'I need a 30-minute break now'}).json()
+    assert (body['intent'], body['params']['breakMinutes']) == ('request_break', 30)
+    fake_openai(monkeypatch, intent='move_task', taskId='not-a-real-task', notBefore='2026-10-27T09:00:00-04:00')
+    body = client.post('/assistant/chat', json={'message': 'move it'}).json()
+    assert body['intent'] == 'clarify' and 'Which task' in body['reply']
+    fake_openai(monkeypatch, intent='move_task', taskId=asm['id'], notBefore='2026-10-27T09:00:00-04:00')
+    body = client.post('/assistant/chat', json={'message': 'move Asm to tomorrow'}).json()
+    assert body['intent'] == 'move_task' and body['params']['taskId'] == asm['id']
 
 
 def test_chat_without_key_is_503_and_writes_nothing(environment, monkeypatch):
@@ -88,21 +118,3 @@ def test_chat_without_key_is_503_and_writes_nothing(environment, monkeypatch):
     response = client.post('/assistant/chat', json={'message': 'plan my week'})
     assert response.status_code == 503
     assert db.schedule_previews.count_documents({}) == 0
-
-
-def test_button_and_chat_previews_come_from_the_same_service(environment, monkeypatch):
-    client, _ = environment
-    monkeypatch.setattr(schedule_routes, 'utc_now', lambda: NOW)
-    _setup(client, monkeypatch)
-    button = client.post('/schedule/preview', json={}).json()
-    from app.openai_interpret import InterpretResult
-    monkeypatch.setattr(schedule_routes, 'interpret_request', lambda message, **kw: InterpretResult(
-        intent='generate_schedule', reply='Preview ready.', runScheduler=True))
-    chat = client.post('/schedule/interpret', json={'message': 'plan my week'}).json()['preview']
-    assert chat['schedule'] == button['schedule']
-
-
-class _FixedDatetime(datetime):
-    @classmethod
-    def now(cls, tz=None):
-        return NOW.astimezone(tz) if tz else NOW

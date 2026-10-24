@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.auth import get_current_user
 from app.database import get_database
+from app.schedule_version import bump_schedule_version
 from app.events import valid_iso_date
 
 router = APIRouter(prefix='/calendar', tags=['calendar'])
@@ -120,6 +121,7 @@ def sync_calendar(provider: Provider, data: SyncInput, user=Depends(get_current_
                   'last_synced': datetime.now(timezone.utc), 'range_start': data.rangeStart,
                   'range_end': data.rangeEnd, 'event_count': len(documents)}
     db.calendar_connections.replace_one({'user_id': user_id, 'provider': provider}, connection, upsert=True)
+    bump_schedule_version(db, user_id)
     return connection_output(connection)
 
 
@@ -129,3 +131,4 @@ def disconnect_calendar(provider: Provider, user=Depends(get_current_user), db=D
     user_id = str(user['_id'])
     db.events.delete_many({'user_id': user_id, 'source': provider})
     db.calendar_connections.delete_one({'user_id': user_id, 'provider': provider})
+    bump_schedule_version(db, user_id)

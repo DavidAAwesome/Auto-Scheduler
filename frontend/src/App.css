@@ -539,3 +539,15 @@ main:focus { outline: none; }
 .provider-notes strong { color: var(--text); }
 .swatch.source-google { box-shadow: inset 3px 0 0 var(--google); }
 .swatch.source-outlook { box-shadow: inset 3px 0 0 var(--outlook); }
+
+/* Canonical schedule: breaks, preview summary, sessions a preview would move. */
+.swatch.break { background: var(--plan-break-bg); border: 1px solid var(--plan-break-text); }
+.plan-block.removed { background: transparent; border: 1px dashed var(--danger); color: var(--danger); opacity: 0.7; text-decoration: line-through; }
+.preview-days { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.session-line.proposed { opacity: 0.85; font-style: italic; }
+.today-sessions .proposed { outline: 1px dashed currentColor; }
+.today-sessions .break-row { color: var(--plan-break-text); }
+
+/* Today's panel: breaks and proposed sessions from the shared schedule list. */
+.today-sessions .today-break { width: 100%; display: flex; align-items: center; gap: 8px; border-left: 3px solid var(--muted); border-radius: 7px; background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(127,127,127,0.08) 6px 12px); padding: 6px 9px; color: var(--muted); font-size: 12px; }
+.today-sessions .proposed { border-left-style: dashed; opacity: 0.9; }

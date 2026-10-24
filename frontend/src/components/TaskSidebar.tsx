@@ -7,7 +7,8 @@ import { resolveDay } from "../utils/availability";
 import { formatDate } from "../utils/dates";
 import { plannedMinutes } from "../utils/planning";
 import { selectTasks, type TaskFilter } from "../services/taskRules";
-import { eventIcon, occurrencesOn } from "../utils/events";
+import { eventIcon } from "../utils/events";
+import { todayAgenda } from "../utils/schedulePreview";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 
@@ -46,18 +47,16 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   onOpen: (task: Task, rect: DOMRect) => void;
   onOpenSession: (task: Task, rect: DOMRect, sessionId: string) => void;
 }) {
-  const { tasks, sessions, events, availability, saving } = useWorkspace();
+  const { tasks, sessions, events, availability, schedulePreview, saving } = useWorkspace();
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TaskFilter>("open");
   const sorted = [...tasks].sort((a, b) => a.deadline.localeCompare(b.deadline) || a.dueTime - b.dueTime || a.title.localeCompare(b.title));
   const dueNow = sorted.filter(t => !t.done && t.deadline <= today);
   const taskById = new Map(tasks.map(t => [t.id, t]));
-  // Today's timeline: events you attend and work you planned, in time order (the sketch's "8:00 AM CS Class, 6:00 PM HW").
-  const agenda = [
-    ...occurrencesOn(events, today).map(({ event }) => ({ key: event.id, start: event.start, event })),
-    ...sessions.filter(s => s.date === today && taskById.has(s.taskId)).map(session => ({ key: session.id, start: session.start, session })),
-  ].sort((a, b) => a.start - b.start);
+  // Today's timeline comes from the same list the calendar and chat use: events, saved and proposed work, and breaks.
+  // Deadlines are listed separately below, because a due date is not a work time.
+  const agenda = todayAgenda({ sessions, events, tasks, schedulePreview }, today).items;
   const open = sorted.filter(t => !t.done);
   const done = sorted.filter(t => t.done);
   // Search/filter from the old Planner page. "Open" keeps completed tasks tucked under their own toggle.
@@ -76,10 +75,10 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
         {agenda.length > 0 && (
           <ul className="today-sessions" aria-label="Today's schedule">
             {agenda.map(item => {
-              if ("event" in item) {
+              if (item.kind === "event") {
                 const event = item.event;
                 return (
-                  <li key={item.key}>
+                  <li key={`e-${event.id}`}>
                     <button className={`today-event kind-${event.kind.toLowerCase()} source-${event.source}`} onClick={e => onOpenEvent(event, today, e.currentTarget.getBoundingClientRect())}>
                       <span className="today-session-time">{clock12(event.start)}</span>
                       <span className="today-session-title"><Icon name={eventIcon[event.kind]} size={13} /> {event.title}</span>
@@ -88,21 +87,35 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                   </li>
                 );
               }
-              const s = item.session;
-              const task = taskById.get(s.taskId)!;
+              const s = item.item.session;
+              const proposed = item.item.kind === "proposed";
+              const task = s.taskId ? taskById.get(s.taskId) : undefined;
+              if (s.type === "break" || !task) {
+                return (
+                  <li key={s.id}>
+                    <span className={`today-break ${proposed ? "proposed" : ""}`}>
+                      <span className="today-session-time">{clock12(s.start)}</span>
+                      <span className="today-session-title">{s.locked ? "Protected break" : "Break"}</span>
+                      <small>{duration(s.end - s.start)}{proposed ? " · proposed" : ""}</small>
+                    </span>
+                  </li>
+                );
+              }
               return (
-                <li key={item.key}>
-                  <button className={`cat-${task.category.toLowerCase()} ${task.done ? "done" : ""}`} onClick={e => onOpenSession(task, e.currentTarget.getBoundingClientRect(), s.id)}>
+                <li key={s.id}>
+                  <button className={`cat-${task.category.toLowerCase()} ${task.done || s.status === "completed" ? "done" : ""} ${proposed ? "proposed" : ""}`}
+                    onClick={e => (proposed ? onOpen(task, e.currentTarget.getBoundingClientRect()) : onOpenSession(task, e.currentTarget.getBoundingClientRect(), s.id))}>
                     <span className="today-session-time">{clock12(s.start)}</span>
                     <span className="today-session-title">{task.title}</span>
-                    <small>{duration(s.end - s.start)}</small>
+                    <small>{duration(s.end - s.start)}{proposed ? " · proposed" : ""}</small>
                   </button>
                 </li>
               );
             })}
           </ul>
         )}
-        {dueNow.length > 0 && <h3 className="today-subhead">Due today{dueNow.some(t => t.deadline < today) ? " & overdue" : ""}</h3>}
+        {agenda.some(i => i.kind === "session" && i.item.kind === "proposed") && <p className="muted small">Proposed sessions are a preview until you Apply.</p>}
+        {dueNow.length > 0 && <h3 className="today-subhead">Deadlines: due today{dueNow.some(t => t.deadline < today) ? " & overdue" : ""}</h3>}
         {dueNow.length ? <ul className="task-list">{dueNow.map(row)}</ul> : !agenda.length && <p className="muted small">Nothing scheduled or due today.</p>}
       </section>
       <div className="add-buttons">

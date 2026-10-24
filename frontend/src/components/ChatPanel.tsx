@@ -3,7 +3,7 @@ import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
-import { commandFor, runAssistantCommand, type AssistantCommand } from "../services/assistantCommands";
+import { parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
 import Icon from "./Icon";
@@ -14,10 +14,11 @@ const ACTION_LABEL: Record<AssistantCommand, string> = {
   apply_schedule: "Apply",
   cancel_schedule: "Cancel",
   show_plan: "Show my plan",
+  show_today: "Today’s plan",
   busy_time: "Busy time",
+  explain_unscheduled: "What didn’t fit?",
+  replan: "Repair schedule",
 };
-
-const COMMANDS: AssistantCommand[] = ["generate_schedule", "show_plan", "busy_time"];
 
 /**
  * AI chatbox. Scheduling questions run the same workspace actions as the calendar buttons, and the reply
@@ -26,17 +27,17 @@ const COMMANDS: AssistantCommand[] = ["generate_schedule", "show_plan", "busy_ti
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const { user } = useAuth();
-  const { tasks, sessions, connections, availability, schedulePreview, saving } = useWorkspace();
+  const { tasks, sessions, events, connections, availability, schedulePreview, saving } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [thinking, setThinking] = useState(false);
   /** The command currently awaiting a real response from the workspace, if any. */
-  const [working, setWorking] = useState<AssistantCommand | null>(null);
+  const [working, setWorking] = useState<ParsedRequest["command"] | null>(null);
   const [usingOpenAI, setUsingOpenAI] = useState(false);
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
-  const context = { tasks, sessions, availability, connections, schedulePreview };
+  const context = { tasks, sessions, events, availability, connections, schedulePreview };
   const welcome = buildWelcome(context);
   const busy = thinking || working !== null || saving;
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working]);
@@ -46,11 +47,11 @@ export default function ChatPanel() {
   }
 
   /** Runs a command and posts its real outcome. The loading line is shown only while this await is pending. */
-  async function run(command: AssistantCommand) {
+  async function run(request: ParsedRequest | AssistantCommand) {
     setError("");
-    setWorking(command);
+    setWorking(typeof request === "string" ? request : request.command);
     try {
-      append(await runAssistantCommand(command, workspaceService));
+      append(await runAssistantCommand(request, workspaceService));
     } finally {
       setWorking(null);
     }
@@ -64,9 +65,9 @@ export default function ChatPanel() {
     setInput("");
     setError("");
 
-    const command = commandFor(text);
-    if (command) {
-      await run(command);
+    const parsed = parseRequest(text, workspaceService.getSnapshot());
+    if (parsed) {
+      await run(parsed);
       return;
     }
 
@@ -93,8 +94,10 @@ export default function ChatPanel() {
       setThinking(false);
     }
 
-    // The model may ask for a schedule, but the reply only reports what the workspace actually did.
-    if (reply.intent !== "none" && COMMANDS.includes(reply.intent)) await run(reply.intent);
+    // The model only picks an intent. Every scheduling answer comes from the service, so chat never claims an
+    // action that did not happen.
+    const request = requestFromIntent(reply, workspaceService.getSnapshot());
+    if (request) await run(request);
     else append({ id: `${id}-a`, role: "assistant", text: reply.reply });
   }
 
@@ -139,7 +142,8 @@ export default function ChatPanel() {
           </div>
         ))}
         {thinking && <p className="bubble assistant muted">Thinking…</p>}
-        {working === "generate_schedule" && <p className="bubble assistant muted">Building a schedule preview from your tasks, events and availability…</p>}
+        {(working === "generate_schedule" || working === "replan" || working === "move_task") && <p className="bubble assistant muted">Building a schedule preview from your tasks, events and availability…</p>}
+        {working === "request_break" && <p className="bubble assistant muted">Finding room for a protected break…</p>}
         {working === "apply_schedule" && <p className="bubble assistant muted">Saving the proposed sessions…</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
       </div>

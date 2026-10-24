@@ -20,10 +20,13 @@ const scheduling = {
   dependsOn: [] as string[],
 };
 const tasks: Task[] = [
-  { id: "1", title: "Essay", deadline: "2026-10-06", minutes: 60, remainingMinutes: 60, priority: "High", category: "Study", done: false, ...scheduling },
-  { id: "2", title: "Laundry", deadline: "2026-10-07", minutes: 30, remainingMinutes: 30, priority: "Low", category: "Personal", done: false, ...scheduling },
+  { id: "1", title: "Essay", deadline: "2026-10-06", minutes: 60, completedMinutes: 0, remainingMinutes: 60, priority: "High", category: "Study", done: false, ...scheduling },
+  { id: "2", title: "Laundry", deadline: "2026-10-07", minutes: 30, completedMinutes: 0, remainingMinutes: 30, priority: "Low", category: "Personal", done: false, ...scheduling },
 ];
-const sessions: WorkSession[] = [{ id: "s1", taskId: "1", date: "2026-10-05", start: 600, end: 660, source: "manual", locked: false }];
+const sessions: WorkSession[] = [{
+  id: "s1", taskId: "1", title: "Essay", type: "work", status: "saved", locked: false, source: "manual", scheduleVersion: 1,
+  startAt: "2026-10-05T10:00:00Z", endAt: "2026-10-05T11:00:00Z", date: "2026-10-05", start: 600, end: 660,
+}];
 
 test("welcome message uses account counts and the real schedule state", () => {
   const welcome = buildWelcome({ tasks, sessions, availability, schedulePreview: null });
@@ -41,7 +44,8 @@ test("welcome says so when no schedule exists", () => {
 test("local helper answers today's sessions from stored data", () => {
   const today = dateInZone("UTC");
   const reply = replyToPrompt("today", { tasks, sessions: [{ ...sessions[0], date: today }], availability, schedulePreview: null }, "a1");
-  assert.match(reply.text, /Work session: Essay/);
+  assert.match(reply.text, /10 AM–11 AM Essay \(1h\)/);
+  assert.match(reply.text, /Overdue: Essay|Next due: Essay/, "deadlines are reported separately from work times");
 });
 
 test("calendar prompts stay honest about integrations", () => {

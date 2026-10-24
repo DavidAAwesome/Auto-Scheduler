@@ -41,7 +41,7 @@ export default function TaskForm({
       deadline,
       dueTime: dueMinutes,
       minutes,
-      remainingMinutes: task?.remainingMinutes ?? minutes,
+      completedMinutes: Math.min(task?.completedMinutes ?? 0, minutes),
       priority: data.get("priority") as TaskInput["priority"],
       category: data.get("category") as TaskInput["category"],
       earliestStart: task?.earliestStart ?? null,

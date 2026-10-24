@@ -94,14 +94,15 @@ Lan's original Sprint 1 verification (before the Firebase switch): 68 backend te
 All workspace routes use the Firebase authentication dependency. Owners are taken only from the verified token; extra input fields such as `user_id` are rejected. Responses have `Cache-Control: no-store`.
 
 - `GET /tasks`: current user's tasks, ordered by deadline.
-- `POST /tasks`: create `{title, deadline, dueTime?, minutes, priority, category}`; returns 201 with task `{id, title, deadline, dueTime, minutes, priority, category, done}`. `dueTime` is minutes after midnight and is optional (default 1439 = 11:59 PM). `minutes` is the total estimated work (15 to 6000, in steps of 15).
+- `POST /tasks`: create `{title, deadline, dueTime?, minutes, priority, category}`; returns 201 with task `{id, title, deadline, dueTime, minutes, priority, category, done}`. `dueTime` is minutes after midnight and is optional (default 1439 = 11:59 PM). `minutes` is the total estimated work (15 to 6000, in steps of 15). `completedMinutes` (default 0) is work actually done; the response's `remainingMinutes` is always `max(0, minutes − completedMinutes)`. Older clients may still send `remainingMinutes`, which sets `completedMinutes = minutes − remainingMinutes`.
 - `GET /tasks/{id}`: get an owned task.
 - `PUT /tasks/{id}`: edit its fields, preserving completion.
 - `PATCH /tasks/{id}/completion`: `{done: true}` or `{done: false}`.
 - `DELETE /tasks/{id}`: delete owned task and its work sessions; returns 204.
-- `GET /sessions`: the user's work sessions, ordered by date and start.
-- `POST /sessions`: plan work time `{taskId, date, start, end, source?}`; returns 201. A task can have any number of sessions on different days (e.g. 30m one day, 2h30m another). `start`/`end` are minutes after midnight in 5-minute steps; `source` is `manual` (default) or `auto` (reserved for the future AI scheduler). Sessions must end by the task's due time (422) and cannot overlap another of the user's sessions or events (409).
-- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned session.
+- `GET /sessions`: the user's sessions in the canonical shape `{id, taskId, title, type, status, locked, source, scheduleVersion, startAt, endAt, date, start, end}`. `type` is `work` or `break` (`taskId` is null for breaks); `status` is `saved`, `completed` or `cancelled` (`proposed` exists only inside previews). `startAt`/`endAt` are UTC instants and are the source of truth; `date`/`start`/`end` are the same instants in the user's time zone, for display.
+- `POST /sessions`: plan work time `{taskId, date, start, end, locked?}` in local wall-clock time; returns 201 with `source: "manual"`. A task can have any number of sessions on different days. Sessions must end by the task's due time (422) and cannot overlap another live session or an event (409).
+- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned work session. Breaks are managed by the scheduler and are not editable here.
+- `PATCH /sessions/{id}/status` `{status}`: mark a work session `completed` (its minutes are added to the task's `completedMinutes`), back to `saved`, or `cancelled`.
 - `GET /events`: the user's events. Events are fixed-time commitments you attend (classes, meetings, appointments, meetups); they have no due date.
 - `POST /events`: create `{title, kind, date, start, end, location?, repeat?}`; returns 201 with `{id, ..., skipDates, source}`. `kind` is `Class`, `Meeting`, `Appointment`, `Social`, or `Other`. `repeat` is `{weekdays, until}` (Monday = 0) for a weekly series such as a class schedule, up to one year long.
 - `PUT /events/{id}`: edit the event (every occurrence of a series). `POST /events/{id}/skip` with `{date}`: remove one occurrence of a series (e.g. a cancelled class). `DELETE /events/{id}`: delete the event or whole series.
@@ -128,44 +129,76 @@ One-time setup per team (values go in `frontend/.env`; see `frontend/.env.exampl
 
 Restart `npm run dev` after editing `.env`. Without these values the Calendars page explains what's missing and everything else works.
 
-## AI-assisted scheduling
+## Scheduling
 
-Responsibilities are separated on purpose:
+There is one scheduling service (`backend/app/scheduling_service.py`). The **Generate Schedule** button, **Repair schedule**, the Today panel and every chat request call it, and they all read the same session list, so the calendar, the Today panel and the chat cannot disagree.
 
-1. **OpenAI service** (`openai_interpret.py`, `/assistant/chat`): interprets natural language into structured preferences / intents with the Responses API and Structured Outputs. Model output never writes the database.
-2. **Scheduling engine** (`scheduling_engine.py`): deterministic placement of work sessions from tasks, deadlines, priorities, availability, events, dependencies, and split rules.
-3. **Validator** (`scheduling_validator.py`): independently rechecks hard constraints before a preview is trusted or applied.
-4. **Persistence / UI**: `POST /schedule/preview` stores a pending preview; the calendar shows proposed sessions; **Apply** / **Cancel** call `/schedule/apply` or discard. Apply re-fingerprints current data, rejects stale previews, and is idempotent.
+1. **Engine** (`scheduling_engine.py`): pure and deterministic. It works in absolute UTC minutes and converts wall-clock availability with the user's IANA zone, so DST days are handled (a time in a spring-forward gap maps to the first instant after it; an ambiguous fall-back time uses the first occurrence).
+2. **Validator** (`scheduling_validator.py`): an independent check of every preview before it is stored and again inside Apply: no overlaps, inside availability, not in the past, by each deadline, after earliest start and dependencies, daily limit, focus limit with breaks, and per-task duration conservation.
+3. **Previews and Apply**: a preview is stored in `schedule_previews` with status `proposed` and never touches `sessions`. Apply re-runs the validator, rejects the preview with 409 if `users.schedule_version` or the input fingerprint changed (any task, event, availability, preference or session edit bumps the version), then deletes, shortens and inserts sessions and marks the preview applied in one MongoDB transaction. A second Apply of the same preview returns the saved schedule with `duplicate: true` and writes nothing.
+4. **OpenAI** (`assistant.py`, optional): only classifies the request into an intent with validated parameters (`taskId`, `breakMinutes`, `notBefore`). It never produces times or claims an action; the reply shown for scheduling intents comes from the service result. Missing or invalid parameters become one focused question.
 
-The engine works with structured tasks even when `OPENAI_API_KEY` is unset. OpenAI is never used to invent conflict-free timestamps.
+### Free time, breaks and workload
 
-### Heuristic (preferences, not proofs)
+Free time is availability, clipped to now and the planning window, minus events, lunch, protected breaks and fixed sessions (locked, manual or in progress), using half-open intervals. Preferences (`GET`/`PUT /schedule/preferences`, also on the Settings page) default to 50 minutes of focus, a 10-minute break, 4 hours of task work per day and no lunch window. These are editable defaults, not health advice.
 
-Ready tasks are ordered by dependency readiness, then deadline/due time, then priority (High → Low), then stable task id. Free time is availability minus events and fixed (manual/locked) sessions. Split tasks pack 15-minute-aligned sessions up to `maxSessionMinutes` (prefer fewer, larger chunks, earlier starts). Unsplit tasks need one contiguous free block. Remainders smaller than `minSessionMinutes` are reported as unscheduled (`remainder_below_min_session`) — never silently dropped. Failure to place work is reported with reason codes such as `insufficient_availability` or `no_contiguous_slot`; that is **not** a claim of mathematical infeasibility unless a validator/cycle check establishes it (for example `dependency_cycle`).
+A **work run** is a sequence of work sessions with no rest between them. A gap counts as rest when it contains at least one break length of time that is not an event; lunch and protected breaks are rest, a meeting is not. A run may hold at most the focus length, even across task switches. When two runs on the same day together exceed the focus length, a break session is reserved between them unless lunch or a protected break already sits there. No trailing break is added after the last run. Unchanged automatic breaks are kept as-is when a plan is recalculated.
+
+### Priority and deadlines
+
+Tasks are ordered by deadline risk first, then priority (High, Medium, Low), then earliest deadline, then task id, respecting dependencies (a cycle is reported as `dependency_cycle`). A task is at risk when its remaining minutes exceed the usable capacity before its deadline, approximated as free time × focus / (focus + break), capped by the daily limit. This is an approximation for ordering only. In repair mode an at-risk task may displace flexible sessions of lower-priority work, at most 20 moves in total and 6 per task, and only when the urgent task gains minutes and the displaced task loses no more than that. Unsplit tasks get one session that must also fit the focus length.
+
+Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, and others). This is a greedy heuristic: an unplaced task is **not** proof that no schedule exists.
+
+### Duration invariant
+
+For every open task: `remaining = estimated − completed`, and `retained + new + unallocated = remaining + overAllocated`. `retained` counts saved sessions that stay (locked, manual, in-progress, and kept flexible sessions). A session is **in progress** when `startAt < now < endAt`. It is retained in full, because its minutes are not completed until the user marks it done; a requested break can shorten it at `now`. `overAllocated` is non-zero only when fixed sessions already exceed the remaining work, which is reported as a conflict instead of being silently trimmed.
+
+### Session classes in a new plan
+
+- Completed and cancelled sessions are ignored; completed work in the last 12 hours still counts toward the current run.
+- Past saved sessions are context only.
+- In-progress, locked and manual sessions are fixed. Locked breaks are protected rest.
+- Unlocked automatic future work is flexible: Generate replaces it, Repair keeps it when it is still valid and only moves what must change.
+- Automatic breaks are recalculated.
 
 ### Schedule API
 
-- `POST /schedule/preview` `{horizonDays?}` → `{previewId, schedule}` (no session writes).
-- `POST /schedule/apply` `{previewId}` → creates `source: "auto"` sessions; replaces unlocked auto sessions; keeps manual/locked.
-- `POST /schedule/replan` — same as preview after task/availability changes.
-- `POST /schedule/interpret` — OpenAI structured interpretation; optional preview when `runScheduler` and no clarification needed.
+- `GET /schedule` → `{scheduleVersion, timeZone, sessions}`, the saved schedule.
+- `POST /schedule/preview` `{horizonDays?}`: generate a fresh plan.
+- `POST /schedule/repair` (alias `/schedule/replan`) `{horizonDays?, moves?: [{taskId, notBefore}]}`: a local repair. `moves` asks for a task to start no earlier than an instant ("move Asm to tomorrow").
+- `POST /schedule/break` `{minutes}`: a protected break starting now, with the schedule repaired around it. If an event or locked work is in the way the break is shortened or refused, and the preview says why.
+- Each preview returns `{previewId, mode, sessions, removed, tasks, conflicts, days, firstProposedDate, note, ...}`. `sessions` is the complete future schedule in the window if applied, with `change` = `retained`, `kept`, `new` or `truncated`. `removed` lists saved sessions Apply deletes (or shortens, when `newEndAt` is set) with a reason.
+- `POST /schedule/apply` `{previewId}` → `{previewId, status, duplicate, schedule}`. Returns 409 for a stale or invalid preview.
+- `GET /schedule/preview/{id}`: a stored preview.
+- `POST /schedule/interpret`: OpenAI interpretation of a scheduling request.
 
-### Manual check
+### Chat
 
-1. Set availability (e.g. Mon 6–9 PM) and add a calendar event 7–8 PM.
-2. Add a 120-minute task due that day at 9 PM with **Allow splitting** on (60-minute max sessions).
-3. Click **Generate Schedule** on the calendar: expect proposed 6–7 and 8–9 PM.
-4. **Apply**, then refresh — sessions persist. Repeat Apply — no duplicates.
-5. Create the same task with splitting off — preview reports `no_contiguous_slot`.
-6. Optional: set `OPENAI_API_KEY` and ask the chat to schedule; without a key, structured preview still works.
+Chat requests are parsed deterministically first and fall back to OpenAI only for intent classification: today's plan, busy time, generate, explain what didn't fit, request a break ("I need a 30-minute break now"), repair, and move a task. "Today's tasks" lists today's saved and proposed sessions and breaks with their times, and lists deadlines separately. Proposed sessions are labelled as not saved.
 
-Live OpenAI calls are **not** covered by CI; interpret/chat OpenAI paths are unit-tested with mocks only.
+### Manual check (the acceptance scenario)
+
+1. Set availability to 9 AM–12 PM every day in America/New_York.
+2. Add **Asm** (High, 60 min) and **Test revision** (Medium, 60 min), both due tomorrow.
+3. At 8 AM, click **Generate Schedule**. Expect: 9:00–9:50 Asm, 9:50–10:00 Break, 10:00–10:10 Asm, 10:10–10:50 Test revision, 10:50–11:00 Break, 11:00–11:20 Test revision.
+4. Ask the chat "Today's tasks": the same six items are listed as proposed, and the deadlines appear as "Next due" tomorrow.
+5. **Apply**, then refresh: the sessions are saved. Pressing Apply again writes nothing.
+
+The acceptance scenario and the other scenarios run as backend API tests (`tests/test_schedule_api.py`). `backend/tests/test_frontend_fixture.py` checks that the frontend's captured fixture still matches the API (`UPDATE_FIXTURES=1` rewrites it). Live OpenAI calls are not covered by CI.
+
+### Known limitations
+
+- Allocation is greedy with bounded repair, not an optimal solver; deadline risk uses the capacity approximation above.
+- Breaks are only reserved between work runs. A manual or locked session longer than the focus length is left as the user placed it; new work is never added to extend such a run.
+- A requested break always starts now; a break at a later time should be added as an event.
+- External calendar events are a snapshot from the last sync.
 
 ## Current scope
 
 Sprint 1 includes Firebase login/signup (email/password and Google), password reset, logout, and account deletion; MongoDB task CRUD and completion; saved weekday availability and time zone; and the sketch-based workspace: a top bar (menu, month title, reminders bell, user menu with theme toggle), a Today's Tasks sidebar with Add Task, a day/week/month calendar, and an AI chatbox panel. New accounts start empty.
 
-Tasks have a due date and an optional due time (11:59 PM if left blank), remaining duration, split limits, optional earliest start, and dependencies. The user can place **work sessions** manually or generate them with **Generate Schedule**. Sessions show as blocks in the time grid; locked/manual sessions are preserved when replanning.
+Tasks have a due date and an optional due time (11:59 PM if left blank), remaining duration, split limits, optional earliest start, and dependencies. The user can place **work sessions** manually or generate them with **Generate Schedule**. Sessions and breaks show as blocks in the time grid; proposed sessions are drawn dashed until Apply; locked/manual sessions are preserved when replanning.
 
 **Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date. They block work sessions and auto-scheduling. Google Calendar and Outlook import is available on the Calendars page. Reminder delivery remains limited to the bell list for due today/tomorrow.
 
@@ -173,7 +206,7 @@ Tasks have a due date and an optional due time (11:59 PM if left blank), remaini
 
 The API loads `backend/.env` relative to `app/config.py`, independent of the launch directory. Existing process environment variables take precedence. Task CRUD, schedule previews, and Apply use the same `app.state.db` connection; Firebase token verification remains unchanged.
 
-Apply requires MongoDB transactions (a replica set or transaction-capable sharded deployment). It validates the preview and replaces unlocked auto sessions plus the preview status in one transaction with majority write concern. It returns success only after commit; there is no in-memory or non-transactional fallback.
+Apply requires MongoDB transactions (a replica set or transaction-capable sharded deployment). It revalidates the preview and applies its removals, shortenings and inserts plus the preview status in one transaction with snapshot reads and majority write concern. It returns success only after commit; there is no in-memory or non-transactional fallback.
 
 Older databases may have a unique, non-sparse `sessions.jti` index from token storage. Work sessions omit `jti`, so that index rejects additional work sessions with error 11000. Startup builds a partial unique index for documents where `jti` exists before removing the legacy index. It does not remove records or the legacy token TTL index, and token identifiers remain unique. This error does not require changing Atlas Network Access.
 

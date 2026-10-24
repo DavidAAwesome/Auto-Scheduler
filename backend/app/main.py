@@ -10,7 +10,6 @@ from app.auth import get_current_user, router
 from app.config import get_settings
 from app.database import connect_database, initialize_indexes
 from app.workspace import router as workspace_router
-from app.plans import router as plans_router
 from app.events import router as events_router
 from app.calendars import router as calendars_router
 from app.assistant import router as assistant_router
@@ -68,7 +67,6 @@ def create_app(database=None):
 
     app.include_router(router)
     app.include_router(workspace_router)
-    app.include_router(plans_router)
     app.include_router(events_router)
     app.include_router(calendars_router)
     app.include_router(assistant_router)

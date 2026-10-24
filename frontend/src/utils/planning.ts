@@ -1,11 +1,9 @@
-import type { Availability, BusyInterval, CalendarEvent, Task, WorkSession, WorkSessionInput } from '../types/models.ts';
-import { addDays } from './dates.ts';
-import { occurrencesOn } from './events.ts';
+import type { Availability, Task, WorkSession, WorkSessionInput } from '../types/models.ts';
 import { resolveDay } from './availability.ts';
 
-/** Minutes of work already placed in sessions for a task. */
+/** Minutes of saved (not cancelled, not completed) work sessions for a task. Breaks never count. */
 export function plannedMinutes(taskId: string, sessions: WorkSession[]) {
-  return sessions.filter(s => s.taskId === taskId).reduce((sum, s) => sum + s.end - s.start, 0);
+  return sessions.filter(s => s.taskId === taskId && s.type === 'work' && s.status === 'saved').reduce((sum, s) => sum + s.end - s.start, 0);
 }
 
 /** A session must end by the task's due time (a task due 11:59 PM can be worked on until midnight). */
@@ -14,7 +12,7 @@ export function endsAfterDue(session: Pick<WorkSessionInput, 'date' | 'end'>, ta
 }
 
 export function overlapping(input: WorkSessionInput, sessions: WorkSession[], ignoreId?: string) {
-  return sessions.find(s => s.id !== ignoreId && s.date === input.date && s.start < input.end && s.end > input.start);
+  return sessions.find(s => s.id !== ignoreId && s.status !== 'cancelled' && s.date === input.date && s.start < input.end && s.end > input.start);
 }
 
 /** True when the session falls (partly) outside the user's available hours for that weekday. Allowed, but worth a warning. */
@@ -42,15 +40,4 @@ export function zonedInstant(date: string, minutes: number, zone: string) {
   // Two passes settle the offset, including on daylight-saving change days.
   const first = wall - offsetAt(wall);
   return new Date(wall - offsetAt(first)).toISOString();
-}
-
-/** Events and work sessions in the next `days` days as busy time, so the scheduler plans around them (FR4). */
-export function busyIntervalsFor(events: CalendarEvent[], sessions: WorkSession[], startDate: string, days: number, zone: string): BusyInterval[] {
-  const intervals: BusyInterval[] = [];
-  for (let offset = 0; offset < days; offset++) {
-    const date = addDays(startDate, offset);
-    const blocks = [...occurrencesOn(events, date).map(({ event }) => event), ...sessions.filter(s => s.date === date)];
-    for (const block of blocks) intervals.push({ start: zonedInstant(date, block.start, zone), end: zonedInstant(date, block.end, zone) });
-  }
-  return intervals.sort((a, b) => a.start.localeCompare(b.start));
 }

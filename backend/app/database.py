@@ -42,8 +42,28 @@ def migrate_session_indexes(db):
             db.sessions.drop_index(name)
 
 
+def migrate_session_timestamps(db):
+    """Give older work sessions UTC timestamps, resolved in the owner's saved timezone. Idempotent."""
+    from datetime import date
+    from zoneinfo import ZoneInfo
+    from app.scheduling_engine import from_abs, local_to_abs
+    zones = {}
+    for doc in db.sessions.find({'date': {'$exists': True}, 'start_at': {'$exists': False}}):
+        owner = doc.get('user_id')
+        if owner not in zones:
+            saved = db.availability.find_one({'user_id': owner}, {'timeZone': 1}) or {}
+            zones[owner] = ZoneInfo(saved.get('timeZone') or 'Etc/GMT')
+        day = date.fromisoformat(doc['date'])
+        db.sessions.update_one({'_id': doc['_id'], 'start_at': {'$exists': False}}, {'$set': {
+            'start_at': from_abs(local_to_abs(day, doc['start'], zones[owner])),
+            'end_at': from_abs(local_to_abs(day, doc['end'], zones[owner])),
+            'type': doc.get('type', 'work'), 'status': doc.get('status', 'saved'),
+        }})
+
+
 def initialize_indexes(db):
     migrate_session_indexes(db)
+    migrate_session_timestamps(db)
     # Firebase decides who owns an email; uid is the stable identity here.
     if 'unique_user_email' in db.users.index_information():
         db.users.drop_index('unique_user_email')
@@ -54,6 +74,9 @@ def initialize_indexes(db):
     db.plans.create_index('user_id', unique=True)
     db.sessions.create_index([('user_id', 1), ('date', 1), ('start', 1)])
     db.sessions.create_index([('user_id', 1), ('task_id', 1)])
+    db.sessions.create_index([('user_id', 1), ('start_at', 1)])
+    db.schedule_previews.create_index([('user_id', 1), ('created_at', -1)])
+    db.schedule_preferences.create_index('user_id', unique=True)
     db.events.create_index([('user_id', 1), ('date', 1)])
     db.events.create_index([('user_id', 1), ('source', 1), ('date', 1)])
     db.calendar_connections.create_index([('user_id', 1), ('provider', 1)], unique=True)

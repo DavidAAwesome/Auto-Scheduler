@@ -22,7 +22,9 @@ class TaskInput(BaseModel):
     deadline: str
     # Total estimated work. Tasks can be split into several work sessions, so allow up to 100 hours.
     minutes: int = Field(strict=True, ge=15, le=6000, multiple_of=15)
-    # Work still to schedule; defaults to minutes. Fixed/manual sessions consume from this.
+    # Work actually done. Remaining work is always minutes - completedMinutes; scheduled work is not completed work.
+    completedMinutes: int | None = Field(default=None, strict=True, ge=0, le=6000)
+    # Accepted for older clients: remainingMinutes sets completedMinutes = minutes - remainingMinutes.
     remainingMinutes: int | None = Field(default=None, strict=True, ge=0, le=6000)
     dueTime: int = Field(default=DEFAULT_DUE_TIME, strict=True, ge=0, le=1439)  # minutes after midnight
     priority: Literal['High', 'Medium', 'Low']
@@ -58,16 +60,13 @@ class TaskInput(BaseModel):
 
     @model_validator(mode='after')
     def scheduling_fields(self):
-        remaining = self.minutes if self.remainingMinutes is None else self.remainingMinutes
-        if remaining > self.minutes:
-            raise ValueError('remainingMinutes cannot exceed estimated minutes.')
-        if remaining % 15:
-            raise ValueError('remainingMinutes must be a multiple of 15.')
+        if self.completedMinutes is None:
+            if self.remainingMinutes is not None and self.remainingMinutes > self.minutes:
+                raise ValueError('remainingMinutes cannot exceed estimated minutes.')
+            self.completedMinutes = 0 if self.remainingMinutes is None else self.minutes - self.remainingMinutes
         if self.minSessionMinutes > self.maxSessionMinutes:
             raise ValueError('minSessionMinutes cannot exceed maxSessionMinutes.')
-        if not self.allowSplit and self.minutes < self.minSessionMinutes:
-            raise ValueError('Unsplit tasks need at least minSessionMinutes of work.')
-        self.remainingMinutes = remaining
+        self.remainingMinutes = max(0, self.minutes - self.completedMinutes)
         return self
 
 
@@ -84,6 +83,7 @@ class Completion(BaseModel):
 TASK_DEFAULTS = {
     'dueTime': DEFAULT_DUE_TIME,
     'remainingMinutes': None,
+    'completedMinutes': None,
     'earliestStart': None,
     'allowSplit': True,
     'minSessionMinutes': 15,
@@ -102,9 +102,14 @@ def task_output(doc):
             payload[field] = TASK_DEFAULTS[field]
         else:
             payload[field] = doc[field]
-    if payload.get('remainingMinutes') is None:
-        payload['remainingMinutes'] = payload['minutes']
+    if payload.get('completedMinutes') is not None:
+        payload['remainingMinutes'] = None  # always derived from completed minutes
     return TaskOutput(**payload, id=str(doc['_id']), done=doc['done'])
+
+
+def bump(db, user):
+    from app.schedule_version import bump_schedule_version
+    bump_schedule_version(db, str(user['_id']))
 
 
 def owned_task(task_id, user):
@@ -122,6 +127,7 @@ def list_tasks(user=Depends(get_current_user), db=Depends(get_database)):
 def create_task(data: TaskInput, user=Depends(get_current_user), db=Depends(get_database)):
     doc = {**data.model_dump(), 'done': False, 'user_id': str(user['_id'])}
     doc['_id'] = db.tasks.insert_one(doc).inserted_id
+    bump(db, user)
     return task_output(doc)
 
 
@@ -138,6 +144,7 @@ def update_task(task_id: str, data: TaskInput, user=Depends(get_current_user), d
     doc = db.tasks.find_one_and_update(owned_task(task_id, user), {'$set': data.model_dump()}, return_document=ReturnDocument.AFTER)
     if not doc:
         raise HTTPException(404, 'Task not found.')
+    bump(db, user)
     return task_output(doc)
 
 
@@ -146,6 +153,7 @@ def complete_task(task_id: str, data: Completion, user=Depends(get_current_user)
     doc = db.tasks.find_one_and_update(owned_task(task_id, user), {'$set': {'done': data.done}}, return_document=ReturnDocument.AFTER)
     if not doc:
         raise HTTPException(404, 'Task not found.')
+    bump(db, user)
     return task_output(doc)
 
 
@@ -154,10 +162,11 @@ def delete_task(task_id: str, user=Depends(get_current_user), db=Depends(get_dat
     if not db.tasks.delete_one(owned_task(task_id, user)).deleted_count:
         raise HTTPException(404, 'Task not found.')
     db.sessions.delete_many({'user_id': str(user['_id']), 'task_id': task_id})
+    bump(db, user)
 
 
 class SessionInput(BaseModel):
-    """A block of time set aside to work on a task. A task can be split across many sessions and days."""
+    """A block of time set aside to work on a task, in local wall-clock time. A task can have many sessions."""
     model_config = ConfigDict(extra='forbid')
     taskId: str
     date: str
@@ -181,8 +190,9 @@ class SessionInput(BaseModel):
         return self
 
 
-class SessionOutput(SessionInput):
-    id: str
+class SessionStatusInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    status: Literal['saved', 'completed', 'cancelled']
 
 
 def clock(minutes):
@@ -190,8 +200,28 @@ def clock(minutes):
     return f"{hours % 12 or 12}:{mins:02d} {'AM' if hours < 12 else 'PM'}"
 
 
-def check_session(data, user, db, session_id=None):
-    """Sessions must belong to the user's task, finish by the task's due time, and not overlap each other or an event."""
+def user_zone(db, user, session=None) -> ZoneInfo:
+    doc = db.availability.find_one({'user_id': str(user['_id'])}, {'timeZone': 1}, session=session)
+    return ZoneInfo((doc or {}).get('timeZone') or 'Etc/GMT')
+
+
+def _utc(value):
+    from datetime import timezone
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def session_instants(doc, zone):
+    """UTC start/end of a stored session. Older documents only have local date/start/end."""
+    from app.scheduling_engine import from_abs, local_to_abs
+    if doc.get('start_at') and doc.get('end_at'):
+        return _utc(doc['start_at']), _utc(doc['end_at'])
+    day = date.fromisoformat(doc['date'])
+    return from_abs(local_to_abs(day, doc['start'], zone)), from_abs(local_to_abs(day, doc['end'], zone))
+
+
+def check_session(data, user, db, zone, session_id=None):
+    """Sessions must belong to the user's task, finish by the task's due time, and not overlap other sessions or events."""
+    from app.scheduling_engine import from_abs, local_to_abs
     task = db.tasks.find_one(owned_task(data.taskId, user))
     if not task:
         raise HTTPException(404, 'Task not found.')
@@ -199,28 +229,48 @@ def check_session(data, user, db, session_id=None):
     # A task due at 11:59 PM may be worked on until midnight.
     if data.date > task['deadline'] or (data.date == task['deadline'] and data.end > due_time + 1):
         raise HTTPException(422, f"This session ends after the task is due ({task['deadline']} at {clock(due_time)}).")
-    query = {'user_id': str(user['_id']), 'date': data.date, 'start': {'$lt': data.end}, 'end': {'$gt': data.start}}
+    day = date.fromisoformat(data.date)
+    start_at, end_at = from_abs(local_to_abs(day, data.start, zone)), from_abs(local_to_abs(day, data.end, zone))
+    query = {'user_id': str(user['_id']), 'status': {'$ne': 'cancelled'},
+             'start_at': {'$lt': end_at}, 'end_at': {'$gt': start_at}}
     if session_id:
         query['_id'] = {'$ne': session_id}
     clash = db.sessions.find_one(query)
     if clash:
-        other = db.tasks.find_one({'_id': ObjectId(clash['task_id'])}) if ObjectId.is_valid(clash['task_id']) else None
+        if clash.get('type') == 'break':
+            raise HTTPException(409, f"This overlaps a break ({clock(clash['start'])} - {clock(clash['end'])}). Replan to move it.")
+        other = db.tasks.find_one({'_id': ObjectId(clash['task_id'])}) if ObjectId.is_valid(clash.get('task_id') or '') else None
         name = f' for "{other["title"]}"' if other else ''
         raise HTTPException(409, f"This overlaps another work session{name} ({clock(clash['start'])} - {clock(clash['end'])}).")
     event = event_clash(db, str(user['_id']), data.date, data.start, data.end)
     if event:
         raise HTTPException(409, f"This overlaps your event \"{event['title']}\" ({clock(event['start'])} - {clock(event['end'])}).")
+    return task, start_at, end_at
 
 
-def session_doc(data, user):
+def session_doc(data, user, start_at, end_at, version):
     fields = data.model_dump()
-    return {'user_id': str(user['_id']), 'task_id': fields.pop('taskId'), **fields}
+    return {'user_id': str(user['_id']), 'task_id': fields.pop('taskId'), 'type': 'work', 'status': 'saved',
+            'start_at': start_at, 'end_at': end_at, 'schedule_version': version, **fields}
 
 
-def session_output(doc):
-    return SessionOutput(taskId=doc['task_id'], date=doc['date'], start=doc['start'], end=doc['end'],
-                         source=doc.get('source', 'manual'), locked=bool(doc.get('locked', False)),
-                         id=str(doc['_id']))
+def session_output(doc, zone, titles=None):
+    """The canonical schedule session (see app.schedule_model.ScheduleSession)."""
+    from app.schedule_model import ScheduleSession
+    from app.scheduling_engine import local_span, to_abs
+    start_at, end_at = session_instants(doc, zone)
+    day, start, end = local_span(to_abs(start_at), to_abs(end_at), zone)
+    kind = doc.get('type', 'work')
+    task_id = doc.get('task_id') if kind == 'work' else None
+    title = 'Break' if kind == 'break' else (titles or {}).get(task_id, doc.get('title') or 'Task')
+    return ScheduleSession(id=str(doc['_id']), taskId=task_id, title=title, type=kind,
+                           status=doc.get('status', 'saved'), locked=bool(doc.get('locked', False)),
+                           source=doc.get('source', 'manual'), scheduleVersion=int(doc.get('schedule_version', 0)),
+                           startAt=start_at, endAt=end_at, date=day, start=start, end=end)
+
+
+def task_titles(db, user, session=None):
+    return {str(doc['_id']): doc['title'] for doc in db.tasks.find({'user_id': str(user['_id'])}, {'title': 1}, session=session)}
 
 
 def owned_session(session_id, user):
@@ -229,33 +279,88 @@ def owned_session(session_id, user):
     return {'_id': ObjectId(session_id), 'user_id': str(user['_id'])}
 
 
-@router.get('/sessions', response_model=list[SessionOutput])
+SESSION_QUERY = {'$or': [{'start_at': {'$exists': True}}, {'date': {'$exists': True}}]}  # excludes legacy token documents
+
+
+def list_session_docs(db, user, session=None):
+    return list(db.sessions.find({'user_id': str(user['_id']), **SESSION_QUERY}, session=session))
+
+
+@router.get('/sessions')
 def list_sessions(user=Depends(get_current_user), db=Depends(get_database)):
-    return [session_output(doc) for doc in db.sessions.find({'user_id': str(user['_id'])}).sort([('date', 1), ('start', 1)])]
+    zone, titles = user_zone(db, user), task_titles(db, user)
+    sessions = [session_output(doc, zone, titles) for doc in list_session_docs(db, user)]
+    return sorted(sessions, key=lambda s: (s.startAt, s.endAt, s.id))
 
 
-@router.post('/sessions', response_model=SessionOutput, status_code=201)
+@router.post('/sessions', status_code=201)
 def create_session(data: SessionInput, user=Depends(get_current_user), db=Depends(get_database)):
-    check_session(data, user, db)
-    doc = session_doc(data, user)
+    from app.schedule_version import bump_schedule_version
+    zone = user_zone(db, user)
+    task, start_at, end_at = check_session(data, user, db, zone)
+    version = bump_schedule_version(db, str(user['_id']))
+    doc = session_doc(data, user, start_at, end_at, version)
     doc['_id'] = db.sessions.insert_one(doc).inserted_id
-    return session_output(doc)
+    return session_output(doc, zone, {data.taskId: task['title']})
 
 
-@router.put('/sessions/{session_id}', response_model=SessionOutput)
+@router.put('/sessions/{session_id}')
 def update_session(session_id: str, data: SessionInput, user=Depends(get_current_user), db=Depends(get_database)):
+    from app.schedule_version import bump_schedule_version
     query = owned_session(session_id, user)
-    if not db.sessions.find_one(query):
+    existing = db.sessions.find_one(query)
+    if not existing:
         raise HTTPException(404, 'Work session not found.')
-    check_session(data, user, db, query['_id'])
-    doc = db.sessions.find_one_and_update(query, {'$set': session_doc(data, user)}, return_document=ReturnDocument.AFTER)
-    return session_output(doc)
+    if existing.get('type') == 'break':
+        raise HTTPException(409, 'Breaks are managed by the scheduler. Request or replan breaks instead.')
+    zone = user_zone(db, user)
+    task, start_at, end_at = check_session(data, user, db, zone, query['_id'])
+    version = bump_schedule_version(db, str(user['_id']))
+    doc = db.sessions.find_one_and_update(query, {'$set': session_doc(data, user, start_at, end_at, version)},
+                                          return_document=ReturnDocument.AFTER)
+    return session_output(doc, zone, {data.taskId: task['title']})
+
+
+@router.patch('/sessions/{session_id}/status')
+def set_session_status(session_id: str, data: SessionStatusInput, user=Depends(get_current_user), db=Depends(get_database)):
+    """Mark a work session completed (its minutes count as completed work), reopen it, or cancel it."""
+    from app.schedule_version import bump_schedule_version
+    query = owned_session(session_id, user)
+    existing = db.sessions.find_one(query)
+    if not existing:
+        raise HTTPException(404, 'Work session not found.')
+    zone = user_zone(db, user)
+    before = existing.get('status', 'saved')
+    if before == data.status:
+        return session_output(existing, zone, task_titles(db, user))
+    if existing.get('type') == 'break' and data.status == 'completed':
+        raise HTTPException(422, 'Breaks do not count as completed work.')
+    start_at, end_at = session_instants(existing, zone)
+    minutes = int((end_at - start_at).total_seconds() // 60)
+    # Only one request may perform this transition; the status filter makes a retry a no-op.
+    doc = db.sessions.find_one_and_update({**query, 'status': {'$in': [before]} if 'status' in existing else {'$exists': False}},
+                                          {'$set': {'status': data.status}}, return_document=ReturnDocument.AFTER)
+    if not doc:
+        raise HTTPException(409, 'This session changed. Refresh and try again.')
+    delta = (minutes if data.status == 'completed' else 0) - (minutes if before == 'completed' else 0)
+    if delta and existing.get('task_id') and ObjectId.is_valid(existing['task_id']):
+        task = db.tasks.find_one(owned_task(existing['task_id'], user))
+        if task:
+            completed = task.get('completedMinutes')
+            if completed is None:
+                completed = task['minutes'] - (task.get('remainingMinutes') if task.get('remainingMinutes') is not None else task['minutes'])
+            db.tasks.update_one(owned_task(existing['task_id'], user),
+                                {'$set': {'completedMinutes': max(0, min(6000, completed + delta))}})
+    bump_schedule_version(db, str(user['_id']))
+    return session_output(doc, zone, task_titles(db, user))
 
 
 @router.delete('/sessions/{session_id}', status_code=204)
 def delete_session(session_id: str, user=Depends(get_current_user), db=Depends(get_database)):
+    from app.schedule_version import bump_schedule_version
     if not db.sessions.delete_one(owned_session(session_id, user)).deleted_count:
         raise HTTPException(404, 'Work session not found.')
+    bump_schedule_version(db, str(user['_id']))
 
 
 class TimePeriod(BaseModel):
@@ -385,4 +490,5 @@ def get_availability(user=Depends(get_current_user), db=Depends(get_database)):
 @router.put('/availability', response_model=Availability)
 def save_availability(data: Availability, user=Depends(get_current_user), db=Depends(get_database)):
     db.availability.update_one({'user_id': str(user['_id'])}, {'$set': data.model_dump()}, upsert=True)
+    bump(db, user)
     return data

@@ -24,13 +24,8 @@ export function validateTask(input: TaskInput) {
     throw new Error("Choose a valid priority.");
   if (!["Project", "Study", "Personal", "Work"].includes(input.category))
     throw new Error("Choose a valid category.");
-  if (
-    !Number.isInteger(input.remainingMinutes) ||
-    input.remainingMinutes < 0 ||
-    input.remainingMinutes > input.minutes ||
-    input.remainingMinutes % 15 !== 0
-  )
-    throw new Error("Remaining time must be a multiple of 15 minutes and not exceed the estimate.");
+  if (!Number.isInteger(input.completedMinutes) || input.completedMinutes < 0)
+    throw new Error("Completed time must be a whole number of minutes.");
   if (input.minSessionMinutes > input.maxSessionMinutes)
     throw new Error("Minimum session length cannot exceed the maximum.");
 }

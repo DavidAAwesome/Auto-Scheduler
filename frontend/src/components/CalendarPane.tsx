@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
-import { DEFAULT_DUE_TIME, type CalendarEvent, type ProposedSession, type Task, type WorkSession } from "../types/models";
+import { DEFAULT_DUE_TIME, type CalendarEvent, type ScheduleSession, type Task, type WorkSession } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { calendarViewStore, useCalendarView } from "../services/uiState";
@@ -7,11 +7,11 @@ import {
   clock12, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
 } from "../utils/calendar";
 import { resolveDay } from "../utils/availability";
-import { endsAfterDue, sessionsByDate } from "../utils/planning";
+import { endsAfterDue } from "../utils/planning";
 import { eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
-import { unscheduledLine } from "../utils/schedulePreview";
+import { calendarSessions, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
 
 const HOUR_HEIGHT = 48;
 const MONTH_ITEM_LIMIT = 3;
@@ -57,16 +57,46 @@ function TaskChip({ task, onOpen }: { task: Task; onOpen: CalendarHandlers["onOp
 function SessionBlock({ session, task, place, onOpen }: { session: WorkSession; task: Task; place: Placed; onOpen: CalendarHandlers["onOpen"] }) {
   const length = session.end - session.start;
   const late = endsAfterDue(session, task);
+  const done = task.done || session.status === "completed";
   return (
     <button
-      className={`session-block cat-${task.category.toLowerCase()} ${task.done ? "done" : ""} ${late ? "late" : ""} ${length < 45 ? "compact" : ""}`}
+      className={`session-block cat-${task.category.toLowerCase()} ${done ? "done" : ""} ${late ? "late" : ""} ${length < 45 ? "compact" : ""}`}
       style={laneStyle(place, session.start, session.end)}
       onClick={e => { e.stopPropagation(); onOpen(task, e.currentTarget.getBoundingClientRect(), session.id); }}
-      title={`Work on ${task.title} · ${range(session.start, session.end)}${late ? " · ends after the due time" : ""}`}
+      title={`Work on ${task.title} · ${range(session.start, session.end)} · saved${session.locked ? ", locked" : ""}${session.status === "completed" ? ", done" : ""}${late ? " · ends after the due time" : ""}`}
     >
-      <span className="session-title">{late && "⚠ "}{task.title}</span>
+      <span className="session-title">{late && "⚠ "}{session.locked && "🔒 "}{task.title}</span>
       <span className="session-time">{range(session.start, session.end)} · {duration(length)}</span>
     </button>
+  );
+}
+
+/** A break, saved or proposed. Breaks are reserved time: work is never placed on top of them. */
+function BreakBlock({ item, place }: { item: CalendarItem; place: Placed }) {
+  const { session } = item;
+  const proposed = item.kind === "proposed";
+  const label = session.locked ? "Protected break" : "Break";
+  return (
+    <div
+      className={`plan-block break ${proposed ? "preview" : ""} ${session.end - session.start < 45 ? "compact" : ""}`}
+      style={laneStyle(place, session.start, session.end)}
+      title={`${label} · ${range(session.start, session.end)} · ${proposed ? "proposed, not saved" : "saved"}`}
+    >
+      <span className="session-title">{label}</span>
+      <span className="session-time">{range(session.start, session.end)}{proposed ? " · proposed" : ""}</span>
+    </div>
+  );
+}
+
+/** A saved session the pending preview would remove; shown so nothing changes silently. */
+function RemovedBlock({ item, place }: { item: CalendarItem; place: Placed }) {
+  const { session } = item;
+  return (
+    <div className="plan-block removed compact" style={laneStyle(place, session.start, session.end)}
+      title={`Apply removes this saved ${session.type === "break" ? "break" : `session for ${session.title}`}: ${item.reason ?? ""}`}>
+      <span className="session-title">{session.type === "break" ? "Break" : session.title}</span>
+      <span className="session-time">moves</span>
+    </div>
   );
 }
 
@@ -85,7 +115,7 @@ function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date
   );
 }
 
-function PreviewBlock({ session, place }: { session: ProposedSession; place: Placed }) {
+function PreviewBlock({ session, place }: { session: ScheduleSession; place: Placed }) {
   return (
     <div
       className={`plan-block focus preview ${session.end - session.start < 45 ? "compact" : ""}`}
@@ -104,9 +134,9 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
   const zone = availability?.timeZone ?? "UTC";
   const [now, setNow] = useState(() => minutesInZone(zone));
   const byDate = tasksByDate(tasks);
-  const sessionsOn = sessionsByDate(sessions);
   const taskById = new Map(tasks.map(t => [t.id, t]));
-  const previewSessions = schedulePreview?.schedule.sessions ?? [];
+  // The same list Today's Tasks and chat read: saved sessions, or the preview's proposed schedule on top of them.
+  const shown = calendarSessions(sessions, schedulePreview);
   useEffect(() => {
     const timer = setInterval(() => setNow(minutesInZone(zone)), 60_000);
     return () => clearInterval(timer);
@@ -147,12 +177,11 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
         </div>
         {dates.map(date => {
           const hours = availability ? resolveDay(availability, date) : null;
-          const work = (sessionsOn.get(date) ?? []).filter(s => taskById.has(s.taskId));
           const occurrences = occurrencesOn(events, date);
-          const proposed = previewSessions.filter(s => s.date === date);
+          const onDay = shown.filter(i => i.session.date === date && (i.session.type === "break" || taskById.has(i.session.taskId ?? "")));
           const items = [...occurrences.map(o => ({ kind: "event" as const, start: o.event.start, end: o.event.end, event: o.event })),
-            ...work.map(s => ({ kind: "session" as const, start: s.start, end: s.end, session: s })),
-            ...proposed.map(s => ({ kind: "preview" as const, start: s.start, end: s.end, session: s }))];
+            ...onDay.map(i => ({ kind: i.kind === "removed" ? "removed" as const : i.session.type === "break" ? "break" as const : i.kind === "proposed" ? "preview" as const : "session" as const,
+              start: i.session.start, end: i.session.end, session: i.session, item: i }))];
           const lanes = layoutLanes(items);
           return (
             <div key={date} className={`day-col ${date === today ? "is-today" : ""}`} onClick={e => slotAt(date, e)} title="Click to plan work or add an event">
@@ -169,10 +198,12 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
               {items.map(item => item.kind === "event"
                 ? <EventBlock key={item.event.id} event={item.event} date={date} place={lanes.get(item)!} onOpen={onOpenEvent} />
                 : item.kind === "session"
-                  ? <SessionBlock key={item.session.id} session={item.session} task={taskById.get(item.session.taskId)!} place={lanes.get(item)!} onOpen={onOpen} />
+                  ? <SessionBlock key={item.session.id} session={item.session} task={taskById.get(item.session.taskId ?? "")!} place={lanes.get(item)!} onOpen={onOpen} />
                   : item.kind === "preview"
-                    ? <PreviewBlock key={`preview-${item.session.taskId}-${item.start}`} session={item.session} place={lanes.get(item)!} />
-                    : null)}
+                    ? <PreviewBlock key={`preview-${item.session.id}`} session={item.session} place={lanes.get(item)!} />
+                    : item.kind === "break"
+                      ? <BreakBlock key={`break-${item.session.id}`} item={item.item} place={lanes.get(item)!} />
+                      : <RemovedBlock key={`removed-${item.session.id}`} item={item.item} place={lanes.get(item)!} />)}
               {date === today && <div className="now-line" style={{ top: (now / 60) * HOUR_HEIGHT }} aria-hidden="true" />}
             </div>
           );
@@ -183,10 +214,10 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
 }
 
 function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarHandlers, "onOpen" | "onOpenEvent" | "onAdd"> & { anchor: string; today: string }) {
-  const { tasks, sessions, events } = useWorkspace();
+  const { tasks, sessions, events, schedulePreview } = useWorkspace();
   const byDate = tasksByDate(tasks);
-  const sessionsOn = sessionsByDate(sessions);
   const taskById = new Map(tasks.map(t => [t.id, t]));
+  const shown = calendarSessions(sessions, schedulePreview).filter(i => i.kind !== "removed" && i.session.type === "work" && taskById.has(i.session.taskId ?? ""));
   const dates = visibleDates("month", anchor);
   const month = anchor.slice(0, 7);
   return (
@@ -195,7 +226,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
       {dates.map(date => {
         const occurrences = occurrencesOn(events, date);
         const due = byDate.get(date) ?? [];
-        const work = (sessionsOn.get(date) ?? []).filter(s => taskById.has(s.taskId));
+        const work = shown.filter(i => i.session.date === date);
         const shownEvents = occurrences.slice(0, MONTH_ITEM_LIMIT);
         const shownDue = due.slice(0, MONTH_ITEM_LIMIT - shownEvents.length);
         const shownWork = work.slice(0, MONTH_ITEM_LIMIT - shownEvents.length - shownDue.length);
@@ -212,13 +243,15 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
               </button>
             ))}
             {shownDue.map(task => <TaskChip key={task.id} task={task} onOpen={onOpen} />)}
-            {shownWork.map(session => {
-              const task = taskById.get(session.taskId)!;
-              return (
-                <button key={session.id} className={`session-line cat-${task.category.toLowerCase()} ${session.source === "auto" ? "auto" : ""}`} onClick={e => onOpen(task, e.currentTarget.getBoundingClientRect(), session.id)}>
-                  <i /> {clock12(session.start)} {task.title}
-                </button>
-              );
+            {shownWork.map(({ session, kind }) => {
+              const task = taskById.get(session.taskId ?? "")!;
+              return kind === "proposed"
+                ? <span key={session.id} className={`session-line cat-${task.category.toLowerCase()} proposed`} title="Proposed, not saved"><i /> ✦ {clock12(session.start)} {task.title}</span>
+                : (
+                  <button key={session.id} className={`session-line cat-${task.category.toLowerCase()} ${session.source === "auto" ? "auto" : ""}`} onClick={e => onOpen(task, e.currentTarget.getBoundingClientRect(), session.id)}>
+                    <i /> {clock12(session.start)} {task.title}
+                  </button>
+                );
             })}
             {hidden > 0 && <button className="more-link" onClick={() => calendarViewStore.set({ mode: "day", anchor: date })}>+{hidden} more</button>}
           </div>
@@ -230,24 +263,41 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
 
 export default function CalendarPane({ today, ...handlers }: CalendarHandlers & { today: string }) {
   const view = useCalendarView();
-  const { connections, availability, schedulePreview, saving, error } = useWorkspace();
+  const { connections, availability, schedulePreview, previewStale, sessions, events, saving, error } = useWorkspace();
   const [scheduleError, setScheduleError] = useState("");
+  const lastPreview = useRef<string | null>(null);
   const dates = visibleDates(view.mode, view.anchor);
   const showsToday = view.mode === "month" ? view.anchor.slice(0, 7) === today.slice(0, 7) : dates.includes(today);
   const setMode = (mode: CalendarMode) => calendarViewStore.set({ mode, anchor: showsToday ? today : view.anchor });
   const step = (direction: 1 | -1) => calendarViewStore.set({ ...view, anchor: shiftAnchor(view.mode, view.anchor, direction) });
   const focusDate = view.mode === "day" ? view.anchor : today;
   const zone = availability?.timeZone ?? "UTC";
-  const unscheduled = schedulePreview?.schedule.tasks.filter(t => t.unscheduledMinutes > 0) ?? [];
+  const unscheduled = schedulePreview?.tasks.filter(t => t.unallocatedMinutes > 0) ?? [];
+  const added = schedulePreview?.sessions.filter(s => s.change === "new") ?? [];
+  const moved = schedulePreview?.removed.filter(r => r.session.type === "work") ?? [];
+  const nowIso = new Date().toISOString();
+  // Saved flexible work that a newer event now overlaps: offer a local repair instead of moving it silently.
+  const clashing = schedulePreview ? [] : sessions.filter(s => s.type === "work" && s.status === "saved" && s.source === "auto" && !s.locked
+    && s.endAt > nowIso && occurrencesOn(events, s.date).some(o => o.event.start < s.end && o.event.end > s.start));
 
-  async function generateSchedule() {
+  // Show every new preview: jump to its first proposed session when that day is not on screen.
+  useEffect(() => {
+    if (!schedulePreview || lastPreview.current === schedulePreview.previewId) return;
+    lastPreview.current = schedulePreview.previewId;
+    const first = schedulePreview.firstProposedDate;
+    if (first && !visibleDates(view.mode, view.anchor).includes(first)) calendarViewStore.set({ ...view, anchor: first });
+  }, [schedulePreview, view]);
+
+  async function preview(run: () => Promise<unknown>) {
     setScheduleError("");
     try {
-      await workspaceService.previewSchedule(7);
+      await run();
     } catch (e) {
       setScheduleError((e as Error).message);
     }
   }
+  const generateSchedule = () => preview(() => workspaceService.previewSchedule(7));
+  const repairSchedule = () => preview(() => workspaceService.requestPreview({ kind: "repair", horizonDays: 7 }));
   async function applySchedule() {
     setScheduleError("");
     try {
@@ -285,13 +335,34 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
         </div>
       </div>
+      {clashing.length > 0 && (
+        <div className="schedule-preview-bar" role="region" aria-label="Schedule conflicts">
+          <div><strong>{clashing.length} saved session{clashing.length === 1 ? "" : "s"} now overlap{clashing.length === 1 ? "s" : ""} an event.</strong> Nothing was moved yet.</div>
+          <div className="schedule-preview-actions">
+            <button className="button small" disabled={saving} onClick={() => void repairSchedule()}>Repair schedule</button>
+          </div>
+        </div>
+      )}
       {schedulePreview && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
           <div>
-            <strong>Proposed, not saved</strong> {schedulePreview.schedule.startDate} – {schedulePreview.schedule.endDate} ({schedulePreview.schedule.timeZone})
-            {" · "}{schedulePreview.schedule.sessions.length} proposed session{schedulePreview.schedule.sessions.length === 1 ? "" : "s"}
-            {unscheduled.length > 0 && (
+            <strong>Proposed, not saved</strong> {longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)} ({schedulePreview.timeZone})
+            {" · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {added.filter(s => s.type === "break").length} break{added.filter(s => s.type === "break").length === 1 ? "" : "s"}
+            {moved.length > 0 && <>{" · "}{moved.length} saved session{moved.length === 1 ? "" : "s"} move</>}
+            {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
+              <div className="preview-days" aria-label="Scheduled days">
+                {schedulePreview.days.filter(d => d.newWorkMinutes > 0 || d.breakCount > 0).map(d => (
+                  <button key={d.date} className="chip" onClick={() => calendarViewStore.set({ ...view, anchor: d.date })}>
+                    {shortWeekday(d.date)} {Number(d.date.slice(8))}: {duration(d.workMinutes)} work{d.breakCount ? `, ${d.breakCount} break${d.breakCount === 1 ? "" : "s"}` : ""}
+                  </button>
+                ))}
+              </div>
+            )}
+            {previewStale && <p className="form-warning small">Your tasks, events or settings changed after this preview. Generate it again before applying.</p>}
+            {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
               <ul className="form-warning small">
+                {moved.map(r => <li key={r.session.id}>{r.newEndAt ? "Shortens" : "Moves"} {r.session.title} ({range(r.session.start, r.session.end)}): {r.reason}</li>)}
+                {schedulePreview.conflicts.map((c, i) => <li key={`c${i}`}>{c.message}</li>)}
                 {unscheduled.map(t => <li key={t.taskId}>{unscheduledLine(t)}</li>)}
               </ul>
             )}
@@ -310,6 +381,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
         <span><i className="swatch event" /> Event</span>
         <span><i className="swatch session" /> Saved work session</span>
         <span><i className="swatch plan" /> Proposed (not saved)</span>
+        <span><i className="swatch break" /> Break</span>
         <span><i className="swatch due" /> Task due</span>
         <span><i className="swatch available" /> Available hours</span>
         {connections.some(c => c.provider === "google") && <span><i className="swatch event source-google" /> From Google</span>}

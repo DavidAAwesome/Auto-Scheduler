@@ -2,24 +2,25 @@ import ScreenHeading from "../components/ScreenHeading";
 import Icon, { type IconName } from "../components/Icon";
 import { duration } from "../utils/taskDisplay";
 import { useWorkspace } from "../hooks/useWorkspace";
-import { dateInZone, intervalOnDate } from "../utils/calendar";
+import { dateInZone } from "../utils/calendar";
 import type { Category } from "../types/models";
 
 type Stat = { icon: IconName; value: string; label: string; tone: "purple" | "green" | "peach" };
 
 export default function Analytics() {
-  const { tasks, sessions, availability, plan } = useWorkspace();
+  const { tasks, sessions, availability } = useWorkspace();
   const zone = availability?.timeZone ?? "UTC";
   const today = dateInZone(zone);
   const done = tasks.filter(t => t.done);
   const open = tasks.filter(t => !t.done);
   const weeklyAvailable = availability?.days.filter(d => d.enabled)
     .reduce((sum, d) => sum + d.periods.reduce((total, p) => total + p.end - p.start, 0), 0) ?? 0;
-  const openMinutes = open.reduce((sum, t) => sum + t.minutes, 0);
-  const manualMinutes = sessions.reduce((sum, s) => sum + s.end - s.start, 0);
-  const autoMinutes = plan?.tasks.reduce((sum, t) => sum + t.scheduledMinutes, 0) ?? 0;
-  const focusToday = plan?.blocks.filter(b => b.type === "focus" && intervalOnDate(b, today, zone)).length ?? 0;
-  const attention = plan?.tasks.filter(t => t.status !== "scheduled").length ?? 0;
+  const openMinutes = open.reduce((sum, t) => sum + t.remainingMinutes, 0);
+  const work = sessions.filter(s => s.type === "work" && s.status === "saved");
+  const manualMinutes = work.filter(s => s.source === "manual").reduce((sum, s) => sum + s.end - s.start, 0);
+  const autoMinutes = work.filter(s => s.source === "auto").reduce((sum, s) => sum + s.end - s.start, 0);
+  const focusToday = work.filter(s => s.date === today).length;
+  const completedMinutes = tasks.reduce((sum, t) => sum + t.completedMinutes, 0);
   const categories: Category[] = ["Project", "Study", "Personal", "Work"];
   const rows: Stat[][] = [
     [
@@ -31,8 +32,8 @@ export default function Analytics() {
     [
       { icon: "calendar", value: duration(manualMinutes), label: "Planned by you", tone: "green" },
       { icon: "assistant", value: duration(autoMinutes), label: "Auto-planned", tone: "purple" },
-      { icon: "planner", value: String(focusToday), label: "Focus blocks today", tone: "peach" },
-      { icon: "alert", value: String(attention), label: "Need plan attention", tone: "green" },
+      { icon: "planner", value: String(focusToday), label: "Work sessions today", tone: "peach" },
+      { icon: "check", value: duration(completedMinutes), label: "Work completed", tone: "green" },
     ],
   ];
   return <>
@@ -48,12 +49,11 @@ export default function Analytics() {
         ))}
       </div>
     ))}
-    {plan?.stale && <p className="plan-notice">Saved plan needs review. {plan.staleReasons.join(" ")}</p>}
     <section className="card">
       <h2>Open work by category</h2>
       <ul className="category-bars">
         {categories.map(c => {
-          const minutes = open.filter(t => t.category === c).reduce((sum, t) => sum + t.minutes, 0);
+          const minutes = open.filter(t => t.category === c).reduce((sum, t) => sum + t.remainingMinutes, 0);
           return <li key={c}>
             <span>{c}</span>
             <span className="bar"><i className={`cat-${c.toLowerCase()}`} style={{ width: openMinutes ? `${(minutes / openMinutes) * 100}%` : 0 }} /></span>

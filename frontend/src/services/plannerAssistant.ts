@@ -1,7 +1,8 @@
-import type { CalendarConnection, Availability, SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { CalendarConnection, CalendarEvent, Availability, SchedulePreview, Task, WorkSession } from "../types/models.ts";
 import type { AssistantCommand } from "./assistantCommands.ts";
 import { formatDate } from "../utils/dates.ts";
 import { dateInZone } from "../utils/calendar.ts";
+import { todayAgenda, todayText } from "../utils/schedulePreview.ts";
 
 export type AssistantMessage = {
   id: string;
@@ -16,6 +17,7 @@ export type AssistantContext = {
   connections?: CalendarConnection[];
   tasks: Task[];
   sessions: WorkSession[];
+  events?: CalendarEvent[];
   availability: Availability | null;
   schedulePreview: SchedulePreview | null;
 };
@@ -40,7 +42,8 @@ function openTasks(tasks: Task[]) {
 /** What exists right now: a proposal awaiting review, saved sessions, or nothing. */
 export function scheduleStatus(context: AssistantContext) {
   if (context.schedulePreview) return "A proposed schedule is waiting for your review. It is not saved yet.";
-  if (context.sessions.length) return `${context.sessions.length} work session(s) are saved.`;
+  const work = context.sessions.filter((s) => s.type === "work" && s.status === "saved").length;
+  if (work) return `${work} work session(s) are saved.`;
   return "No schedule exists yet.";
 }
 
@@ -66,17 +69,9 @@ export function replyToPrompt(prompt: string, context: AssistantContext, id: str
   }
 
   if (/today|due today/.test(text)) {
-    const titles = new Map(context.tasks.map((task) => [task.id, task.title]));
-    const dueToday = open.filter((task) => task.deadline === today);
-    const sessionsToday = context.sessions.filter((session) => session.date === today);
-    if (!dueToday.length && !sessionsToday.length) {
-      return { id, role: "assistant", text: `No open deadlines or saved work sessions for ${formatDate(today)} (${zone}).` };
-    }
-    const lines = [
-      ...dueToday.map((task) => `Deadline today: ${task.title} (${task.minutes} min, ${task.priority})`),
-      ...sessionsToday.map((session) => `Work session: ${titles.get(session.taskId) ?? "Task"}`),
-    ];
-    return { id, role: "assistant", text: lines.join("\n") };
+    // Same agenda as the calendar and sidebar: saved and proposed sessions and breaks, with deadlines kept separate.
+    const state = { tasks: context.tasks, sessions: context.sessions, events: context.events ?? [], schedulePreview: context.schedulePreview };
+    return { id, role: "assistant", text: todayText(todayAgenda(state, today), today, zone, context.tasks) };
   }
 
   if (/google|calendar|outlook/.test(text)) {

@@ -7,7 +7,9 @@ export interface Task {
   deadline: string;
   /** Total estimated work, which can be split across several work sessions. */
   minutes: number;
-  /** Work still to schedule; defaults to minutes. */
+  /** Work actually done (completed sessions or logged progress). Scheduled work is not completed work. */
+  completedMinutes: number;
+  /** Always minutes - completedMinutes. */
   remainingMinutes: number;
   /** Due time in minutes after midnight; 1439 (11:59 PM) when the user leaves it blank. */
   dueTime: number;
@@ -20,20 +22,37 @@ export interface Task {
   maxSessionMinutes: number;
   dependsOn: string[];
 }
-export type TaskInput = Omit<Task, "id" | "done">;
+export type TaskInput = Omit<Task, "id" | "done" | "remainingMinutes">;
 export const DEFAULT_DUE_TIME = 23 * 60 + 59;
-/** Time set aside on a specific day to work on a task. */
-export interface WorkSession {
+export type SessionType = "work" | "break";
+/** "proposed" exists only in previews; saved schedules hold saved, completed or cancelled sessions. */
+export type SessionStatus = "proposed" | "saved" | "completed" | "cancelled";
+/**
+ * The canonical schedule session shared by the calendar, Today's Tasks and chat (saved or proposed, work or break).
+ * startAt/endAt are UTC instants; date/start/end are the same times in the schedule's timezone, for display.
+ * A task's deadline is separate: work for a task due tomorrow can be scheduled today.
+ */
+export interface ScheduleSession {
   id: string;
-  taskId: string;
+  taskId: string | null;
+  title: string;
+  type: SessionType;
+  status: SessionStatus;
+  locked: boolean;
+  /** "manual" = placed or requested by the user; "auto" = placed by the scheduler. */
+  source: "manual" | "auto";
+  scheduleVersion: number;
+  startAt: string;
+  endAt: string;
   date: string;
   start: number;
   end: number;
-  /** "manual" = placed by the user; "auto" = placed by the scheduling engine. */
-  source: "manual" | "auto";
-  locked: boolean;
+  /** Previews only: retained (fixed), kept (unchanged saved), new (proposed) or truncated. */
+  change?: "retained" | "kept" | "new" | "truncated" | null;
+  reason?: string | null;
 }
-export type WorkSessionInput = Omit<WorkSession, "id" | "source" | "locked"> & { locked?: boolean };
+export type WorkSession = ScheduleSession;
+export type WorkSessionInput = { taskId: string; date: string; start: number; end: number; locked?: boolean };
 export type EventKind = "Class" | "Meeting" | "Appointment" | "Social" | "Other";
 /** Repeats every week on `weekdays` (Monday = 0) from the event's date through `until`. */
 export interface Repeat { weekdays: number[]; until: string }
@@ -92,56 +111,52 @@ export interface Availability {
   reminders: boolean;
 }
 
-/** Live API plans use timezone-aware ISO instants, unlike legacy demo fixtures. */
-export interface BusyInterval { start: string; end: string }
-export interface PlanBlock extends BusyInterval {
-  id: string; taskId: string | null; title: string; type: 'focus' | 'break';
+/** Editable pacing defaults (not medical advice). */
+export interface SchedulePreferences {
+  focusMinutes: number;
+  breakMinutes: number;
+  maxDailyWorkMinutes: number;
+  lunch: TimePeriod | null;
 }
-export interface PlanTaskResult {
-  taskId: string; title: string; deadline: string;
-  requestedMinutes: number; scheduledMinutes: number; unscheduledMinutes: number;
-  status: 'scheduled' | 'partial' | 'unscheduled' | 'overdue' | 'outside_window';
-  reason: string | null; message: string;
-}
-export interface GeneratedPlan {
-  version: 1; generatedAt: string; startDate: string; endDate: string; timeZone: string;
-  source: 'provided' | 'availability_only'; busyIntervals: BusyInterval[];
-  blocks: PlanBlock[]; tasks: PlanTaskResult[]; stale: boolean; staleReasons: string[];
-}
+export const DEFAULT_PREFERENCES: SchedulePreferences = { focusMinutes: 50, breakMinutes: 10, maxDailyWorkMinutes: 240, lunch: null };
 
-export interface ProposedSession {
-  taskId: string;
-  title: string;
-  date: string;
-  start: number;
-  end: number;
-  source: 'auto';
-  locked: boolean;
-  kept: boolean;
+export interface SavedSchedule { scheduleVersion: number; timeZone: string; sessions: ScheduleSession[] }
+
+export interface AllocationReason { code: string; message: string }
+/** Invariant: retainedMinutes + newMinutes + unallocatedMinutes = remainingMinutes + overAllocatedMinutes. */
+export interface TaskAllocation {
+  taskId: string; title: string; priority: Priority; dueAt: string;
+  estimatedMinutes: number; completedMinutes: number; remainingMinutes: number;
+  retainedMinutes: number; inProgressMinutes: number; newMinutes: number; unallocatedMinutes: number; overAllocatedMinutes: number;
+  atRisk: boolean; slackMinutes: number | null;
+  status: "scheduled" | "partial" | "unscheduled" | "complete";
+  reasons: AllocationReason[];
 }
-export interface ScheduleTaskResult {
-  taskId: string;
-  title: string;
-  remainingMinutes: number;
-  scheduledMinutes: number;
-  unscheduledMinutes: number;
-  status: 'scheduled' | 'partial' | 'unscheduled';
-  reason: string;
-  message: string;
-}
-export interface SchedulePreviewPayload {
-  version: 1;
-  generatedAt: string;
-  startDate: string;
-  endDate: string;
-  timeZone: string;
-  sessions: ProposedSession[];
-  tasks: ScheduleTaskResult[];
-  explanations: string[];
-  inputFingerprint: string;
-}
+export interface ScheduleConflict { code: string; message: string; items: { kind: string; id: string | null; title: string; startAt: string | null; endAt: string | null }[] }
+export interface SessionRemoval { session: ScheduleSession; reason: string; newEndAt: string | null }
+export interface DaySummary { date: string; workMinutes: number; newWorkMinutes: number; breakCount: number; sessionCount: number }
 export interface SchedulePreview {
   previewId: string;
-  status: 'pending';
-  schedule: SchedulePreviewPayload;
+  status: "proposed" | "applied";
+  mode: "generate" | "repair" | "break";
+  baseScheduleVersion: number;
+  generatedAt: string;
+  timeZone: string;
+  windowStart: string;
+  windowEnd: string;
+  startDate: string;
+  endDate: string;
+  preferences: SchedulePreferences;
+  /** The complete future schedule in the window after Apply: retained, kept, and new sessions (work and breaks). */
+  sessions: ScheduleSession[];
+  /** Saved sessions Apply deletes (or shortens, when newEndAt is set). */
+  removed: SessionRemoval[];
+  tasks: TaskAllocation[];
+  conflicts: ScheduleConflict[];
+  days: DaySummary[];
+  firstProposedDate: string | null;
+  explanations: string[];
+  note: string;
+  inputFingerprint: string;
 }
+export interface ApplyResult { previewId: string; status: "applied"; duplicate: boolean; schedule: SavedSchedule }
