@@ -3,88 +3,101 @@ import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
+import { commandFor, runAssistantCommand, type AssistantCommand } from "../services/assistantCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
-import { dateInZone } from "../utils/calendar";
-import { busyIntervalsFor } from "../utils/planning";
-import { duration } from "../utils/taskDisplay";
 import Icon from "./Icon";
 
-const PROMPTS = ["Today’s tasks", "Generate plan", "What didn’t fit?", "Busy time"];
-const PLAN_DAYS = 7; // the scheduler plans a seven-day window starting today
+const PROMPTS = ["Show my plan", "Plan my week", "Busy time", "Today’s tasks"];
+const ACTION_LABEL: Record<AssistantCommand, string> = {
+  generate_schedule: "Generate Schedule",
+  apply_schedule: "Apply",
+  cancel_schedule: "Cancel",
+  show_plan: "Show my plan",
+  busy_time: "Busy time",
+};
 
-/** Sketch AI Chatbox: OpenAI when configured, otherwise local rules; plan generation stays confirmed. */
+const COMMANDS: AssistantCommand[] = ["generate_schedule", "show_plan", "busy_time"];
+
+/**
+ * AI chatbox. Scheduling questions run the same workspace actions as the calendar buttons, and the reply
+ * reports only what those actions returned. Other questions go to OpenAI when configured, else to local rules.
+ */
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const { user } = useAuth();
-  const { tasks, sessions, events, connections, availability, plan, saving } = useWorkspace();
+  const { tasks, sessions, connections, availability, schedulePreview, saving } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [thinking, setThinking] = useState(false);
+  /** The command currently awaiting a real response from the workspace, if any. */
+  const [working, setWorking] = useState<AssistantCommand | null>(null);
   const [usingOpenAI, setUsingOpenAI] = useState(false);
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
-  const context = { tasks, plan, availability, connections };
+  const context = { tasks, sessions, availability, connections, schedulePreview };
   const welcome = buildWelcome(context);
-  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking]);
+  const busy = thinking || working !== null || saving;
+  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working]);
+
+  function append(message: AssistantMessage) {
+    setMessages(previous => [...previous.slice(-18), message]);
+  }
+
+  /** Runs a command and posts its real outcome. The loading line is shown only while this await is pending. */
+  async function run(command: AssistantCommand) {
+    setError("");
+    setWorking(command);
+    try {
+      append(await runAssistantCommand(command, workspaceService));
+    } finally {
+      setWorking(null);
+    }
+  }
 
   async function ask(prompt: string) {
     const text = prompt.trim();
-    if (!text || thinking) return;
+    if (!text || busy) return;
     const id = String(++nextId.current);
-    const userMessage: AssistantMessage = { id: `${id}-q`, role: "user", text };
-    setMessages(previous => [...previous.slice(-18), userMessage]);
+    append({ id: `${id}-q`, role: "user", text });
     setInput("");
     setError("");
+
+    const command = commandFor(text);
+    if (command) {
+      await run(command);
+      return;
+    }
+
+    let reply: Awaited<ReturnType<typeof workspaceService.chatAssistant>>;
     setThinking(true);
     try {
-      const history = [...messages, userMessage]
+      const history = [...messages, { id: `${id}-q`, role: "user" as const, text }]
         .slice(-8)
         .map(m => ({ role: m.role, text: m.text }));
-      const reply = await workspaceService.chatAssistant(text, history);
+      reply = await workspaceService.chatAssistant(text, history);
       setUsingOpenAI(true);
-      setMessages(previous => [...previous, {
-        id: `${id}-a`,
-        role: "assistant",
-        text: reply.reply,
-        pendingAction: reply.pendingAction,
-      }]);
     } catch (e) {
       const status = e instanceof ApiError ? e.status : 0;
       // No key / unavailable: keep the local helper so chat still works offline.
       if (status === 503 || status === 0) {
         setUsingOpenAI(false);
-        setMessages(previous => [...previous, replyToPrompt(text, context, `${id}-a`)]);
+        append(replyToPrompt(text, context, `${id}-a`));
       } else {
         setError((e as Error).message);
-        setMessages(previous => [...previous, {
-          id: `${id}-a`,
-          role: "assistant",
-          text: "I couldn’t reach the assistant just now. Try again, or use Generate plan below.",
-          pendingAction: null,
-        }]);
+        append({ id: `${id}-a`, role: "assistant", text: "I couldn’t reach the assistant just now. Try again, or use the buttons above the calendar." });
       }
+      return;
     } finally {
       setThinking(false);
     }
+
+    // The model may ask for a schedule, but the reply only reports what the workspace actually did.
+    if (reply.intent !== "none" && COMMANDS.includes(reply.intent)) await run(reply.intent);
+    else append({ id: `${id}-a`, role: "assistant", text: reply.reply });
   }
 
-  /** Classes, meetings and your own work sessions are sent as busy time, so auto-planned focus never overlaps them. */
-  async function generate() {
-    if (!availability) return;
-    setError("");
-    const busy = busyIntervalsFor(events, sessions, dateInZone(availability.timeZone), PLAN_DAYS, availability.timeZone);
-    try {
-      const saved = await workspaceService.generatePlan(busy, busy.length ? "provided" : "availability_only");
-      const planned = saved.tasks.reduce((sum, t) => sum + t.scheduledMinutes, 0);
-      const missing = saved.tasks.filter(t => t.unscheduledMinutes > 0).length;
-      setMessages(previous => [...previous, {
-        id: `${++nextId.current}-plan`, role: "assistant",
-        text: `Plan saved: ${duration(planned)} of focus time over the next 7 days, around ${busy.length} events and work sessions.${missing ? ` ${missing} task(s) didn’t fully fit; ask “What didn’t fit?”.` : " Everything fit."}`,
-      }]);
-    } catch (e) { setError((e as Error).message); }
-  }
   function submit(event: FormEvent) { event.preventDefault(); void ask(input); }
 
   if (!open)
@@ -93,7 +106,9 @@ export default function ChatPanel() {
         <Icon name="assistant" size={18} /> <span>AI</span>
       </button>
     );
-  const pending = [...messages].reverse().find(m => m.role === "assistant")?.pendingAction;
+
+  // Only the newest message with buttons offers them, so an old Apply cannot be pressed after a newer result.
+  const actionMessageId = [...messages].reverse().find(m => m.actions?.length)?.id;
   return (
     <aside className="chat-panel" aria-label="AI chatbox">
       <div className="chat-head">
@@ -102,34 +117,43 @@ export default function ChatPanel() {
       </div>
       <div className="chat-messages" ref={log} role="log" aria-live="polite" aria-label="Planning conversation">
         <p className="bubble assistant">Hi{user?.name ? ` ${user.name.split(" ")[0]}` : ""}! {welcome.text}</p>
-        {messages.map(m => <p key={m.id} className={`bubble ${m.role}`}>{m.text}</p>)}
-        {thinking && <p className="bubble assistant muted">Thinking…</p>}
-        {(pending?.type === "generate_plan" || pending?.type === "generate_schedule") && (
-          <div className="chat-confirm" role="group" aria-label="Confirm schedule generation">
-            <button className="button small" disabled={saving || thinking} onClick={() => void (pending.type === "generate_schedule" ? workspaceService.previewSchedule(7) : generate())}>
-              {saving ? "Planning…" : pending.label}
-            </button>
-            <span className="muted small">
-              {pending.type === "generate_schedule"
-                ? "Builds a preview on the calendar. Apply it there to save sessions."
-                : "Replaces the saved plan. Your tasks, events and sessions aren’t changed."}
-            </span>
+        {messages.map(m => (
+          <div key={m.id} className={`bubble-group ${m.role}`}>
+            <p className={`bubble ${m.role}`}>{m.text}</p>
+            {m.id === actionMessageId && m.actions && (
+              <div className="chat-actions" role="group" aria-label="Schedule actions">
+                {m.actions
+                  .filter(action => (action === "apply_schedule" || action === "cancel_schedule") ? schedulePreview !== null : true)
+                  .map(action => (
+                    <button
+                      key={action}
+                      className={`button small ${action === "cancel_schedule" ? "secondary" : ""}`}
+                      disabled={busy}
+                      onClick={() => void run(action)}
+                    >
+                      {ACTION_LABEL[action]}
+                    </button>
+                  ))}
+              </div>
+            )}
           </div>
-        )}
-        {plan?.stale && <p className="plan-notice small">Saved plan needs review. {plan.staleReasons.join(" ")}</p>}
+        ))}
+        {thinking && <p className="bubble assistant muted">Thinking…</p>}
+        {working === "generate_schedule" && <p className="bubble assistant muted">Building a schedule preview from your tasks, events and availability…</p>}
+        {working === "apply_schedule" && <p className="bubble assistant muted">Saving the proposed sessions…</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
       </div>
       <div className="chat-prompts">
-        {PROMPTS.map(p => <button key={p} className="chip" disabled={thinking} onClick={() => void ask(p)}>{p}</button>)}
+        {PROMPTS.map(p => <button key={p} className="chip" disabled={busy} onClick={() => void ask(p)}>{p}</button>)}
       </div>
       <form className="chat-input" onSubmit={submit}>
-        <input value={input} maxLength={500} onChange={e => setInput(e.target.value)} placeholder="Ask about deadlines, conflicts, priorities…" aria-label="Message the assistant" disabled={thinking} />
-        <button className="icon-button" disabled={!input.trim() || thinking} aria-label="Send"><Icon name="send" size={17} /></button>
+        <input value={input} maxLength={500} onChange={e => setInput(e.target.value)} placeholder="Ask about deadlines, busy time, or plan my week…" aria-label="Message the assistant" disabled={busy} />
+        <button className="icon-button" disabled={!input.trim() || busy} aria-label="Send"><Icon name="send" size={17} /></button>
       </form>
       <p className="chat-foot">
         {usingOpenAI
-          ? "OpenAI assistant + local scheduling engine (deadlines, conflicts, priorities, focus splits)."
-          : "Local helper until OPENAI_API_KEY is set. Schedule changes always need your confirmation."}
+          ? "OpenAI answers from your account data. Schedules come from AutoPlan’s engine and stay previews until you Apply them."
+          : "Local helper until OPENAI_API_KEY is set. Schedules stay previews until you Apply them."}
       </p>
     </aside>
   );

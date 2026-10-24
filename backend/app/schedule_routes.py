@@ -5,7 +5,7 @@ rejects stale fingerprints, and is idempotent for the same preview id.
 """
 from __future__ import annotations
 
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Literal
 
 from bson import ObjectId
@@ -16,20 +16,12 @@ from pymongo.write_concern import WriteConcern
 
 from app.auth import get_current_user
 from app.database import get_database
-from app.events import occurs_on
 from app.openai_interpret import InterpretResult, interpret_request
-from app.scheduling_engine import (
-    BusyBlock,
-    FixedSession,
-    ScheduleResult,
-    generate_schedule,
-)
+from app.scheduling_engine import ScheduleResult, generate_schedule
+from app.scheduling_service import PreviewResponse, build_preview, load_context
 from app.scheduling_validator import ValidationError, validate_schedule
 from app.workspace import (
     SessionInput,
-    Availability,
-    default_availability,
-    task_output,
     get_availability,
     list_tasks,
     session_doc,
@@ -46,13 +38,6 @@ def utc_now() -> datetime:
 class PreviewRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     horizonDays: int = Field(default=7, ge=1, le=21)
-
-
-class PreviewResponse(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    previewId: str
-    status: Literal['pending'] = 'pending'
-    schedule: ScheduleResult
 
 
 class ApplyRequest(BaseModel):
@@ -80,89 +65,17 @@ class InterpretResponse(BaseModel):
     preview: PreviewResponse | None = None
 
 
-def _event_busy(db, user_id: str, start_date: str, end_date: str, session=None) -> list[BusyBlock]:
-    """Expand events (including repeats) into busy blocks in the planning window."""
-    blocks: list[BusyBlock] = []
-    day = date_cls.fromisoformat(start_date)
-    last = date_cls.fromisoformat(end_date)
-    events = list(db.events.find({'user_id': user_id}, session=session))
-    while day <= last:
-        day_s = day.isoformat()
-        for doc in events:
-            if occurs_on(doc, day_s):
-                blocks.append(BusyBlock(
-                    date=day_s, start=doc['start'], end=doc['end'],
-                    label=doc.get('title', 'event'),
-                ))
-        day += timedelta(days=1)
-    return blocks
-
-
-def _load_context(user, db, now: datetime, horizon_days: int = 7, session=None):
-    owner = {'user_id': str(user['_id'])}
-    tasks = [task_output(doc) for doc in db.tasks.find(owner, session=session)]
-    saved = db.availability.find_one(owner, {'_id': 0, 'user_id': 0}, session=session)
-    availability = Availability(**saved) if saved else default_availability()
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo(availability.timeZone)
-    local = now.astimezone(zone).date()
-    start_date = local.isoformat()
-    end_date = (local.fromordinal(local.toordinal() + horizon_days - 1)).isoformat()
-
-    sessions = list(db.sessions.find({'user_id': str(user['_id'])}, session=session))
-    fixed: list[FixedSession] = []
-    unlocked: list[FixedSession] = []
-    for doc in sessions:
-        item = FixedSession(
-            id=str(doc['_id']),
-            taskId=doc['task_id'],
-            date=doc['date'],
-            start=doc['start'],
-            end=doc['end'],
-            locked=bool(doc.get('locked', False)),
-            source=doc.get('source', 'manual'),
-        )
-        if item.locked or item.source == 'manual':
-            fixed.append(item)
-        else:
-            unlocked.append(item)
-
-    busy = _event_busy(db, str(user['_id']), start_date, end_date, session=session)
-    return tasks, availability, busy, fixed, unlocked, start_date, end_date
-
-
-def _build_preview(user, db, now: datetime, horizon_days: int = 7) -> PreviewResponse:
-    tasks, availability, busy, fixed, unlocked, _, _ = _load_context(user, db, now, horizon_days)
-    schedule = generate_schedule(tasks, availability, busy, fixed, unlocked, now, horizon_days)
-    try:
-        validate_schedule(schedule, tasks, availability, busy, fixed, now)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=f'Schedule failed validation: {exc.message}') from exc
-
-    preview_id = str(ObjectId())
-    db.schedule_previews.insert_one({
-        '_id': ObjectId(preview_id),
-        'user_id': str(user['_id']),
-        'status': 'pending',
-        'created_at': now,
-        'input_fingerprint': schedule.inputFingerprint,
-        'horizon_days': horizon_days,
-        'schedule': schedule.model_dump(mode='python'),
-    })
-    return PreviewResponse(previewId=preview_id, schedule=schedule)
-
-
 @router.post('/preview', response_model=PreviewResponse)
 def create_preview(body: PreviewRequest = PreviewRequest(), user=Depends(get_current_user),
                    db=Depends(get_database)):
-    return _build_preview(user, db, utc_now(), body.horizonDays)
+    return build_preview(user, db, utc_now(), body.horizonDays)
 
 
 @router.post('/replan', response_model=PreviewResponse)
 def replan(body: PreviewRequest = PreviewRequest(), user=Depends(get_current_user),
            db=Depends(get_database)):
     """Same as preview: regenerate after tasks/availability changed. Does not apply."""
-    return _build_preview(user, db, utc_now(), body.horizonDays)
+    return build_preview(user, db, utc_now(), body.horizonDays)
 
 
 @router.post('/apply', response_model=ApplyResponse)
@@ -195,7 +108,7 @@ def _apply_transaction(body, user, db, session):
 
     now = utc_now()
     horizon = int(preview.get('horizon_days') or 7)
-    tasks, availability, busy, fixed, unlocked, _, _ = _load_context(user, db, now, horizon, session)
+    tasks, availability, busy, fixed, unlocked, _, _ = load_context(user, db, now, horizon, session)
     schedule = ScheduleResult(**preview['schedule'])
     fresh = generate_schedule(tasks, availability, busy, fixed, unlocked, now, horizon)
     if fresh.inputFingerprint != preview['input_fingerprint']:
@@ -255,7 +168,7 @@ def interpret(body: InterpretRequest, user=Depends(get_current_user), db=Depends
     preview = None
     if body.autoPreview and interpretation.runScheduler and not interpretation.needsConfirmation:
         # Preferences are suggestions only — engine uses current saved tasks unless FE applies patches.
-        preview = _build_preview(user, db, now)
+        preview = build_preview(user, db, now)
     return InterpretResponse(interpretation=interpretation, preview=preview)
 
 

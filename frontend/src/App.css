@@ -492,7 +492,9 @@ main:focus { outline: none; }
 
 .bubble.user { align-self: flex-end; background: var(--primary); color: var(--on-primary); border-bottom-right-radius: 4px; }
 .bubble { white-space: pre-line; }
-.chat-confirm { display: grid; gap: 6px; justify-items: start; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.bubble-group { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 90%; }
+.bubble-group.user { align-self: flex-end; align-items: flex-end; }
+.chat-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .chat-prompts { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0; border-top: 1px solid var(--border); }
 .chat-prompts .chip { color: var(--primary); }
 .chat-input { border-top: 0; }

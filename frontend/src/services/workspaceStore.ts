@@ -160,24 +160,33 @@ export function createWorkspaceStore(request: Requester) {
       const preview = state.schedulePreview;
       if (!preview) throw new Error('Generate a schedule preview first.');
       publish({ ...state, error: '' });
-      const result = await mutate<{ previewId: string; status: 'applied'; sessions: WorkSession[] }>(
-        '/schedule/apply',
-        { method: 'POST', body: JSON.stringify({ previewId: preview.previewId }) },
-        saved => ({
-          sessions: [...state.sessions.filter(s => s.source !== 'auto' || s.locked), ...saved.sessions],
-          schedulePreview: null, error: '',
-        }),
-      );
+      let result: { previewId: string; status: 'applied'; sessions: WorkSession[] };
+      try {
+        result = await mutate<{ previewId: string; status: 'applied'; sessions: WorkSession[] }>(
+          '/schedule/apply',
+          { method: 'POST', body: JSON.stringify({ previewId: preview.previewId }) },
+          saved => ({
+            sessions: [...state.sessions.filter(s => s.source !== 'auto' || s.locked), ...saved.sessions],
+            schedulePreview: null, error: '',
+          }),
+        );
+      } catch (error) {
+        // 409 means the server rejected this proposal as stale: drop it so the user regenerates instead of retrying.
+        if ((error as { status?: number }).status === 409 && state.schedulePreview?.previewId === preview.previewId) {
+          publish({ ...state, schedulePreview: null });
+        }
+        throw error;
+      }
       // Publish only the committed response. A second GET could fail after a
       // successful commit or publish another account's data after sign-out.
       return result.sessions;
     },
-    /** OpenAI assistant; does not mutate workspace state. Falls through to caller on 503 when unset. */
+    /** OpenAI assistant; never builds or saves schedules. Chat commands run through previewSchedule/applySchedulePreview. */
     chatAssistant(message: string, history: { role: 'user' | 'assistant'; text: string }[]) {
       if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
       return request<{
         reply: string;
-        pendingAction: { type: 'generate_plan' | 'generate_schedule'; label: string } | null;
+        intent: 'generate_schedule' | 'busy_time' | 'show_plan' | 'none';
         provider: 'openai';
       }>('/assistant/chat', {
         method: 'POST',

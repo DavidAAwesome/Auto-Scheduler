@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
-import { DEFAULT_DUE_TIME, type CalendarEvent, type PlanBlock, type ProposedSession, type Task, type WorkSession } from "../types/models";
+import { DEFAULT_DUE_TIME, type CalendarEvent, type ProposedSession, type Task, type WorkSession } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { calendarViewStore, useCalendarView } from "../services/uiState";
 import {
-  clock12, intervalOnDate, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
+  clock12, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
 } from "../utils/calendar";
 import { resolveDay } from "../utils/availability";
 import { endsAfterDue, sessionsByDate } from "../utils/planning";
 import { eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
+import { unscheduledLine } from "../utils/schedulePreview";
 
 const HOUR_HEIGHT = 48;
 const MONTH_ITEM_LIMIT = 3;
@@ -69,30 +70,6 @@ function SessionBlock({ session, task, place, onOpen }: { session: WorkSession; 
   );
 }
 
-/** Minutes-after-midnight range of a saved plan block on `date` (plan blocks are UTC instants). */
-function planRange(block: PlanBlock, date: string, zone: string) {
-  const time = intervalOnDate(block, date, zone);
-  if (!time) return null;
-  const [start, end] = time.split("–").map(value => { const [h, m] = value.split(":").map(Number); return h * 60 + m; });
-  return { start, end };
-}
-
-function PlanBlockView({ block, start, end, task, place, onOpen }: { block: PlanBlock; start: number; end: number; task?: Task; place: Placed; onOpen: CalendarHandlers["onOpen"] }) {
-  const isBreak = block.type === "break";
-  return (
-    <button
-      className={`plan-block ${block.type} ${end - start < 45 ? "compact" : ""}`}
-      style={laneStyle(place, start, end)}
-      disabled={!task}
-      onClick={e => { e.stopPropagation(); if (task) onOpen(task, e.currentTarget.getBoundingClientRect()); }}
-      title={`${isBreak ? "Short break" : `Auto-planned focus: ${block.title}`} · ${range(start, end)}`}
-    >
-      <span className="session-title">{isBreak ? "Break" : <>✦ {block.title}</>}</span>
-      {!isBreak && <span className="session-time">{range(start, end)} · auto-planned</span>}
-    </button>
-  );
-}
-
 function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date: string; place: Placed; onOpen: CalendarHandlers["onOpenEvent"] }) {
   const length = event.end - event.start;
   return (
@@ -122,7 +99,7 @@ function PreviewBlock({ session, place }: { session: ProposedSession; place: Pla
 }
 
 function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
-  const { tasks, sessions, events, availability, plan, schedulePreview } = useWorkspace();
+  const { tasks, sessions, events, availability, schedulePreview } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
   const zone = availability?.timeZone ?? "UTC";
   const [now, setNow] = useState(() => minutesInZone(zone));
@@ -172,11 +149,9 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
           const hours = availability ? resolveDay(availability, date) : null;
           const work = (sessionsOn.get(date) ?? []).filter(s => taskById.has(s.taskId));
           const occurrences = occurrencesOn(events, date);
-          const planned = schedulePreview ? [] : (plan?.blocks ?? []).flatMap(block => { const r = planRange(block, date, zone); return r ? [{ block, ...r }] : []; });
           const proposed = previewSessions.filter(s => s.date === date);
           const items = [...occurrences.map(o => ({ kind: "event" as const, start: o.event.start, end: o.event.end, event: o.event })),
             ...work.map(s => ({ kind: "session" as const, start: s.start, end: s.end, session: s })),
-            ...planned.map(p => ({ kind: "plan" as const, start: p.start, end: p.end, block: p.block })),
             ...proposed.map(s => ({ kind: "preview" as const, start: s.start, end: s.end, session: s }))];
           const lanes = layoutLanes(items);
           return (
@@ -197,7 +172,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
                   ? <SessionBlock key={item.session.id} session={item.session} task={taskById.get(item.session.taskId)!} place={lanes.get(item)!} onOpen={onOpen} />
                   : item.kind === "preview"
                     ? <PreviewBlock key={`preview-${item.session.taskId}-${item.start}`} session={item.session} place={lanes.get(item)!} />
-                    : <PlanBlockView key={item.block.id} block={item.block} start={item.start} end={item.end} task={item.block.taskId ? taskById.get(item.block.taskId) : undefined} place={lanes.get(item)!} onOpen={onOpen} />)}
+                    : null)}
               {date === today && <div className="now-line" style={{ top: (now / 60) * HOUR_HEIGHT }} aria-hidden="true" />}
             </div>
           );
@@ -208,8 +183,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
 }
 
 function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarHandlers, "onOpen" | "onOpenEvent" | "onAdd"> & { anchor: string; today: string }) {
-  const { tasks, sessions, events, availability, plan } = useWorkspace();
-  const zone = availability?.timeZone ?? "UTC";
+  const { tasks, sessions, events } = useWorkspace();
   const byDate = tasksByDate(tasks);
   const sessionsOn = sessionsByDate(sessions);
   const taskById = new Map(tasks.map(t => [t.id, t]));
@@ -221,14 +195,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
       {dates.map(date => {
         const occurrences = occurrencesOn(events, date);
         const due = byDate.get(date) ?? [];
-        const work = [
-          ...(sessionsOn.get(date) ?? []).filter(s => taskById.has(s.taskId)),
-          // Auto-planned focus blocks look like work sessions in the month view.
-          ...(plan?.blocks ?? []).filter(b => b.type === "focus" && b.taskId && taskById.has(b.taskId)).flatMap(b => {
-            const r = planRange(b, date, zone);
-            return r ? [{ id: b.id, taskId: b.taskId!, date, start: r.start, end: r.end, source: "auto" as const }] : [];
-          }),
-        ].sort((a, b) => a.start - b.start);
+        const work = (sessionsOn.get(date) ?? []).filter(s => taskById.has(s.taskId));
         const shownEvents = occurrences.slice(0, MONTH_ITEM_LIMIT);
         const shownDue = due.slice(0, MONTH_ITEM_LIMIT - shownEvents.length);
         const shownWork = work.slice(0, MONTH_ITEM_LIMIT - shownEvents.length - shownDue.length);
@@ -321,13 +288,12 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
       {schedulePreview && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
           <div>
-            <strong>Preview</strong> {schedulePreview.schedule.startDate} – {schedulePreview.schedule.endDate} ({schedulePreview.schedule.timeZone})
+            <strong>Proposed, not saved</strong> {schedulePreview.schedule.startDate} – {schedulePreview.schedule.endDate} ({schedulePreview.schedule.timeZone})
             {" · "}{schedulePreview.schedule.sessions.length} proposed session{schedulePreview.schedule.sessions.length === 1 ? "" : "s"}
             {unscheduled.length > 0 && (
-              <span className="form-warning"> · {unscheduled.length} task(s) not fully scheduled: {unscheduled.map(t => t.title).join(", ")}</span>
-            )}
-            {schedulePreview.schedule.explanations[0] && (
-              <p className="muted small">{schedulePreview.schedule.explanations[0]}</p>
+              <ul className="form-warning small">
+                {unscheduled.map(t => <li key={t.taskId}>{unscheduledLine(t)}</li>)}
+              </ul>
             )}
           </div>
           <div className="schedule-preview-actions">
@@ -342,8 +308,8 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
         : <TimeGrid dates={dates} today={today} {...handlers} />}
       <div className="calendar-legend">
         <span><i className="swatch event" /> Event</span>
-        <span><i className="swatch session" /> Work session</span>
-        <span><i className="swatch plan" /> Auto-planned / proposed</span>
+        <span><i className="swatch session" /> Saved work session</span>
+        <span><i className="swatch plan" /> Proposed (not saved)</span>
         <span><i className="swatch due" /> Task due</span>
         <span><i className="swatch available" /> Available hours</span>
         {connections.some(c => c.provider === "google") && <span><i className="swatch event source-google" /> From Google</span>}
