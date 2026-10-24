@@ -10,7 +10,7 @@ from app import schedule_routes
 from app.openai_interpret import InterpretResult
 from firebase_tokens import sign_in, sign_out
 from schedule_fixtures import (
-    ACCEPTANCE, NOW, TODAY, acceptance_tasks, add_event, add_task, freeze, rows, setup_user,
+    ACCEPTANCE, NOW, TODAY, TOMORROW, acceptance_tasks, add_event, add_task, freeze, rows, setup_user,
 )
 
 
@@ -265,6 +265,21 @@ def test_break_that_moves_no_work_keeps_saved_breaks_unchanged(transaction_envir
     assert {s['id'] for s in proposal['sessions'] if s['type'] == 'break' and s['change'] == 'kept'} == saved_breaks
     assert apply(client, proposal['previewId']).status_code == 200
     assert {s['id'] for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break' and not s['locked']} == saved_breaks
+
+
+def test_move_task_to_tomorrow_repairs_only_that_task(transaction_environment, monkeypatch):
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    asm, _ = acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    proposal = preview(client, '/schedule/repair', horizonDays=2, moves=[{'taskId': asm['id'], 'notBefore': '2026-10-27T04:00:00Z'}])
+    work = [s for s in proposal['sessions'] if s['type'] == 'work']
+    assert {s['date'] for s in work if s['title'] == 'Asm'} == {TOMORROW}
+    assert sum(s['end'] - s['start'] for s in work if s['title'] == 'Asm') == 60
+    assert sum(s['end'] - s['start'] for s in work if s['title'] == 'Test revision') == 60
+    assert {r['session']['title'] for r in proposal['removed'] if r['session']['type'] == 'work'} >= {'Asm'}
+    assert all(t['unallocatedMinutes'] == 0 for t in proposal['tasks'])
+    assert apply(client, proposal['previewId']).status_code == 200
 
 
 def test_requested_break_during_fixed_event_explains_the_conflict(environment, monkeypatch):
