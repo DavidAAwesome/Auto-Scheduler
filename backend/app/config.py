@@ -14,6 +14,8 @@ class Settings:
     database_name: str
     firebase_project_id: str
     allowed_origins: tuple[str, ...]
+    openai_api_key: str
+    openai_model: str
 
 
 @lru_cache
@@ -29,4 +31,11 @@ def get_settings() -> Settings:
     ).split(',') if x.strip())
     if not origins or '*' in origins:
         raise RuntimeError('ALLOWED_ORIGINS must contain explicit frontend origins.')
-    return Settings(uri, os.getenv('DATABASE_NAME', 'auto_scheduler'), project_id, origins)
+    return Settings(
+        uri,
+        os.getenv('DATABASE_NAME', 'auto_scheduler'),
+        project_id,
+        origins,
+        os.getenv('OPENAI_API_KEY', '').strip(),
+        os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip() or 'gpt-4o-mini',
+    )

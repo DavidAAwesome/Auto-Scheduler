@@ -131,5 +131,17 @@ export function createWorkspaceStore(request: Requester) {
     generatePlan(busyIntervals: BusyInterval[], source: GeneratedPlan['source']) {
       return mutate<GeneratedPlan>('/plan/generate', { method: 'POST', body: JSON.stringify({ busyIntervals, source }) }, plan => ({ plan }));
     },
+    /** OpenAI assistant; does not mutate workspace state. Falls through to caller on 503 when unset. */
+    chatAssistant(message: string, history: { role: 'user' | 'assistant'; text: string }[]) {
+      if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
+      return request<{
+        reply: string;
+        pendingAction: { type: 'generate_plan'; label: string } | null;
+        provider: 'openai';
+      }>('/assistant/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message, history: history.slice(-8) }),
+      });
+    },
   };
 }

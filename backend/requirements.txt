@@ -9,6 +9,7 @@ h11==0.16.0
 idna==3.19
 immutabledict==4.3.1
 numpy==2.5.3
+openai>=1.60.0,<2
 ortools==9.15.6755
 pandas==3.0.5
 protobuf==6.33.6

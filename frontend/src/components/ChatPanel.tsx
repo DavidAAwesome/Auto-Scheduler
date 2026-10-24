@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
+import { ApiError } from "../services/api";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
 import { dateInZone } from "../utils/calendar";
@@ -12,7 +13,7 @@ import Icon from "./Icon";
 const PROMPTS = ["Today’s tasks", "Generate plan", "What didn’t fit?", "Busy time"];
 const PLAN_DAYS = 7; // the scheduler plans a seven-day window starting today
 
-/** The sketch's "AI Chatbox": Lan's rules-based planning assistant (no AI service yet) plus plan generation. */
+/** Sketch AI Chatbox: OpenAI when configured, otherwise local rules; plan generation stays confirmed. */
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const { user } = useAuth();
@@ -20,18 +21,55 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
+  const [thinking, setThinking] = useState(false);
+  const [usingOpenAI, setUsingOpenAI] = useState(false);
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
   const context = { tasks, plan, availability, connections };
   const welcome = buildWelcome(context);
-  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages]);
+  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking]);
 
-  function ask(prompt: string) {
-    if (!prompt.trim()) return;
+  async function ask(prompt: string) {
+    const text = prompt.trim();
+    if (!text || thinking) return;
     const id = String(++nextId.current);
-    setMessages(previous => [...previous.slice(-18), { id: `${id}-q`, role: "user", text: prompt }, replyToPrompt(prompt, context, `${id}-a`)]);
+    const userMessage: AssistantMessage = { id: `${id}-q`, role: "user", text };
+    setMessages(previous => [...previous.slice(-18), userMessage]);
     setInput("");
+    setError("");
+    setThinking(true);
+    try {
+      const history = [...messages, userMessage]
+        .slice(-8)
+        .map(m => ({ role: m.role, text: m.text }));
+      const reply = await workspaceService.chatAssistant(text, history);
+      setUsingOpenAI(true);
+      setMessages(previous => [...previous, {
+        id: `${id}-a`,
+        role: "assistant",
+        text: reply.reply,
+        pendingAction: reply.pendingAction,
+      }]);
+    } catch (e) {
+      const status = e instanceof ApiError ? e.status : 0;
+      // No key / unavailable: keep the local helper so chat still works offline.
+      if (status === 503 || status === 0) {
+        setUsingOpenAI(false);
+        setMessages(previous => [...previous, replyToPrompt(text, context, `${id}-a`)]);
+      } else {
+        setError((e as Error).message);
+        setMessages(previous => [...previous, {
+          id: `${id}-a`,
+          role: "assistant",
+          text: "I couldn’t reach the assistant just now. Try again, or use Generate plan below.",
+          pendingAction: null,
+        }]);
+      }
+    } finally {
+      setThinking(false);
+    }
   }
+
   /** Classes, meetings and your own work sessions are sent as busy time, so auto-planned focus never overlaps them. */
   async function generate() {
     if (!availability) return;
@@ -47,7 +85,7 @@ export default function ChatPanel() {
       }]);
     } catch (e) { setError((e as Error).message); }
   }
-  function submit(event: FormEvent) { event.preventDefault(); ask(input); }
+  function submit(event: FormEvent) { event.preventDefault(); void ask(input); }
 
   if (!open)
     return (
@@ -65,9 +103,10 @@ export default function ChatPanel() {
       <div className="chat-messages" ref={log} role="log" aria-live="polite" aria-label="Planning conversation">
         <p className="bubble assistant">Hi{user?.name ? ` ${user.name.split(" ")[0]}` : ""}! {welcome.text}</p>
         {messages.map(m => <p key={m.id} className={`bubble ${m.role}`}>{m.text}</p>)}
+        {thinking && <p className="bubble assistant muted">Thinking…</p>}
         {pending?.type === "generate_plan" && (
           <div className="chat-confirm" role="group" aria-label="Confirm plan generation">
-            <button className="button small" disabled={saving} onClick={() => void generate()}>{saving ? "Planning…" : pending.label}</button>
+            <button className="button small" disabled={saving || thinking} onClick={() => void generate()}>{saving ? "Planning…" : pending.label}</button>
             <span className="muted small">Replaces the saved plan. Your tasks, events and sessions aren’t changed.</span>
           </div>
         )}
@@ -75,13 +114,17 @@ export default function ChatPanel() {
         {error && <p role="alert" className="form-error">{error}</p>}
       </div>
       <div className="chat-prompts">
-        {PROMPTS.map(p => <button key={p} className="chip" onClick={() => ask(p)}>{p}</button>)}
+        {PROMPTS.map(p => <button key={p} className="chip" disabled={thinking} onClick={() => void ask(p)}>{p}</button>)}
       </div>
       <form className="chat-input" onSubmit={submit}>
-        <input value={input} maxLength={500} onChange={e => setInput(e.target.value)} placeholder="Ask about your plan…" aria-label="Message the assistant" />
-        <button className="icon-button" disabled={!input.trim()} aria-label="Send"><Icon name="send" size={17} /></button>
+        <input value={input} maxLength={500} onChange={e => setInput(e.target.value)} placeholder="Ask about deadlines, conflicts, priorities…" aria-label="Message the assistant" disabled={thinking} />
+        <button className="icon-button" disabled={!input.trim() || thinking} aria-label="Send"><Icon name="send" size={17} /></button>
       </form>
-      <p className="chat-foot">Rules-based helper using your account data. Natural-language task entry arrives in Sprint 3.</p>
+      <p className="chat-foot">
+        {usingOpenAI
+          ? "OpenAI assistant + local scheduling engine (deadlines, conflicts, priorities, focus splits)."
+          : "Local helper until OPENAI_API_KEY is set. Schedule changes always need your confirmation."}
+      </p>
     </aside>
   );
 }

@@ -206,7 +206,7 @@ export function replyToPrompt(
     return {
       id,
       role: "assistant",
-      text: "Try: “today”, “unscheduled”, “list tasks”, “google calendar”, or “generate plan”. Replies use your saved tasks, availability, and plan — not a live language model.",
+      text: "Try: “today”, “unscheduled”, “list tasks”, “google calendar”, or “generate plan”. With OPENAI_API_KEY set on the API, the chat uses GPT; schedule placement still uses AutoPlan’s engine.",
       pendingAction: null,
     };
   }

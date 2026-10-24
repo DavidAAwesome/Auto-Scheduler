@@ -13,6 +13,7 @@ from app.workspace import router as workspace_router
 from app.plans import router as plans_router
 from app.events import router as events_router
 from app.calendars import router as calendars_router
+from app.assistant import router as assistant_router
 
 
 def create_app(database=None):
@@ -46,7 +47,7 @@ def create_app(database=None):
             if (origin and origin not in origins) or (not origin and request.headers.get('sec-fetch-site') == 'cross-site'):
                 return JSONResponse(status_code=403, content={'detail': 'Request origin is not allowed.'})
         response = await call_next(request)
-        if request.url.path.startswith(('/auth', '/tasks', '/sessions', '/events', '/calendar', '/availability', '/protected', '/plan')):
+        if request.url.path.startswith(('/auth', '/tasks', '/sessions', '/events', '/calendar', '/availability', '/protected', '/plan', '/assistant')):
             response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -70,6 +71,7 @@ def create_app(database=None):
     app.include_router(plans_router)
     app.include_router(events_router)
     app.include_router(calendars_router)
+    app.include_router(assistant_router)
 
     @app.get('/')
     def root():
