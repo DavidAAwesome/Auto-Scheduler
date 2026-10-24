@@ -146,7 +146,7 @@ export function createWorkspaceStore(request: Requester) {
           body: JSON.stringify({ horizonDays }),
         });
         if (current !== generation) throw new Error('Your account changed. Please try again.');
-        publish({ ...state, schedulePreview: preview, saving: false });
+        publish({ ...state, schedulePreview: preview, saving: false, error: '' });
         return preview;
       } catch (error) {
         if (current === generation) publish({ ...state, saving: false, error: (error as Error).message });
@@ -154,19 +154,23 @@ export function createWorkspaceStore(request: Requester) {
       }
     },
     clearSchedulePreview() {
-      publish({ ...state, schedulePreview: null });
+      publish({ ...state, schedulePreview: null, error: '' });
     },
     async applySchedulePreview() {
       const preview = state.schedulePreview;
       if (!preview) throw new Error('Generate a schedule preview first.');
-      await mutate<{ previewId: string; status: 'applied'; sessions: WorkSession[] }>(
+      publish({ ...state, error: '' });
+      const result = await mutate<{ previewId: string; status: 'applied'; sessions: WorkSession[] }>(
         '/schedule/apply',
         { method: 'POST', body: JSON.stringify({ previewId: preview.previewId }) },
-        () => ({ schedulePreview: null }),
+        saved => ({
+          sessions: [...state.sessions.filter(s => s.source !== 'auto' || s.locked), ...saved.sessions],
+          schedulePreview: null, error: '',
+        }),
       );
-      const sessions = await request<WorkSession[]>('/sessions');
-      publish({ ...state, sessions, schedulePreview: null });
-      return sessions;
+      // Publish only the committed response. A second GET could fail after a
+      // successful commit or publish another account's data after sign-out.
+      return result.sessions;
     },
     /** OpenAI assistant; does not mutate workspace state. Falls through to caller on 503 when unset. */
     chatAssistant(message: string, history: { role: 'user' | 'assistant'; text: string }[]) {

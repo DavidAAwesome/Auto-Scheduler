@@ -56,9 +56,8 @@ def create_app(database=None):
                        allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
                        allow_headers=['Content-Type', 'Authorization'])
 
-    @app.exception_handler(PyMongoError)
-    async def database_error(request: Request, exc: PyMongoError):
-        return JSONResponse(status_code=503, content={'detail': 'Database is unavailable. Please try again later.'})
+    from app.database_errors import database_error
+    app.add_exception_handler(PyMongoError, database_error)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):

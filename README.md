@@ -168,3 +168,15 @@ Sprint 1 includes Firebase login/signup (email/password and Google), password re
 Tasks have a due date and an optional due time (11:59 PM if left blank), remaining duration, split limits, optional earliest start, and dependencies. The user can place **work sessions** manually or generate them with **Generate Schedule**. Sessions show as blocks in the time grid; locked/manual sessions are preserved when replanning.
 
 **Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date. They block work sessions and auto-scheduling. Google Calendar and Outlook import is available on the Calendars page. Reminder delivery remains limited to the bell list for due today/tomorrow.
+
+### Schedule persistence diagnostics
+
+The API loads `backend/.env` relative to `app/config.py`, independent of the launch directory. Existing process environment variables take precedence. Task CRUD, schedule previews, and Apply use the same `app.state.db` connection; Firebase token verification remains unchanged.
+
+Apply requires MongoDB transactions (a replica set or transaction-capable sharded deployment). It validates the preview and replaces unlocked auto sessions plus the preview status in one transaction with majority write concern. It returns success only after commit; there is no in-memory or non-transactional fallback.
+
+Older databases may have a unique, non-sparse `sessions.jti` index from token storage. Work sessions omit `jti`, so that index rejects additional work sessions with error 11000. Startup builds a partial unique index for documents where `jti` exists before removing the legacy index. It does not remove records or the legacy token TTL index, and token identifiers remain unique. This error does not require changing Atlas Network Access.
+
+Database failures return a safe `detail`, a category in `code`, and a `reference` that matches the backend error log. The log includes the method, route, exception type, and MongoDB error code, without credentials, request bodies, or driver error text. Categories distinguish connectivity, database authentication, database permissions, uniqueness conflicts, document validation, unsupported transactions, and other operations. User authentication errors remain HTTP 401; database credentials/roles are backend configuration failures and do not sign users out.
+
+Backend tests run with `cd backend && .venv/bin/pytest -q`. Set `TEST_MONGODB_URI` through your environment to a test-capable MongoDB replica set to exercise persistence and rollback. The fixture creates and cleans up uniquely named `aptest_*` databases; it never substitutes a production database name. Transaction tests skip mongomock and standalone MongoDB rather than pretending to verify persistence. Frontend checks: `cd frontend && npm test && npm run build`.

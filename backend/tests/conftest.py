@@ -28,10 +28,23 @@ def environment(request, monkeypatch):
         mongo.admin.command('ping')  # An explicitly requested integration run must fail if inaccessible.
     else:
         mongo = mongomock.MongoClient(tz_aware=True)
-    name = 'autoplan_auth_test_' + uuid.uuid4().hex
+    name = 'aptest_' + uuid.uuid4().hex[:24]
     db = mongo[name]
-    with TestClient(create_app(db)) as client:
-        yield client, db
-    mongo.drop_database(name)  # Only the unique database created by this fixture.
-    mongo.close()
-    get_settings.cache_clear()
+    try:
+        with TestClient(create_app(db)) as client:
+            yield client, db
+    finally:
+        mongo.drop_database(name)  # Only the unique database created by this fixture.
+        mongo.close()
+        get_settings.cache_clear()
+
+
+@pytest.fixture
+def transaction_environment(environment):
+    client, db = environment
+    if isinstance(db.client, mongomock.MongoClient):
+        pytest.skip('Transactions require a real MongoDB replica set; no mock persistence fallback.')
+    hello = db.client.admin.command('hello')
+    if not hello.get('setName') and hello.get('msg') != 'isdbgrid':
+        pytest.skip('Transactions require a replica set or sharded cluster.')
+    return client, db

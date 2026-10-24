@@ -11,6 +11,8 @@ from typing import Literal
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
 
 from app.auth import get_current_user
 from app.database import get_database
@@ -25,7 +27,9 @@ from app.scheduling_engine import (
 from app.scheduling_validator import ValidationError, validate_schedule
 from app.workspace import (
     SessionInput,
-    check_session,
+    Availability,
+    default_availability,
+    task_output,
     get_availability,
     list_tasks,
     session_doc,
@@ -76,12 +80,12 @@ class InterpretResponse(BaseModel):
     preview: PreviewResponse | None = None
 
 
-def _event_busy(db, user_id: str, start_date: str, end_date: str) -> list[BusyBlock]:
+def _event_busy(db, user_id: str, start_date: str, end_date: str, session=None) -> list[BusyBlock]:
     """Expand events (including repeats) into busy blocks in the planning window."""
     blocks: list[BusyBlock] = []
     day = date_cls.fromisoformat(start_date)
     last = date_cls.fromisoformat(end_date)
-    events = list(db.events.find({'user_id': user_id}))
+    events = list(db.events.find({'user_id': user_id}, session=session))
     while day <= last:
         day_s = day.isoformat()
         for doc in events:
@@ -94,16 +98,18 @@ def _event_busy(db, user_id: str, start_date: str, end_date: str) -> list[BusyBl
     return blocks
 
 
-def _load_context(user, db, now: datetime, horizon_days: int = 7):
-    tasks = list_tasks(user=user, db=db)
-    availability = get_availability(user=user, db=db)
+def _load_context(user, db, now: datetime, horizon_days: int = 7, session=None):
+    owner = {'user_id': str(user['_id'])}
+    tasks = [task_output(doc) for doc in db.tasks.find(owner, session=session)]
+    saved = db.availability.find_one(owner, {'_id': 0, 'user_id': 0}, session=session)
+    availability = Availability(**saved) if saved else default_availability()
     from zoneinfo import ZoneInfo
     zone = ZoneInfo(availability.timeZone)
     local = now.astimezone(zone).date()
     start_date = local.isoformat()
     end_date = (local.fromordinal(local.toordinal() + horizon_days - 1)).isoformat()
 
-    sessions = list(db.sessions.find({'user_id': str(user['_id'])}))
+    sessions = list(db.sessions.find({'user_id': str(user['_id'])}, session=session))
     fixed: list[FixedSession] = []
     unlocked: list[FixedSession] = []
     for doc in sessions:
@@ -121,7 +127,7 @@ def _load_context(user, db, now: datetime, horizon_days: int = 7):
         else:
             unlocked.append(item)
 
-    busy = _event_busy(db, str(user['_id']), start_date, end_date)
+    busy = _event_busy(db, str(user['_id']), start_date, end_date, session=session)
     return tasks, availability, busy, fixed, unlocked, start_date, end_date
 
 
@@ -163,80 +169,60 @@ def replan(body: PreviewRequest = PreviewRequest(), user=Depends(get_current_use
 def apply_preview(body: ApplyRequest, user=Depends(get_current_user), db=Depends(get_database)):
     if not ObjectId.is_valid(body.previewId):
         raise HTTPException(404, 'Preview not found.')
-    preview = db.schedule_previews.find_one({'_id': ObjectId(body.previewId), 'user_id': str(user['_id'])})
+    # Preserve ownership errors even on servers that cannot run transactions.
+    if not db.schedule_previews.find_one({'_id': ObjectId(body.previewId), 'user_id': str(user['_id'])}):
+        raise HTTPException(404, 'Preview not found.')
+    # One MongoClient/database for task CRUD and every operation in this transaction.
+    # No non-transactional fallback: partial schedule replacement loses user data.
+    with db.client.start_session() as session:
+        return session.with_transaction(
+            lambda transaction: _apply_transaction(body, user, db, transaction),
+            read_concern=ReadConcern('snapshot'), write_concern=WriteConcern('majority'),
+        )
+
+
+def _apply_transaction(body, user, db, session):
+    owner = {'_id': ObjectId(body.previewId), 'user_id': str(user['_id'])}
+    preview = db.schedule_previews.find_one(owner, session=session)
     if not preview:
         raise HTTPException(404, 'Preview not found.')
-
     if preview.get('status') == 'applied':
-        # Idempotent: return already-created sessions for this preview.
         existing = list(db.sessions.find({
-            'user_id': str(user['_id']),
-            'preview_id': body.previewId,
-        }))
-        return ApplyResponse(
-            previewId=body.previewId,
-            status='applied',
-            sessions=[session_output(doc).model_dump() for doc in existing],
-        )
+            'user_id': str(user['_id']), 'preview_id': body.previewId,
+        }, session=session))
+        return ApplyResponse(previewId=body.previewId, status='applied',
+                             sessions=[session_output(doc).model_dump() for doc in existing])
 
     now = utc_now()
     horizon = int(preview.get('horizon_days') or 7)
-    tasks, availability, busy, fixed, unlocked, _, _ = _load_context(user, db, now, horizon)
+    tasks, availability, busy, fixed, unlocked, _, _ = _load_context(user, db, now, horizon, session)
     schedule = ScheduleResult(**preview['schedule'])
-
-    # Reject stale previews: fingerprint must match current world.
     fresh = generate_schedule(tasks, availability, busy, fixed, unlocked, now, horizon)
     if fresh.inputFingerprint != preview['input_fingerprint']:
-        raise HTTPException(
-            409,
-            'This preview is stale. Tasks, availability, events, or sessions changed. Generate a new preview.',
-        )
-
+        raise HTTPException(409, 'This preview is stale. Tasks, availability, events, or sessions changed. Generate a new preview.')
     try:
         validate_schedule(schedule, tasks, availability, busy, fixed, now)
     except ValidationError as exc:
-        raise HTTPException(status_code=409, detail=f'Preview no longer valid: {exc.message}') from exc
+        raise HTTPException(409, f'Preview no longer valid: {exc.message}') from exc
 
-    user_id = str(user['_id'])
-    # Replace unlocked auto sessions with proposed ones. Keep manual/locked.
-    # Use ordered writes; full multi-doc transactions are not assumed for mongomock.
-    db.sessions.delete_many({'user_id': user_id, 'source': 'auto', 'locked': {'$ne': True}})
-
+    # Validate every document before deleting anything. The validator above checks
+    # task ownership, deadlines, and overlaps against this transaction's snapshot.
     created = []
-    try:
-        for proposed in schedule.sessions:
-            if proposed.kept:
-                # Re-create kept sessions as auto (previous unlocked autos were deleted).
-                pass
-            data = SessionInput(
-                taskId=proposed.taskId,
-                date=proposed.date,
-                start=proposed.start,
-                end=proposed.end,
-                source='auto',
-                locked=False,
-            )
-            # Ownership + overlap checks against remaining fixed sessions and events.
-            check_session(data, user, db)
-            doc = session_doc(data, user)
-            doc['preview_id'] = body.previewId
-            doc['_id'] = db.sessions.insert_one(doc).inserted_id
-            created.append(doc)
-    except HTTPException:
-        # Best-effort rollback of sessions created in this apply.
-        if created:
-            db.sessions.delete_many({'_id': {'$in': [c['_id'] for c in created]}})
-        raise
-
-    db.schedule_previews.update_one(
-        {'_id': ObjectId(body.previewId), 'user_id': user_id, 'status': 'pending'},
-        {'$set': {'status': 'applied', 'applied_at': now}},
-    )
-    return ApplyResponse(
-        previewId=body.previewId,
-        status='applied',
-        sessions=[session_output(doc).model_dump() for doc in created],
-    )
+    for proposed in schedule.sessions:
+        data = SessionInput(taskId=proposed.taskId, date=proposed.date,
+                            start=proposed.start, end=proposed.end, source='auto', locked=False)
+        created.append({**session_doc(data, user), '_id': ObjectId(), 'preview_id': body.previewId})
+    # Serialize concurrent Apply requests for the same owner (including empty plans).
+    db.users.update_one({'_id': user['_id']}, {'$inc': {'schedule_revision': 1}}, session=session)
+    db.sessions.delete_many({'user_id': str(user['_id']), 'source': 'auto', 'locked': {'$ne': True}}, session=session)
+    if created:
+        db.sessions.insert_many(created, session=session)
+    updated = db.schedule_previews.update_one(
+        {**owner, 'status': 'pending'}, {'$set': {'status': 'applied', 'applied_at': now}}, session=session)
+    if updated.modified_count != 1:
+        raise HTTPException(409, 'Preview changed. Generate a new preview.')
+    return ApplyResponse(previewId=body.previewId, status='applied',
+                         sessions=[session_output(doc).model_dump() for doc in created])
 
 
 @router.post('/interpret', response_model=InterpretResponse)

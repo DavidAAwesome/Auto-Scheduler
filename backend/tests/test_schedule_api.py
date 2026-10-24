@@ -34,8 +34,8 @@ def _setup(client, monkeypatch, allow_split=True):
     return task
 
 
-def test_preview_split_scenario_and_apply_idempotent(environment, monkeypatch):
-    client, db = environment
+def test_preview_split_scenario_and_apply_idempotent(transaction_environment, monkeypatch):
+    client, db = transaction_environment
     task = _setup(client, monkeypatch, allow_split=True)
     preview = client.post('/schedule/preview', json={'horizonDays': 1}).json()
     sessions = preview['schedule']['sessions']
@@ -66,8 +66,8 @@ def test_preview_unsplit_no_contiguous(environment, monkeypatch):
     assert preview['schedule']['tasks'][0]['reason'] == 'no_contiguous_slot'
 
 
-def test_stale_preview_rejected(environment, monkeypatch):
-    client, _ = environment
+def test_stale_preview_rejected(transaction_environment, monkeypatch):
+    client, _ = transaction_environment
     task = _setup(client, monkeypatch)
     preview = client.post('/schedule/preview', json={'horizonDays': 1}).json()
     client.put(f"/tasks/{task['id']}", json={
