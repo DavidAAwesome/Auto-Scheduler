@@ -660,7 +660,18 @@ class _Planner:
             ends = [s.end for s in self.sessions if s.task_id == dep and s.type == 'work']
             if ends:
                 lo = max(lo, max(ends))
-        return lo, min(task.due, self.window_end)
+        hi = min(task.due, self.window_end)
+
+        if lo >= hi:
+            self.add_reason(
+                task.id,
+                'invalid_time_window',
+                'This task cannot be scheduled because its earliest allowed '
+                'start time is at or after its deadline or planning window end.'
+            )
+            return None
+
+        return lo, hi   
 
     def _allocate_task(self, task: EngineTask, need: dict[str, int]):
         alloc = self.allocations[task.id]
