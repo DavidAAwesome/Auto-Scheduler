@@ -354,3 +354,28 @@ def test_timestamps_are_utc_and_display_fields_are_local():
     assert first.startAt == datetime(2026, 10, 26, 13, 0, tzinfo=timezone.utc)  # 9:00 EDT
     assert (first.date, first.start, first.end) == ('2026-10-26', 540, 590)
     assert to_abs(first.endAt) - to_abs(first.startAt) == 50
+
+def test_earliest_start_after_deadline():
+    # Task cannot start until 3 PM, but its deadline is 2 PM.
+    impossible_task = task(
+        'late',
+        'Finish Networking Assignment',
+        minutes=30,
+        due_day=MONDAY,
+        due_minute=14 * 60,
+        earliest=at(MONDAY, 15 * 60)
+    )
+
+    result = plan([impossible_task])
+
+    # No work should be scheduled.
+    assert not any(s.type == 'work' for s in result.sessions)
+
+    # All 30 minutes should remain unallocated.
+    assert alloc(result, 'late').unallocated == 30
+
+    # The engine should explain why scheduling is impossible.
+    assert any(
+        r.code == 'invalid_time_window'
+        for r in alloc(result, 'late').reasons
+    )
