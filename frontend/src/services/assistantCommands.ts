@@ -1,7 +1,8 @@
-import type { AIProfile, PreferenceChange, SchedulePreferences, SchedulePreview, Task, TaskInput, WorkSession } from "../types/models.ts";
+import type { AIProfile, DraftView, PlanDraft, PreferenceChange, SchedulePreferences, SchedulePreview, Task, TaskInput, WorkSession } from "../types/models.ts";
 import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
+import { emptyDraft } from "./planEntry.ts";
 import { eventFromIntent, parseEventRequest, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
 import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
@@ -66,6 +67,8 @@ export interface CommandWorkspace {
   clearSchedulePreview(): void;
   createTask(input: TaskInput): Promise<Task>;
   deleteTask(id: string): Promise<void>;
+  /** Puts drafts in the review panel; nothing is saved until the user previews and applies. */
+  addDrafts(drafts: PlanDraft[]): Promise<DraftView[]>;
 }
 
 export const PLAN_DAYS = 7;
@@ -263,14 +266,14 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
       title.length > 80 ||
       Number.isNaN(deadlineDate.getTime()) ||
       !Number.isInteger(duration) ||
-      duration < 15 ||
+      duration < 5 ||
       duration > 6000 ||
-      duration % 15 !== 0
+      duration % 5 !== 0
     ) {
       return {
         command: "clarify",
         question:
-          "Please provide a valid task title, deadline, and duration in multiples of 15 minutes."
+          "Please provide a valid task title, deadline, and duration in multiples of 5 minutes."
       };
     }
 
@@ -554,54 +557,26 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
     
     case "add_task": {
+      // A chat "add task" becomes a draft to review, like any other plan entry: it is never saved directly,
+      // and its priority is whatever the user picks in the review panel (Medium is shown as an assumption).
       const title = req.title.trim();
-      const deadline = req.deadline;
-      const duration = req.duration;
-    
-      if (!title || title.length > 80) {
-        return reply("Please provide a task title between 1 and 80 characters.");
+      if (!title || title.length > 80) return reply("Please provide a task title between 1 and 80 characters.");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(req.deadline) || new Date(`${req.deadline}T12:00:00Z`).toISOString().slice(0, 10) !== req.deadline)
+        return reply("Please provide a valid deadline in YYYY-MM-DD format.");
+      if (!Number.isInteger(req.duration) || req.duration < 5 || req.duration > 6000 || req.duration % 5 !== 0)
+        return reply("Task duration must be between 5 and 6000 minutes, in multiples of 5.");
+      try {
+        const id = `chat${Date.now().toString(36)}`;
+        const [view] = await workspace.addDrafts([emptyDraft(id, {
+          title, deadline: req.deadline, minutes: req.duration, dueTime: 1439, allowSplit: true, assumed: ["priority"],
+          sourceText: `${title}, ${req.duration} min, due ${req.deadline}`,
+        })]);
+        const open = view?.issues.find(i => i.blocking);
+        return reply(`I added “${title}” to the review panel as a draft. Nothing is saved yet. ${open ? `First: ${open.question}` : "Check the priority, then use “Can this fit?” or “Preview on calendar”, and Apply to save."}`);
+      } catch (e) {
+        return reply(`I couldn’t add that draft: ${(e as Error).message}`);
       }
-
-  const parsedDate = new Date(`${deadline}T12:00:00Z`);
-
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(deadline) ||
-    Number.isNaN(parsedDate.getTime()) ||
-    parsedDate.toISOString().slice(0, 10) !== deadline
-  ) {
-    return reply("Please provide a valid deadline in YYYY-MM-DD format.");
-  }
-
-  if (
-    !Number.isInteger(duration) ||
-    duration < 15 ||
-    duration > 6000 ||
-    duration % 15 !== 0
-  ) {
-    return reply("Task duration must be between 15 and 6000 minutes, in multiples of 15.");
-  }
-
-  try {
-    const task = await workspace.createTask({
-      title,
-      deadline,
-      minutes: duration,
-      completedMinutes: 0,
-      dueTime: 1439,
-      priority: "Medium",
-      category: "Personal",
-      earliestStart: null,
-      allowSplit: true,
-      minSessionMinutes: 15,
-      maxSessionMinutes: 60,
-      dependsOn: [],
-    });
-
-    return reply(`Task "${task.title}" was created successfully.`);
-  } catch {
-    return reply("Sorry, I couldn't create the task. Please try again.");
-  }
-}  
     }
+  }
 return reply("This command is not supported yet.");
 }

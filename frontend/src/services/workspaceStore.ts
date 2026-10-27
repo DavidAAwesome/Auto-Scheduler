@@ -1,4 +1,4 @@
-import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type AIProfile, type ApplyResult, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
+import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type AIProfile, type ApplyResult, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
@@ -65,10 +65,33 @@ export interface WorkspaceState {
   schedulePreview: SchedulePreview | null;
   /** Inputs changed after the preview was made; Apply will be rejected, so offer to regenerate. */
   previewStale: boolean;
+  /** Items read from chat text or an image, waiting for review. Never saved until a plan preview is applied. */
+  planDrafts: PlanDrafts | null;
+  /** Result of the last "Can this fit?" check for the current drafts (changes no saved data). */
+  feasibility: FeasibilityResult | null;
+  /** A plan request (reading, checking, previewing drafts) is running. */
+  planBusy: boolean;
   error: string;
   saving: boolean;
 }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, previewStale: false, error: '', saving: false });
+export interface PlanDrafts { batchId: string; provider: InterpretResult['provider'] | 'chat'; notes: string[]; views: DraftView[]; horizonDays: number }
+export interface ImageAttachment { mediaType: string; dataBase64: string; name: string }
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, previewStale: false, planDrafts: null, feasibility: null, planBusy: false, error: '', saving: false });
+const newBatchId = () => `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/** Gives incoming drafts ids that do not clash with drafts already under review, keeping their links. */
+export function mergeDrafts(current: DraftView[], incoming: DraftView[]): DraftView[] {
+  const taken = new Set(current.map(v => v.draft.id));
+  let next = current.length;
+  const rename = new Map<string, string>();
+  for (const view of incoming) {
+    let id = view.draft.id;
+    while (taken.has(id)) id = `d${++next}`;
+    taken.add(id);
+    rename.set(view.draft.id, id);
+  }
+  return [...current, ...incoming.map(v => ({ ...v, draft: { ...v.draft, id: rename.get(v.draft.id)!, dependsOn: v.draft.dependsOn.map(d => rename.get(d) ?? d) } }))];
+}
 export type PreviewRequest = { kind: 'generate'; horizonDays?: number } | { kind: 'repair'; horizonDays?: number; moves?: { taskId: string; notBefore: string }[] } | { kind: 'break'; minutes: number };
 
 // Injectable transport lets tests exercise request failures and account-change races.
@@ -88,7 +111,7 @@ export function createWorkspaceStore(request: Requester) {
       // The AI profile is optional: if it cannot load, the workspace still opens with default personalization.
       const profile = request<AIProfile>('/assistant/profile').then(normalizeProfile, () => DEFAULT_AI_PROFILE);
       const [tasks, schedule, events, connections, availability, preferences, aiProfile] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<Availability>('/availability'), request<SchedulePreferences>('/schedule/preferences'), profile]);
-      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, previewStale: false, error: '', saving: false });
+      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, previewStale: false, planDrafts: state.planDrafts, feasibility: null, planBusy: false, error: '', saving: false });
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
     }
@@ -105,6 +128,20 @@ export function createWorkspaceStore(request: Requester) {
       return result;
     } finally {
       if (current === generation && state.saving) publish({ ...state, saving: false });
+    }
+  }
+  /** Draft edits make a pending plan preview out of date (it no longer matches what is under review). */
+  const draftsChanged = () => (state.schedulePreview?.mode === 'plan' ? { previewStale: true } : {});
+  async function planCall<T>(path: string, body: unknown): Promise<T> {
+    if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
+    const current = generation;
+    publish({ ...state, planBusy: true });
+    try {
+      const result = await request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+      if (current !== generation) throw new Error('Your account changed. Please try again.');
+      return result;
+    } finally {
+      if (current === generation) publish({ ...state, planBusy: false });
     }
   }
   const api = {
@@ -240,7 +277,13 @@ export function createWorkspaceStore(request: Requester) {
         result = await mutate<ApplyResult>(
           '/schedule/apply',
           { method: 'POST', body: JSON.stringify({ previewId: preview.previewId }) },
-          saved => ({ sessions: saved.schedule.sessions, scheduleVersion: saved.schedule.scheduleVersion, schedulePreview: null, previewStale: false, error: '' }),
+          saved => ({
+            sessions: saved.schedule.sessions, scheduleVersion: saved.schedule.scheduleVersion, schedulePreview: null, previewStale: false, error: '',
+            // Tasks and events created from drafts by this Apply join the shared state; the drafts are done.
+            tasks: [...state.tasks, ...(saved.tasks ?? []).filter(t => !state.tasks.some(x => x.id === t.id))],
+            events: [...state.events, ...(saved.events ?? []).filter(e => !state.events.some(x => x.id === e.id))],
+            ...(preview.mode === 'plan' ? { planDrafts: null, feasibility: null } : {}),
+          }),
         );
       } catch (error) {
         // 409 means the server rejected this proposal as stale or invalid: drop it so the user regenerates.
@@ -251,7 +294,79 @@ export function createWorkspaceStore(request: Requester) {
       }
       // Publish only the committed response. A second GET could fail after a
       // successful commit or publish another account's data after sign-out.
+      if (result.duplicate && preview.mode === 'plan') void load(); // already saved earlier: show what is stored
       return result.schedule.sessions;
+    },
+    // ------------------------------------------------------------ plan entry (drafts)
+    /** Reads text and/or an image into drafts for review. Saves nothing; the caller keeps its input on failure. */
+    async interpretPlan(text: string, image?: ImageAttachment | null) {
+      const batch = state.planDrafts?.batchId ?? newBatchId();
+      const result = await planCall<InterpretResult>('/plan/interpret', { text, image: image ?? null, batchId: batch });
+      const views = mergeDrafts(state.planDrafts?.views ?? [], result.drafts);
+      publish({ ...state, planDrafts: { batchId: batch, provider: result.provider, notes: result.notes, views, horizonDays: state.planDrafts?.horizonDays ?? 7 }, feasibility: null, ...draftsChanged() });
+      return { ...result, drafts: views.slice(views.length - result.drafts.length) };
+    },
+    /** Adds structured drafts (e.g. a chat "add task" request) to the review panel instead of saving them directly. */
+    async addDrafts(drafts: PlanDraft[]) {
+      const batch = state.planDrafts?.batchId ?? newBatchId();
+      const merged = mergeDrafts(state.planDrafts?.views ?? [], drafts.map(draft => ({ draft, issues: [], ready: false })));
+      publish({ ...state, planDrafts: { batchId: batch, provider: 'chat', notes: [], views: merged, horizonDays: state.planDrafts?.horizonDays ?? 7 }, feasibility: null, ...draftsChanged() });
+      await api.reviewDrafts();
+      return state.planDrafts!.views.slice(merged.length - drafts.length);
+    },
+    /** Local edit of one draft; re-checked by the backend with reviewDrafts(). */
+    updateDraft(id: string, patch: Partial<PlanDraft>) {
+      if (!state.planDrafts) return;
+      const views = state.planDrafts.views.map(v => (v.draft.id === id ? { ...v, draft: { ...v.draft, ...patch } } : v));
+      publish({ ...state, planDrafts: { ...state.planDrafts, views }, feasibility: null, ...draftsChanged() });
+    },
+    removeDraft(id: string) {
+      if (!state.planDrafts) return;
+      const views = state.planDrafts.views.filter(v => v.draft.id !== id)
+        .map(v => ({ ...v, draft: { ...v.draft, dependsOn: v.draft.dependsOn.filter(d => d !== id) } }));
+      publish({ ...state, planDrafts: views.length ? { ...state.planDrafts, views } : null, feasibility: null, ...draftsChanged() });
+    },
+    setPlanHorizon(days: number) {
+      if (!state.planDrafts) return;
+      publish({ ...state, planDrafts: { ...state.planDrafts, horizonDays: days }, feasibility: null, ...draftsChanged() });
+    },
+    clearDrafts() {
+      const plan = state.schedulePreview?.mode === 'plan';
+      publish({ ...state, planDrafts: null, feasibility: null, ...(plan ? { schedulePreview: null, previewStale: false } : {}) });
+    },
+    /** Business-rule review of every draft by the backend: questions for anything missing or ambiguous. */
+    async reviewDrafts() {
+      const plan = state.planDrafts;
+      if (!plan) return [];
+      const views = await planCall<DraftView[]>('/plan/review', { drafts: plan.views.map(v => v.draft), horizonDays: plan.horizonDays, batchId: plan.batchId });
+      if (state.planDrafts?.batchId === plan.batchId) publish({ ...state, planDrafts: { ...state.planDrafts, views } });
+      return views;
+    },
+    /** A focused answer ("PM", "Dec 12") updates the same draft. */
+    async clarifyDraft(id: string, field: string, answer: string) {
+      const plan = state.planDrafts;
+      const view = plan?.views.find(v => v.draft.id === id);
+      if (!plan || !view) throw new Error('That item is no longer in the review list.');
+      const updated = await planCall<DraftView>('/plan/clarify', { draft: view.draft, field, answer, otherDraftIds: plan.views.map(v => v.draft.id) });
+      if (state.planDrafts) publish({ ...state, planDrafts: { ...state.planDrafts, views: state.planDrafts.views.map(v => (v.draft.id === id ? updated : v)) }, feasibility: null, ...draftsChanged() });
+      return updated;
+    },
+    /** "Can this fit?": the backend reads only; nothing is saved, not even a proposal. */
+    async checkFit() {
+      const plan = state.planDrafts;
+      if (!plan) throw new Error('There is nothing to check yet.');
+      const result = await planCall<FeasibilityResult>('/plan/feasibility', { drafts: plan.views.map(v => v.draft), horizonDays: plan.horizonDays, batchId: plan.batchId });
+      publish({ ...state, feasibility: result });
+      return result;
+    },
+    /** Complete calendar preview with the drafts added. Apply saves tasks, events and sessions together. */
+    async previewDrafts() {
+      const plan = state.planDrafts;
+      if (!plan) throw new Error('There is nothing to preview yet.');
+      if (state.saving) throw new Error('A change is still saving. Please try again shortly.');
+      const preview = await planCall<SchedulePreview>('/plan/preview', { drafts: plan.views.map(v => v.draft), horizonDays: plan.horizonDays, batchId: plan.batchId });
+      publish({ ...state, schedulePreview: preview, previewStale: false, error: '' });
+      return preview;
     },
     /** OpenAI assistant; never builds or saves schedules. Its intents run through requestPreview/applySchedulePreview. */
     chatAssistant(message: string, history: { role: 'user' | 'assistant'; text: string }[]) {

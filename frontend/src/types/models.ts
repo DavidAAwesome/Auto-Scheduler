@@ -21,7 +21,12 @@ export interface Task {
   minSessionMinutes: number;
   maxSessionMinutes: number;
   dependsOn: string[];
+  /** "task" is focus work; "flexible_event" (gym, coffee) is placed in one block and is not focus work. */
+  kind?: "task" | "flexible_event";
+  /** Recurring local windows where it may be placed (empty weekdays = every day). */
+  windows?: TimeWindow[];
 }
+export interface TimeWindow { weekdays: number[]; start: number; end: number }
 export type TaskInput = Omit<Task, "id" | "done" | "remainingMinutes">;
 export const DEFAULT_DUE_TIME = 23 * 60 + 59;
 export type SessionType = "work" | "break";
@@ -142,20 +147,23 @@ export interface SavedSchedule { scheduleVersion: number; timeZone: string; sess
 export interface AllocationReason { code: string; message: string }
 /** Invariant: retainedMinutes + newMinutes + unallocatedMinutes = remainingMinutes + overAllocatedMinutes. */
 export interface TaskAllocation {
-  taskId: string; title: string; priority: Priority; dueAt: string;
+  taskId: string; title: string; priority: Priority; kind?: "task" | "flexible_event"; dueAt: string;
   estimatedMinutes: number; completedMinutes: number; remainingMinutes: number;
   retainedMinutes: number; inProgressMinutes: number; newMinutes: number; unallocatedMinutes: number; overAllocatedMinutes: number;
   atRisk: boolean; slackMinutes: number | null;
   status: "scheduled" | "partial" | "unscheduled" | "complete";
   reasons: AllocationReason[];
 }
-export interface ScheduleConflict { code: string; message: string; items: { kind: string; id: string | null; title: string; startAt: string | null; endAt: string | null }[] }
+export interface ConflictChoice { id: "allow_split" | "raise_focus_limit" | "make_flexible_event" | string; label: string }
+export interface ScheduleConflict { code: string; message: string; items: { kind: string; id: string | null; title: string; startAt: string | null; endAt: string | null }[]; choices?: ConflictChoice[] }
+/** One occurrence of a fixed event that exists only as a draft until Apply. */
+export interface ProposedEvent { draftId: string; title: string; kind: EventKind; date: string; start: number; end: number; startAt: string; endAt: string; repeats: boolean }
 export interface SessionRemoval { session: ScheduleSession; reason: string; newEndAt: string | null }
 export interface DaySummary { date: string; workMinutes: number; newWorkMinutes: number; breakCount: number; sessionCount: number }
 export interface SchedulePreview {
   previewId: string;
   status: "proposed" | "applied";
-  mode: "generate" | "repair" | "break";
+  mode: "generate" | "repair" | "break" | "plan";
   baseScheduleVersion: number;
   generatedAt: string;
   timeZone: string;
@@ -175,5 +183,53 @@ export interface SchedulePreview {
   explanations: string[];
   note: string;
   inputFingerprint: string;
+  /** Plan previews: draft fixed events in the window. */
+  proposedEvents?: ProposedEvent[];
+  horizonDays?: number;
 }
-export interface ApplyResult { previewId: string; status: "applied"; duplicate: boolean; schedule: SavedSchedule }
+export interface ApplyResult { previewId: string; status: "applied"; duplicate: boolean; schedule: SavedSchedule; tasks?: Task[]; events?: CalendarEvent[] }
+
+/** Draft ids are prefixed with this in previews (taskId "draft:d1") until Apply creates the real task. */
+export const DRAFT_PREFIX = "draft:";
+export type DraftKind = "task" | "fixed_event" | "flexible_event";
+export interface DraftRepeat { weekdays: number[]; startDate: string | null; until: string | null }
+/** An editable item read from text or an image. Nothing is saved until a preview of it is applied. */
+export interface PlanDraft {
+  id: string;
+  kind: DraftKind;
+  title: string | null;
+  minutes: number | null;
+  deadline: string | null;
+  dueTime: number | null;
+  earliestStart: string | null;
+  priority: Priority;
+  category: Category;
+  allowSplit: boolean | null;
+  minSessionMinutes: number | null;
+  maxSessionMinutes: number | null;
+  date: string | null;
+  start: number | null;
+  end: number | null;
+  eventKind: EventKind;
+  location: string | null;
+  repeat: DraftRepeat | null;
+  windows: TimeWindow[];
+  dependsOn: string[];
+  sourceText: string | null;
+  ambiguous: string[];
+  unreadable: string[];
+  assumed: string[];
+  include: boolean;
+}
+export interface DraftIssue { field: string; code: "missing" | "ambiguous" | "unreadable" | "invalid" | "warning"; question: string; blocking: boolean }
+export interface DraftView { draft: PlanDraft; issues: DraftIssue[]; ready: boolean }
+export interface InterpretResult { batchId: string; provider: "openai" | "local"; drafts: DraftView[]; notes: string[]; now: string; timeZone: string }
+export type FitStatus = "fits_without_moving" | "fits_after_changes" | "no_plan_found" | "proven_infeasible";
+export interface FitCause { code: string; message: string; proven: boolean }
+export interface ItemFit { draftId: string; title: string; kind: DraftKind; status: "fits" | "partial" | "unscheduled" | "fixed" | "fixed_conflict"; neededMinutes: number; scheduledMinutes: number; unscheduledMinutes: number; causes: FitCause[] }
+export interface Displaced { taskId: string; title: string; priority: Priority; movedSessions: number; unscheduledMinutesBefore: number; unscheduledMinutesAfter: number }
+export interface FitAlternative { id: string; label: string; draftId: string | null; patch: Partial<PlanDraft>; horizonDays: number | null }
+export interface FeasibilityResult {
+  status: FitStatus; summary: string; items: ItemFit[]; displaced: Displaced[]; alternatives: FitAlternative[];
+  horizonDays: number; windowStart: string; windowEnd: string; searchLimits: string; savedDataChanged: false;
+}
