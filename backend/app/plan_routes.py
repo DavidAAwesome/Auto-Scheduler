@@ -101,8 +101,8 @@ def interpret(body: InterpretRequest, user=Depends(get_current_user), db=Depends
         drafts, notes = extract_with_model(body.text, image, now, zone, list(titles.values()))
         provider = 'openai'
     elif image:
-        raise HTTPException(503, 'Reading images needs the AI provider (set OPENAI_API_KEY in backend/.env). '
-                                 'Your image was kept; you can type the items instead.')
+        # Developer setup (OPENAI_API_KEY) stays out of the product message.
+        raise HTTPException(503, 'Reading images isn’t available right now. Your image was kept; you can type the items instead.')
     else:
         drafts = parse_text(body.text, now, zone, {title: tid for tid, title in titles.items()})
         provider = 'local'
