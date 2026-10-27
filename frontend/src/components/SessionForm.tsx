@@ -4,7 +4,7 @@ import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { clock12, clockTime, longDate, parseClock } from "../utils/calendar";
 import { resolveDay } from "../utils/availability";
-import { localDate } from "../utils/dates";
+import { accountToday } from "../utils/timeZones";
 import { endsAfterDue, outsideAvailability, overlapping, plannedMinutes } from "../utils/planning";
 import { duration } from "../utils/taskDisplay";
 import Modal from "./Modal";
@@ -26,7 +26,7 @@ export default function SessionForm({ session, taskId, date, start, onClose, onS
   const choices = tasks.filter(t => !t.done || t.id === session?.taskId).sort((a, b) => a.deadline.localeCompare(b.deadline) || a.dueTime - b.dueTime);
   const [selectedId, setSelectedId] = useState(session?.taskId ?? taskId ?? choices[0]?.id ?? "");
   const task = tasks.find(t => t.id === selectedId);
-  const today = localDate();
+  const today = accountToday(availability);
   const initialDate = session?.date ?? date ?? (task && task.deadline < today ? task.deadline : today);
   const hours = availability ? resolveDay(availability, initialDate) : null;
   const initialStart = session?.start ?? start ?? (hours?.enabled && hours.periods.length ? hours.periods[0].start : 9 * 60);

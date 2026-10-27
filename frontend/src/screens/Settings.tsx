@@ -1,6 +1,9 @@
 import { useMemo, useState, type FormEvent } from "react";
 import ScreenHeading from "../components/ScreenHeading";
+import Icon from "../components/Icon";
+import { NumberField, SaveBar, SelectField, SettingsSection, Switch } from "../components/SettingsControls";
 import { useWorkspace } from "../hooks/useWorkspace";
+import { useSaveStatus } from "../hooks/useSaveStatus";
 import { workspaceService } from "../services/workspace";
 import { ABOUT_ME_MAX, type AIProfile, type AssistantTone, type Availability, type AvailableDay, type ReplyStyle, type SchedulePreferences } from "../types/models";
 import {
@@ -12,8 +15,8 @@ import {
   upsertWeekOverride,
   weekLabel,
 } from "../utils/availability";
-import { WEEKDAYS, dateInZone, parseClock } from "../utils/calendar";
-import { normalizeTimeZone, timeZoneChoices } from "../utils/timeZones";
+import { WEEKDAYS, clock12, dateInZone, parseClock } from "../utils/calendar";
+import { normalizeTimeZone, timeZoneChoices, timeZoneLabel } from "../utils/timeZones";
 import "./Planning.css";
 
 type DraftDay = {
@@ -28,6 +31,21 @@ const END_OPTIONS = timeOptions(true);
 function clock(minutes: number) {
   if (minutes >= 1440) return "24:00";
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/** "09:00" → "9 AM", "24:00" → "Midnight". The stored value stays 24-hour. */
+function clockLabel(value: string) {
+  return value === "24:00" ? "Midnight" : clock12(parseClock(value));
+}
+
+function TimeSelect({ label, value, options, onChange, disabled }: {
+  label: string; value: string; options: string[]; onChange: (value: string) => void; disabled?: boolean;
+}) {
+  return (
+    <select aria-label={label} value={value} disabled={disabled} onChange={event => onChange(event.target.value)}>
+      {options.map(option => <option key={option} value={option}>{clockLabel(option)}</option>)}
+    </select>
+  );
 }
 
 function toDraftDays(days: AvailableDay[]): DraftDay[] {
@@ -64,22 +82,39 @@ function validateDays(days: AvailableDay[]): string | null {
         !Number.isFinite(period.end) ||
         period.end <= period.start
       ) {
-        return "Use 24-hour times (00:00–23:59). Each end must be later than its start.";
+        return `${WEEKDAYS[day.day]}: each period must end after it starts.`;
       }
     }
     const ordered = [...day.periods].sort((a, b) => a.start - b.start);
     for (let index = 1; index < ordered.length; index += 1) {
       if (ordered[index].start < ordered[index - 1].end) {
-        return "Periods on the same day cannot overlap.";
+        return `${WEEKDAYS[day.day]}: periods can’t overlap.`;
       }
     }
   }
   return null;
 }
 
+function TimeZoneSelect({ value, onChange }: { value: string; onChange: (zone: string) => void }) {
+  const { common, all } = timeZoneChoices();
+  const known = common.some(z => z.value === value) || all.some(z => z.value === value);
+  return (
+    <SelectField label="Time zone" value={value} onChange={zone => onChange(normalizeTimeZone(zone))}>
+      {!known && <option value={value}>{timeZoneLabel(value)}</option>}
+      <optgroup label="Common">
+        {common.map(zone => <option key={zone.value} value={zone.value}>{zone.label}</option>)}
+      </optgroup>
+      <optgroup label="All time zones">
+        {all.map(zone => <option key={zone.value} value={zone.value}>{zone.label}</option>)}
+      </optgroup>
+    </SelectField>
+  );
+}
+
+/** Weekly hours are wall-clock times in the account timezone, which is chosen here and nowhere else. */
 function AvailabilityForm({ initial }: { initial: Availability }) {
   const seed = useMemo(() => normalizeAvailability(initial), [initial]);
-  const today = dateInZone(seed.timeZone);
+  const [saved, setSaved] = useState(seed);
   const [activeWeek, setActiveWeek] = useState<"default" | string>("default");
   const [defaultDays, setDefaultDays] = useState(() => cloneDays(seed.days));
   const [overrides, setOverrides] = useState(() =>
@@ -93,10 +128,27 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
   );
   const [timeZone, setTimeZone] = useState(normalizeTimeZone(seed.timeZone));
   const [reminders, setReminders] = useState(seed.reminders);
+  const today = dateInZone(timeZone);
   const [addWeekDate, setAddWeekDate] = useState(today);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const { saving } = useWorkspace();
+  const [notice, setNotice] = useState("");
+  const save = useSaveStatus();
+
+  const current = useMemo(() => {
+    const days = fromDraftDays(draftDays);
+    return normalizeAvailability({
+      days: activeWeek === "default" ? days : defaultDays,
+      weekOverrides: activeWeek === "default" ? overrides : upsertWeekOverride(overrides, activeWeek, days),
+      timeZone: normalizeTimeZone(timeZone),
+      reminders,
+    });
+  }, [draftDays, activeWeek, defaultDays, overrides, timeZone, reminders]);
+  const dirty = JSON.stringify(current) !== JSON.stringify(saved);
+  const zoneChanged = normalizeTimeZone(timeZone) !== saved.timeZone;
+
+  function edited() {
+    save.edited();
+    setNotice("");
+  }
 
   function persistDraft():
     | { defaultDays: AvailableDay[]; overrides: typeof overrides }
@@ -104,7 +156,7 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
     const days = fromDraftDays(draftDays);
     const issue = validateDays(days);
     if (issue) {
-      setError(issue);
+      save.fail(issue);
       return null;
     }
     const nextDefault = activeWeek === "default" ? days : defaultDays;
@@ -127,15 +179,14 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
       setDraftDays(toDraftDays(source ?? emptyWeekDays()));
     }
     setActiveWeek(next);
-    setMessage("");
-    setError("");
+    setNotice("");
   }
 
   function changeDay(day: number, patch: Partial<DraftDay>) {
-    setDraftDays((current) =>
-      current.map((row) => (row.day === day ? { ...row, ...patch } : row)),
+    setDraftDays((rows) =>
+      rows.map((row) => (row.day === day ? { ...row, ...patch } : row)),
     );
-    setMessage("");
+    edited();
   }
 
   function changePeriod(
@@ -143,8 +194,8 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
     index: number,
     patch: Partial<{ start: string; end: string }>,
   ) {
-    setDraftDays((current) =>
-      current.map((row) => {
+    setDraftDays((rows) =>
+      rows.map((row) => {
         if (row.day !== day) return row;
         return {
           ...row,
@@ -154,12 +205,12 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
         };
       }),
     );
-    setMessage("");
+    edited();
   }
 
   function addPeriod(day: number) {
-    setDraftDays((current) =>
-      current.map((row) =>
+    setDraftDays((rows) =>
+      rows.map((row) =>
         row.day === day
           ? {
               ...row,
@@ -169,12 +220,12 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
           : row,
       ),
     );
-    setMessage("");
+    edited();
   }
 
   function removePeriod(day: number, index: number) {
-    setDraftDays((current) =>
-      current.map((row) => {
+    setDraftDays((rows) =>
+      rows.map((row) => {
         if (row.day !== day) return row;
         const periods = row.periods.filter((_, periodIndex) => periodIndex !== index);
         return {
@@ -184,7 +235,7 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
         };
       }),
     );
-    setMessage("");
+    edited();
   }
 
   function addWeek() {
@@ -208,308 +259,212 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
       ),
     );
     setActiveWeek(monday);
-    setMessage(`Editing ${weekLabel(monday)}. Save to keep this week’s hours.`);
-    setError("");
+    edited();
+    setNotice(`Editing ${weekLabel(monday)} only.`);
   }
 
   function removeActiveWeek() {
     if (activeWeek === "default") return;
-    setOverrides((current) =>
-      current.filter((week) => week.weekStart !== activeWeek),
+    setOverrides((weeks) =>
+      weeks.filter((week) => week.weekStart !== activeWeek),
     );
     setDraftDays(toDraftDays(defaultDays));
     setActiveWeek("default");
-    setMessage("Removed this week override. Save to apply.");
+    edited();
   }
 
-  async function save(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setMessage("");
-    setError("");
-    const days = fromDraftDays(draftDays);
-    const issue = validateDays(days);
-    if (issue) {
-      setError(issue);
-      return;
-    }
-
-    const nextDefault = activeWeek === "default" ? days : defaultDays;
-    const nextOverrides =
-      activeWeek === "default"
-        ? overrides
-        : upsertWeekOverride(overrides, activeWeek, days);
-
-    const input = normalizeAvailability({
-      days: nextDefault,
-      weekOverrides: nextOverrides,
-      timeZone: normalizeTimeZone(timeZone),
-      reminders,
+    const issue = validateDays(fromDraftDays(draftDays));
+    if (issue) return save.fail(issue);
+    await save.run(async () => {
+      const result = normalizeAvailability(await workspaceService.saveAvailability(current));
+      setSaved(result);
+      setDefaultDays(cloneDays(result.days));
+      setOverrides(result.weekOverrides.map((week) => ({ weekStart: week.weekStart, days: cloneDays(week.days) })));
+      const shown = activeWeek === "default" ? result.days : result.weekOverrides.find((week) => week.weekStart === activeWeek)?.days;
+      setDraftDays(toDraftDays(shown ?? emptyWeekDays()));
+      setTimeZone(normalizeTimeZone(result.timeZone));
+      setReminders(result.reminders);
+      setNotice("");
     });
-
-    try {
-      const saved = normalizeAvailability(
-        await workspaceService.saveAvailability(input),
-      );
-      setDefaultDays(cloneDays(saved.days));
-      setOverrides(
-        saved.weekOverrides.map((week) => ({
-          weekStart: week.weekStart,
-          days: cloneDays(week.days),
-        })),
-      );
-      if (activeWeek === "default") setDraftDays(toDraftDays(saved.days));
-      else {
-        const found = saved.weekOverrides.find(
-          (week) => week.weekStart === activeWeek,
-        );
-        setDraftDays(toDraftDays(found?.days ?? emptyWeekDays()));
-      }
-      setTimeZone(normalizeTimeZone(saved.timeZone));
-      setReminders(saved.reminders);
-      setMessage("Availability saved to your account.");
-    } catch (err) {
-      setError((err as Error).message);
-    }
   }
 
   return (
-    <form className="card availability-form" onSubmit={save}>
-      <h2>Available hours</h2>
-
-      <div className="availability-week-bar" role="group" aria-label="Week schedule">
-        <button
-          type="button"
-          className={activeWeek === "default" ? "is-active" : ""}
-          aria-pressed={activeWeek === "default"}
-          onClick={() => loadWeek("default")}
-        >
-          Default week
-        </button>
-        {overrides.map((week) => (
-          <button
-            key={week.weekStart}
-            type="button"
-            className={activeWeek === week.weekStart ? "is-active" : ""}
-            aria-pressed={activeWeek === week.weekStart}
-            onClick={() => loadWeek(week.weekStart)}
-          >
-            {weekLabel(week.weekStart)}
-          </button>
-        ))}
+    <SettingsSection title="Availability" description="When the scheduler may plan work." onSubmit={submit}>
+      <div className="settings-grid two">
+        <TimeZoneSelect value={normalizeTimeZone(timeZone)} onChange={zone => { setTimeZone(zone); edited(); }} />
       </div>
+      {zoneChanged && <p className="field-hint zone-hint">Events keep their actual times and show in the new time zone.</p>}
 
-      <div className="availability-week-add">
-        <label>
-          Add week
+      <div className="week-tools">
+        <div className="week-chips" role="group" aria-label="Week to edit">
+          <button
+            type="button"
+            className={activeWeek === "default" ? "is-active" : ""}
+            aria-pressed={activeWeek === "default"}
+            onClick={() => loadWeek("default")}
+          >
+            Every week
+          </button>
+          {overrides.map((week) => (
+            <button
+              key={week.weekStart}
+              type="button"
+              className={activeWeek === week.weekStart ? "is-active" : ""}
+              aria-pressed={activeWeek === week.weekStart}
+              onClick={() => loadWeek(week.weekStart)}
+            >
+              {weekLabel(week.weekStart)}
+            </button>
+          ))}
+        </div>
+        <div className="week-add">
+          <label className="sr-only" htmlFor="add-week-date">Week to customize</label>
           <input
+            id="add-week-date"
             type="date"
             value={addWeekDate}
             onChange={(event) => setAddWeekDate(event.target.value || today)}
           />
-        </label>
-        <button type="button" className="button secondary" onClick={addWeek}>
-          Edit week of {mondayOf(addWeekDate)}
-        </button>
-        {activeWeek !== "default" && (
-          <button
-            type="button"
-            className="button secondary"
-            onClick={removeActiveWeek}
-          >
-            Remove this week override
+          <button type="button" className="button secondary small" onClick={addWeek}>
+            Customize week
           </button>
-        )}
+          {activeWeek !== "default" && (
+            <button type="button" className="button ghost small" onClick={removeActiveWeek}>
+              Use usual hours
+            </button>
+          )}
+        </div>
       </div>
+      {notice && <p className="field-hint">{notice}</p>}
 
-      <fieldset disabled={saving}>
-        <legend className="sr-only">Weekly availability</legend>
+      <fieldset className="day-list">
+        <legend className="sr-only">Weekly hours</legend>
         {draftDays.map((row) => (
-          <div className="availability-day" key={row.day}>
+          <div className={`day-row ${row.enabled ? "" : "is-off"}`} key={row.day}>
             <label className="day-toggle">
               <input
                 type="checkbox"
+                role="switch"
+                className="switch"
                 checked={row.enabled}
                 onChange={(event) =>
                   changeDay(row.day, { enabled: event.target.checked })
                 }
               />
-              {WEEKDAYS[row.day]}
+              <span>{WEEKDAYS[row.day]}</span>
             </label>
-            <div className="availability-periods">
-              {row.periods.map((period, index) => (
-                <div className="availability-period" key={`${row.day}-${index}`}>
-                  <label>
-                    From
-                    <select
-                      aria-label={`${WEEKDAYS[row.day]} period ${index + 1} start`}
-                      disabled={!row.enabled}
+            {row.enabled ? (
+              <div className="day-periods">
+                {row.periods.map((period, index) => (
+                  <div className="period" key={`${row.day}-${index}`}>
+                    <TimeSelect
+                      label={`${WEEKDAYS[row.day]} period ${index + 1} start`}
                       value={period.start}
-                      onChange={(event) =>
-                        changePeriod(row.day, index, {
-                          start: event.target.value,
-                        })
-                      }
-                    >
-                      {START_OPTIONS.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Until
-                    <select
-                      aria-label={`${WEEKDAYS[row.day]} period ${index + 1} end`}
-                      disabled={!row.enabled}
+                      options={START_OPTIONS}
+                      onChange={(start) => changePeriod(row.day, index, { start })}
+                    />
+                    <span className="period-dash" aria-hidden="true">–</span>
+                    <TimeSelect
+                      label={`${WEEKDAYS[row.day]} period ${index + 1} end`}
                       value={period.end}
-                      onChange={(event) =>
-                        changePeriod(row.day, index, { end: event.target.value })
-                      }
+                      options={END_OPTIONS}
+                      onChange={(end) => changePeriod(row.day, index, { end })}
+                    />
+                    <button
+                      type="button"
+                      className="icon-button ghost small"
+                      disabled={row.periods.length === 1}
+                      aria-label={`Remove period ${index + 1} on ${WEEKDAYS[row.day]}`}
+                      title="Remove period"
+                      onClick={() => removePeriod(row.day, index)}
                     >
-                      {END_OPTIONS.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className="button secondary"
-                    disabled={!row.enabled || row.periods.length === 1}
-                    aria-label={`Remove period ${index + 1} on ${WEEKDAYS[row.day]}`}
-                    onClick={() => removePeriod(row.day, index)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                className="button secondary"
-                onClick={() => addPeriod(row.day)}
-              >
-                + Add period
-              </button>
-            </div>
+                      <Icon name="close" size={15} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="add-period"
+                  aria-label={`Add a period on ${WEEKDAYS[row.day]}`}
+                  onClick={() => addPeriod(row.day)}
+                >
+                  <Icon name="plus" size={14} /> Add period
+                </button>
+              </div>
+            ) : (
+              <span className="day-off">Unavailable</span>
+            )}
           </div>
         ))}
-
-        <div className="settings-row">
-          <label className="timezone-field">
-            Time zone
-            <select
-              required
-              aria-label="Time zone"
-              value={normalizeTimeZone(timeZone)}
-              onChange={(event) => {
-                setTimeZone(normalizeTimeZone(event.target.value));
-                setMessage("");
-              }}
-            >
-              {timeZoneChoices().map((zone) => (
-                <option key={zone.value} value={zone.value}>
-                  {zone.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="settings-row">
-          <label>
-            <input
-              type="checkbox"
-              checked={reminders}
-              onChange={(event) => {
-                setReminders(event.target.checked);
-                setMessage("");
-              }}
-            />{" "}
-            Reminders
-          </label>
-        </div>
-        <button className="button" type="submit">
-          {saving ? "Saving…" : "Save availability"}
-        </button>
       </fieldset>
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-      <p className="task-status" role="status">
-        {message}
-      </p>
-    </form>
+
+      <Switch
+        label="Reminders"
+        checked={reminders}
+        onChange={(on) => { setReminders(on); edited(); }}
+      />
+      <SaveBar status={save.status} error={save.error} dirty={dirty} label="Save availability" />
+    </SettingsSection>
   );
 }
 
+const asNumber = (value: string) => (value.trim() === "" ? NaN : Number(value));
+
 /** Focus length, break length, daily cap and an optional protected lunch. The scheduler and validator both use these. */
 function PreferencesForm({ initial }: { initial: SchedulePreferences }) {
-  const { saving } = useWorkspace();
+  const [saved, setSaved] = useState(initial);
   const [focus, setFocus] = useState(String(initial.focusMinutes));
   const [rest, setRest] = useState(String(initial.breakMinutes));
   const [daily, setDaily] = useState(String(initial.maxDailyWorkMinutes / 60));
   const [lunchOn, setLunchOn] = useState(initial.lunch !== null);
   const [lunchStart, setLunchStart] = useState(clock(initial.lunch?.start ?? 720));
   const [lunchEnd, setLunchEnd] = useState(clock(initial.lunch?.end ?? 780));
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const save = useSaveStatus();
 
-  async function save(event: FormEvent) {
+  const current: SchedulePreferences = {
+    focusMinutes: asNumber(focus),
+    breakMinutes: asNumber(rest),
+    maxDailyWorkMinutes: Math.round(asNumber(daily) * 60),
+    lunch: lunchOn ? { start: parseClock(lunchStart), end: parseClock(lunchEnd) } : null,
+  };
+  const dirty = JSON.stringify(current) !== JSON.stringify({ ...saved, lunch: saved.lunch ? { start: saved.lunch.start, end: saved.lunch.end } : null });
+  const set = (setter: (value: string) => void) => (value: string) => { setter(value); save.edited(); };
+
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    const focusMinutes = Number(focus);
-    const breakMinutes = Number(rest);
-    const maxDailyWorkMinutes = Math.round(Number(daily) * 60);
-    const lunch = lunchOn ? { start: parseClock(lunchStart), end: parseClock(lunchEnd) } : null;
-    if (!Number.isInteger(focusMinutes) || focusMinutes < 10 || focusMinutes > 240) return setError("Focus length must be 10 to 240 minutes.");
-    if (!Number.isInteger(breakMinutes) || breakMinutes < 5 || breakMinutes > 120) return setError("Break length must be 5 to 120 minutes.");
-    if (!Number.isFinite(maxDailyWorkMinutes) || maxDailyWorkMinutes < 15 || maxDailyWorkMinutes > 1440) return setError("Daily task work must be between 0.25 and 24 hours.");
-    if (lunch && !(lunch.end > lunch.start)) return setError("Lunch must end after it starts.");
-    setError("");
-    try {
-      await workspaceService.savePreferences({ focusMinutes, breakMinutes, maxDailyWorkMinutes, lunch });
-      setMessage("Saved. Generate or repair your schedule to apply the new pacing.");
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    const { focusMinutes, breakMinutes, maxDailyWorkMinutes, lunch } = current;
+    if (!Number.isInteger(focusMinutes) || focusMinutes < 10 || focusMinutes > 240) return save.fail("Focus length must be 10 to 240 minutes.");
+    if (!Number.isInteger(breakMinutes) || breakMinutes < 5 || breakMinutes > 120) return save.fail("Break length must be 5 to 120 minutes.");
+    if (!Number.isFinite(maxDailyWorkMinutes) || maxDailyWorkMinutes < 15 || maxDailyWorkMinutes > 1440) return save.fail("Daily task limit must be 0.25 to 24 hours.");
+    if (lunch && !(lunch.end > lunch.start)) return save.fail("Lunch must end after it starts.");
+    await save.run(async () => {
+      await workspaceService.savePreferences(current);
+      setSaved(current);
+    });
   }
 
   return (
-    <form className="card availability-form" onSubmit={save} aria-label="Focus and breaks">
-      <fieldset disabled={saving}>
-        <legend>Focus &amp; breaks</legend>
-        <p className="muted small">Defaults: 50 minutes of focus, then a 10-minute break, up to 4 hours of task work a day. Adjust them to suit you.</p>
-        <div className="availability-meta">
-          <label>Focus length (min)
-            <input type="number" min={10} max={240} value={focus} onChange={e => { setFocus(e.target.value); setMessage(""); }} />
-          </label>
-          <label>Break length (min)
-            <input type="number" min={5} max={120} value={rest} onChange={e => { setRest(e.target.value); setMessage(""); }} />
-          </label>
-          <label>Task work per day (hours)
-            <input type="number" min={0.25} max={24} step={0.25} value={daily} onChange={e => { setDaily(e.target.value); setMessage(""); }} />
-          </label>
+    <SettingsSection title="Focus & breaks" description="How the scheduler paces your work." onSubmit={submit}>
+      <div className="settings-grid three">
+        <NumberField label="Focus length" unit="minutes" min={10} max={240} value={focus} onChange={set(setFocus)} />
+        <NumberField label="Break length" unit="minutes" min={5} max={120} value={rest} onChange={set(setRest)} />
+        <NumberField label="Daily task limit" unit="hours" min={0.25} max={24} step={0.25} value={daily} onChange={set(setDaily)} />
+      </div>
+      <Switch label="Protect a lunch break" checked={lunchOn} onChange={(on) => { setLunchOn(on); save.edited(); }} />
+      {lunchOn && (
+        <div className="settings-grid two lunch-times">
+          <SelectField label="Lunch starts" value={lunchStart} onChange={set(setLunchStart)}>
+            {START_OPTIONS.map(o => <option key={o} value={o}>{clockLabel(o)}</option>)}
+          </SelectField>
+          <SelectField label="Lunch ends" value={lunchEnd} onChange={set(setLunchEnd)}>
+            {END_OPTIONS.map(o => <option key={o} value={o}>{clockLabel(o)}</option>)}
+          </SelectField>
         </div>
-        <div className="availability-meta">
-          <label>
-            <input type="checkbox" checked={lunchOn} onChange={e => { setLunchOn(e.target.checked); setMessage(""); }} /> Protect a lunch break
-          </label>
-          {lunchOn && <>
-            <label>From
-              <select value={lunchStart} onChange={e => setLunchStart(e.target.value)}>{START_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}</select>
-            </label>
-            <label>To
-              <select value={lunchEnd} onChange={e => setLunchEnd(e.target.value)}>{END_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}</select>
-            </label>
-          </>}
-        </div>
-        <button className="button" type="submit">{saving ? "Saving…" : "Save focus & breaks"}</button>
-      </fieldset>
-      {error && <p className="form-error" role="alert">{error}</p>}
-      <p className="task-status" role="status">{message}</p>
-    </form>
+      )}
+      <SaveBar status={save.status} error={save.error} dirty={dirty} label="Save focus & breaks" />
+    </SettingsSection>
   );
 }
 
@@ -526,71 +481,60 @@ const TONES: { value: AssistantTone; label: string }[] = [
 
 /** How the AI assistant talks to you. Changes wording only; the scheduler never reads these. */
 function AIProfileForm({ initial }: { initial: AIProfile }) {
-  const { saving } = useWorkspace();
+  const [saved, setSaved] = useState(initial);
   const [replyStyle, setReplyStyle] = useState<ReplyStyle>(initial.replyStyle);
   const [tone, setTone] = useState<AssistantTone>(initial.tone);
   const [aboutMe, setAboutMe] = useState(initial.aboutMe);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const save = useSaveStatus();
+  const dirty = replyStyle !== saved.replyStyle || tone !== saved.tone || aboutMe.trim() !== saved.aboutMe;
+  const nearLimit = aboutMe.length > ABOUT_ME_MAX * 0.9;
 
-  async function save(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (aboutMe.length > ABOUT_ME_MAX) return setError(`Keep “About me” under ${ABOUT_ME_MAX} characters.`);
-    setError("");
-    try {
-      await workspaceService.saveAIProfile({ replyStyle, tone, aboutMe: aboutMe.trim() });
-      setMessage("Saved. The assistant uses this from your next message.");
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    if (aboutMe.length > ABOUT_ME_MAX) return save.fail(`Keep “About me” under ${ABOUT_ME_MAX} characters.`);
+    const next = { replyStyle, tone, aboutMe: aboutMe.trim() };
+    await save.run(async () => {
+      await workspaceService.saveAIProfile(next);
+      setSaved(next);
+      setAboutMe(next.aboutMe);
+    });
   }
 
   return (
-    <form className="card availability-form" onSubmit={save} aria-label="AI personalization">
-      <fieldset disabled={saving}>
-        <legend>AI personalization</legend>
-        <p className="muted small">How the assistant talks to you. You can also tell it in chat, e.g. “keep answers short” or “remember I have class on Tuesdays”; it asks before saving anything.</p>
-        <div className="availability-meta">
-          <label>Reply style
-            <select value={replyStyle} onChange={e => { setReplyStyle(e.target.value as ReplyStyle); setMessage(""); }}>
-              {REPLY_STYLES.map(o => <option key={o.value} value={o.value}>{o.label} — {o.hint}</option>)}
-            </select>
-          </label>
-          <label>Tone
-            <select value={tone} onChange={e => { setTone(e.target.value as AssistantTone); setMessage(""); }}>
-              {TONES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </label>
+    <SettingsSection title="Assistant" description="How the assistant talks to you." onSubmit={submit}>
+      <div className="settings-grid two">
+        <SelectField label="Reply style" value={replyStyle} hint={REPLY_STYLES.find(o => o.value === replyStyle)?.hint}
+          onChange={value => { setReplyStyle(value as ReplyStyle); save.edited(); }}>
+          {REPLY_STYLES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </SelectField>
+        <SelectField label="Tone" value={tone} onChange={value => { setTone(value as AssistantTone); save.edited(); }}>
+          {TONES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </SelectField>
+      </div>
+      <div className="field">
+        <label htmlFor="about-me">About me</label>
+        <div className="textarea-wrap">
+          <textarea id="about-me" rows={4} maxLength={ABOUT_ME_MAX} value={aboutMe} aria-describedby="about-me-count"
+            placeholder="e.g. Grad student. I focus best at night. Classes Tue/Thu afternoons."
+            onChange={e => { setAboutMe(e.target.value); save.edited(); }} />
+          <span id="about-me-count" className={`char-count ${nearLimit ? "is-near" : ""}`}>
+            {aboutMe.length}/{ABOUT_ME_MAX}<span className="sr-only"> characters</span>
+          </span>
         </div>
-        <label className="ai-about">About me <span className="muted small">({aboutMe.length}/{ABOUT_ME_MAX})</span>
-          <textarea rows={3} maxLength={ABOUT_ME_MAX} value={aboutMe} placeholder="e.g. Grad student. I focus best at night. Classes Tue/Thu afternoons."
-            onChange={e => { setAboutMe(e.target.value); setMessage(""); }} />
-        </label>
-        <button className="button" type="submit">{saving ? "Saving…" : "Save AI personalization"}</button>
-      </fieldset>
-      {error && <p className="form-error" role="alert">{error}</p>}
-      <p className="task-status" role="status">{message}</p>
-    </form>
+      </div>
+      <SaveBar status={save.status} error={save.error} dirty={dirty} label="Save assistant" />
+    </SettingsSection>
   );
 }
 
 export default function Settings() {
   const { availability, preferences, aiProfile } = useWorkspace();
   return (
-    <>
-      <ScreenHeading
-        eyebrow="SETTINGS"
-        title="Planning, on your terms."
-        description="Set the hours you’re available. They show on your calendar, and the scheduler plans inside them."
-      />
-      {availability && (
-        <AvailabilityForm
-          key={`${availability.timeZone}-${availability.days.length}-${availability.weekOverrides?.length ?? 0}`}
-          initial={normalizeAvailability(availability)}
-        />
-      )}
-      <PreferencesForm key={JSON.stringify(preferences)} initial={preferences} />
-      <AIProfileForm key={JSON.stringify(aiProfile)} initial={aiProfile} />
-    </>
+    <div className="settings-page">
+      <ScreenHeading eyebrow="SETTINGS" title="Planning, on your terms." />
+      {availability && <AvailabilityForm initial={normalizeAvailability(availability)} />}
+      <PreferencesForm initial={preferences} />
+      <AIProfileForm initial={aiProfile} />
+    </div>
   );
 }

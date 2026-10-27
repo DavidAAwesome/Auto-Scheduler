@@ -1,5 +1,6 @@
 import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
+import { browserTimeZone } from '../utils/timeZones.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
 export type AssistantIntent =
@@ -146,7 +147,11 @@ export const FIELD_WORDS: Record<string, string> = {
 export type PreviewRequest = { kind: 'generate'; horizonDays?: number } | { kind: 'repair'; horizonDays?: number; moves?: { taskId: string; notBefore: string }[] } | { kind: 'break'; minutes: number };
 
 // Injectable transport lets tests exercise request failures and account-change races.
-export function createWorkspaceStore(request: Requester) {
+/** GET /availability says `saved: false` until the account has saved a timezone. */
+type LoadedAvailability = Availability & { saved?: boolean };
+
+/** `deviceTimeZone` is only the first default for an account that has never saved a timezone. */
+export function createWorkspaceStore(request: Requester, deviceTimeZone: () => string = browserTimeZone) {
   let state = empty();
   let owner: string | null = null;
   let generation = 0;
@@ -173,6 +178,20 @@ export function createWorkspaceStore(request: Requester) {
     for (const a of open) void request(`/actions/${a.id}/cancel`, { method: 'POST' }).catch(() => undefined);
     return { pendingActions: state.pendingActions.map(a => (open.includes(a) ? { ...a, status: 'cancelled' as const, error: note } : a)) };
   }
+  /**
+   * An account that never saved a timezone gets the device's, saved once so the server (scheduling, chat,
+   * date parsing) and every later device use the same zone. If that save fails, the device zone is used for now.
+   */
+  async function firstTimeZone(loaded: LoadedAvailability): Promise<Availability> {
+    const availability = normalizeAvailability(loaded);
+    if (loaded.saved !== false) return availability;
+    const initial = { ...availability, timeZone: deviceTimeZone() };
+    try {
+      return normalizeAvailability(await request<Availability>('/availability', { method: 'PUT', body: JSON.stringify(initial) }));
+    } catch {
+      return initial;
+    }
+  }
   async function load() {
     if (!owner || state.saving) return;
     const current = ++generation;
@@ -180,7 +199,7 @@ export function createWorkspaceStore(request: Requester) {
     try {
       // The AI profile is optional: if it cannot load, the workspace still opens with default personalization.
       const profile = request<AIProfile>('/assistant/profile').then(normalizeProfile, () => DEFAULT_AI_PROFILE);
-      const [tasks, schedule, events, connections, availability, preferences, aiProfile] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<Availability>('/availability'), request<SchedulePreferences>('/schedule/preferences'), profile]);
+      const [tasks, schedule, events, connections, availability, preferences, aiProfile] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<LoadedAvailability>('/availability').then(firstTimeZone), request<SchedulePreferences>('/schedule/preferences'), profile]);
       if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, previewStale: false, planDrafts: state.planDrafts, feasibility: null, planBusy: false, pendingActions: state.pendingActions, pendingChoice: null, error: '', saving: false });
         void refreshActions(current);
     } catch (error) {
@@ -296,9 +315,22 @@ export function createWorkspaceStore(request: Requester) {
     deleteEvent(id: string) {
       return mutate<void>(`/events/${id}`, { method: 'DELETE' }, () => ({ events: state.events.filter(e => e.id !== id), ...stale() }));
     },
-    saveAvailability(availability: Availability) {
+    async saveAvailability(availability: Availability) {
       const payload = normalizeAvailability(availability);
-      return mutate<Availability>('/availability', { method: 'PUT', body: JSON.stringify(payload) }, saved => ({ availability: normalizeAvailability(saved), ...stale() }));
+      const previousZone = state.availability?.timeZone;
+      const saved = await mutate<Availability>('/availability', { method: 'PUT', body: JSON.stringify(payload) }, saved => ({ availability: normalizeAvailability(saved), ...stale() }));
+      // A new timezone rewrites events' wall-clock fields on the server (same real time) and changes how saved
+      // sessions display, so fetch both again rather than re-deriving them here.
+      if (previousZone && saved.timeZone !== previousZone) {
+        const current = generation;
+        try {
+          const [events, schedule] = await Promise.all([request<CalendarEvent[]>('/events'), request<SavedSchedule>('/schedule')]);
+          if (current === generation) publish({ ...state, events, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion });
+        } catch {
+          if (current === generation) void load();
+        }
+      }
+      return saved;
     },
     savePreferences(preferences: SchedulePreferences) {
       return mutate<SchedulePreferences>('/schedule/preferences', { method: 'PUT', body: JSON.stringify(preferences) }, saved => ({ preferences: saved, ...stale() }));
