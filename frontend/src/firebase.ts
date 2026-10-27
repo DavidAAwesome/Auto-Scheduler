@@ -1,6 +1,5 @@
 import { initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, type Auth } from "firebase/auth";
-import { getStorage, type FirebaseStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -22,10 +21,6 @@ const app: FirebaseApp | null = firebaseConfigError
   : initializeApp(firebaseConfig);
 
 export const auth: Auth | null = app ? getAuth(app) : null;
-/** Used for profile avatars. MongoDB stores only the download URL. */
-export const storage: FirebaseStorage | null = app && firebaseConfig.storageBucket
-  ? getStorage(app)
-  : null;
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });

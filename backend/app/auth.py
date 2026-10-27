@@ -26,16 +26,14 @@ class PublicUser(BaseModel):
     avatarUrl: str | None = None
 
 
-class AvatarUpdate(BaseModel):
-    avatarUrl: str | None = None
-
-
 def public_user(user):
+    """avatarUrl is a path on this API (see app/avatars.py), unique per uploaded image."""
+    avatar_id = user.get('avatarId')
     return PublicUser(
         id=str(user['_id']),
         name=user['name'],
         email=user['email'],
-        avatarUrl=user.get('avatarUrl'),
+        avatarUrl=f'/avatars/{avatar_id}' if avatar_id else None,
     )
 
 
@@ -102,26 +100,11 @@ def current_user(response: Response, user=Depends(get_current_user)):
     return public_user(user)
 
 
-@router.put('/avatar', response_model=PublicUser)
-def update_avatar(data: AvatarUpdate, user=Depends(get_current_user), db=Depends(get_database)):
-    """Stores the Firebase Storage download URL (or clears it). Binary files never go in MongoDB."""
-    avatar_url = data.avatarUrl.strip() if data.avatarUrl else None
-    if avatar_url is not None:
-        if not avatar_url.startswith('https://') or len(avatar_url) > 2048:
-            raise HTTPException(status_code=422, detail='Avatar URL must be a https link from your upload.')
-    updated = db.users.find_one_and_update(
-        {'_id': user['_id']},
-        {'$set': {'avatarUrl': avatar_url}, '$unset': {'avatarData': ''}},
-        return_document=ReturnDocument.AFTER,
-    )
-    return public_user(updated)
-
-
 @router.delete('/account', status_code=204)
 def delete_account(user=Depends(get_current_user), db=Depends(get_database)):
     """Removes AutoPlan data; the client then deletes the Firebase account itself."""
     uid = str(user['_id'])
     for collection in (db.tasks, db.sessions, db.events, db.calendar_connections, db.availability, db.plans,
-                       db.schedule_previews, db.schedule_preferences):
+                       db.schedule_previews, db.schedule_preferences, db.avatars):
         collection.delete_many({'user_id': uid})
     db.users.delete_one({'_id': user['_id']})

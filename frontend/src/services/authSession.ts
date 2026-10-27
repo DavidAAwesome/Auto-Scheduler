@@ -4,10 +4,11 @@ import {
   signInWithEmailAndPassword, signInWithPopup, signOut, updateProfile, type User as FirebaseUser,
 } from 'firebase/auth';
 import { auth, firebaseConfigError, googleProvider } from '../firebase';
-import { ApiError, apiRequest, setTokenProvider } from './api';
-import { deleteAvatarFile, uploadAvatar } from './avatarStorage';
+import { ApiError, apiRequest, apiUrl, setTokenProvider } from './api';
+import { prepareAvatar } from './avatarUpload';
 import { workspaceService } from './workspace';
-export interface User { id: string; name: string; email: string; photoURL: string | null; provider: 'google' | 'password' }
+/** photoURL is what to show (uploaded avatar, else the Google photo); hasCustomAvatar is whether there's an upload to remove. */
+export interface User { id: string; name: string; email: string; photoURL: string | null; hasCustomAvatar: boolean; provider: 'google' | 'password' }
 type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null };
 type Session = { status: 'loading' | 'authenticated' | 'anonymous' | 'error'; user: User | null; error: string };
 let session: Session = firebaseConfigError
@@ -21,6 +22,16 @@ function publish(next: Session) {
   session = next;
   listeners.forEach(listener => listener());
 }
+function toUser(profile: ServerProfile, firebaseUser: FirebaseUser): User {
+  return {
+    id: profile.id,
+    name: profile.name,
+    email: profile.email,
+    photoURL: profile.avatarUrl ? apiUrl(profile.avatarUrl) : firebaseUser.photoURL,
+    hasCustomAvatar: Boolean(profile.avatarUrl),
+    provider: firebaseUser.providerData.some(p => p.providerId === 'google.com') ? 'google' : 'password',
+  };
+}
 setTokenProvider(async () => auth?.currentUser ? auth.currentUser.getIdToken() : null);
 
 /** Firebase confirms who the user is; the API confirms it accepts that identity before the app opens. */
@@ -31,17 +42,7 @@ async function syncWithServer(firebaseUser: FirebaseUser | null) {
   try {
     const profile = await apiRequest<ServerProfile>('/auth/me');
     if (current !== revision) return;
-    const provider = firebaseUser.providerData.some(p => p.providerId === 'google.com') ? 'google' : 'password';
-    // Prefer MongoDB avatarUrl (custom upload); fall back to Firebase/Google photoURL.
-    publish({
-      status: 'authenticated',
-      user: {
-        ...profile,
-        photoURL: profile.avatarUrl ?? firebaseUser.photoURL,
-        provider,
-      },
-      error: '',
-    });
+    publish({ status: 'authenticated', user: toUser(profile, firebaseUser), error: '' });
   } catch (error) {
     if (current !== revision) return;
     const message = error instanceof ApiError && error.status === 401
@@ -69,6 +70,10 @@ function friendlyError(error: unknown) {
     'auth/network-request-failed': 'Cannot reach Firebase. Check your internet connection.',
   };
   return new Error(messages[code] ?? (error instanceof ApiError ? error.message : 'Something went wrong. Please try again.'));
+}
+function avatarError(error: unknown) {
+  const detail = error instanceof ApiError ? error.message : 'Something went wrong.';
+  return new Error(`${detail.replace(/\.?$/, '.')} Your previous avatar is unchanged.`);
 }
 function requireAuth() {
   if (!auth) throw new Error(firebaseConfigError);
@@ -110,61 +115,32 @@ export const authSession = {
     const user = requireAuth().currentUser;
     if (!user) throw new Error('Please sign in again.');
     try {
-      try { await deleteAvatarFile(); } catch { /* best-effort Storage cleanup */ }
       await apiRequest<void>('/auth/account', { method: 'DELETE' });
       await deleteUser(user);
     } catch (e) { throw friendlyError(e); }
     window.location.hash = '/login';
   },
   /**
-   * Upload flow: image → Firebase Storage → https URL in MongoDB users.avatarUrl
-   * (+ Firebase Auth photoURL for clients that read Auth only).
+   * Upload flow: picked file → resized JPEG → PUT /auth/avatar (the API validates and stores it)
+   * → shared state from the server's profile. Nothing changes locally unless the server saved it.
    */
   async setAvatar(file: File) {
     const firebaseUser = requireAuth().currentUser;
     if (!firebaseUser) throw new Error('Please sign in again.');
+    const image = await prepareAvatar(file);
+    let profile: ServerProfile;
     try {
-      const avatarUrl = await uploadAvatar(file);
-      const profile = await apiRequest<ServerProfile>('/auth/avatar', {
-        method: 'PUT',
-        body: JSON.stringify({ avatarUrl }),
-      });
-      try { await updateProfile(firebaseUser, { photoURL: avatarUrl }); } catch { /* Auth photo sync is optional */ }
-      publish({
-        status: 'authenticated',
-        user: {
-          id: profile.id,
-          name: profile.name,
-          email: profile.email,
-          photoURL: profile.avatarUrl ?? avatarUrl,
-          provider: session.user?.provider ?? 'password',
-        },
-        error: '',
-      });
-    } catch (e) { throw friendlyError(e); }
+      profile = await apiRequest<ServerProfile>('/auth/avatar', { method: 'PUT', headers: { 'Content-Type': image.type }, body: image });
+    } catch (e) { throw avatarError(e); }
+    if (!profile.avatarUrl) throw new Error('The server did not confirm your new avatar. Your previous avatar is unchanged; try again.');
+    publish({ status: 'authenticated', user: toUser(profile, firebaseUser), error: '' });
   },
   async clearAvatar() {
     const firebaseUser = requireAuth().currentUser;
     if (!firebaseUser) throw new Error('Please sign in again.');
-    try {
-      try { await deleteAvatarFile(); } catch { /* ignore missing object */ }
-      const profile = await apiRequest<ServerProfile>('/auth/avatar', {
-        method: 'PUT',
-        body: JSON.stringify({ avatarUrl: null }),
-      });
-      try { await updateProfile(firebaseUser, { photoURL: null }); } catch { /* optional */ }
-      publish({
-        status: 'authenticated',
-        user: {
-          id: profile.id,
-          name: profile.name,
-          email: profile.email,
-          photoURL: null,
-          provider: session.user?.provider ?? 'password',
-        },
-        error: '',
-      });
-    } catch (e) { throw friendlyError(e); }
+    let profile: ServerProfile;
+    try { profile = await apiRequest<ServerProfile>('/auth/avatar', { method: 'DELETE' }); } catch (e) { throw avatarError(e); }
+    publish({ status: 'authenticated', user: toUser(profile, firebaseUser), error: '' });
   },
 };
 window.addEventListener('autoplan:unauthorized', () => {

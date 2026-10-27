@@ -69,6 +69,7 @@ def initialize_indexes(db):
         db.users.drop_index('unique_user_email')
     db.users.create_index('firebase_uid', unique=True, sparse=True, name='unique_firebase_uid')
     db.users.create_index('email', name='user_email')
+    db.avatars.create_index('user_id')
     db.tasks.create_index([('user_id', 1), ('deadline', 1)])
     db.availability.create_index('user_id', unique=True)
     db.plans.create_index('user_id', unique=True)

@@ -1,4 +1,6 @@
 const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+/** Absolute URL for an API path such as an avatar, e.g. /api/avatars/abc. */
+export function apiUrl(path: string) { return `${API_URL}${path}`; }
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) { super(message); this.status = status; }
