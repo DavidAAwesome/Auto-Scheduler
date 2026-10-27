@@ -1,0 +1,301 @@
+{
+  "tasks": [
+    {
+      "title": "Asm",
+      "deadline": "2026-10-27",
+      "minutes": 60,
+      "completedMinutes": 0,
+      "remainingMinutes": 60,
+      "dueTime": 1439,
+      "priority": "High",
+      "category": "Study",
+      "earliestStart": null,
+      "allowSplit": true,
+      "minSessionMinutes": 15,
+      "maxSessionMinutes": 60,
+      "dependsOn": [],
+      "id": "6adca766746b979ff7eb4274",
+      "done": false
+    },
+    {
+      "title": "Test revision",
+      "deadline": "2026-10-27",
+      "minutes": 60,
+      "completedMinutes": 0,
+      "remainingMinutes": 60,
+      "dueTime": 1439,
+      "priority": "Medium",
+      "category": "Study",
+      "earliestStart": null,
+      "allowSplit": true,
+      "minSessionMinutes": 15,
+      "maxSessionMinutes": 60,
+      "dependsOn": [],
+      "id": "6adca766746b979ff7eb4275",
+      "done": false
+    }
+  ],
+  "availability": {
+    "days": [
+      {
+        "day": 0,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 5,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 6,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      }
+    ],
+    "weekOverrides": [],
+    "timeZone": "America/New_York",
+    "reminders": false
+  },
+  "preferences": {
+    "focusMinutes": 50,
+    "breakMinutes": 10,
+    "maxDailyWorkMinutes": 240,
+    "lunch": null
+  },
+  "schedule": {
+    "scheduleVersion": 3,
+    "timeZone": "America/New_York",
+    "sessions": []
+  },
+  "preview": {
+    "previewId": "6adca766746b979ff7eb4276",
+    "status": "proposed",
+    "mode": "generate",
+    "baseScheduleVersion": 3,
+    "generatedAt": "2026-10-26T12:00:00Z",
+    "timeZone": "America/New_York",
+    "windowStart": "2026-10-26T12:00:00Z",
+    "windowEnd": "2026-10-27T04:00:00Z",
+    "startDate": "2026-10-26",
+    "endDate": "2026-10-26",
+    "preferences": {
+      "focusMinutes": 50,
+      "breakMinutes": 10,
+      "maxDailyWorkMinutes": 240,
+      "lunch": null
+    },
+    "sessions": [
+      {
+        "id": "proposed-1",
+        "taskId": "6adca766746b979ff7eb4274",
+        "title": "Asm",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 3,
+        "startAt": "2026-10-26T13:00:00Z",
+        "endAt": "2026-10-26T13:50:00Z",
+        "date": "2026-10-26",
+        "start": 540,
+        "end": 590,
+        "change": "new",
+        "reason": null
+      },
+      {
+        "id": "proposed-2",
+        "taskId": null,
+        "title": "Break",
+        "type": "break",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 3,
+        "startAt": "2026-10-26T13:50:00Z",
+        "endAt": "2026-10-26T14:00:00Z",
+        "date": "2026-10-26",
+        "start": 590,
+        "end": 600,
+        "change": "new",
+        "reason": "Reserved break after reaching the focus limit"
+      },
+      {
+        "id": "proposed-3",
+        "taskId": "6adca766746b979ff7eb4274",
+        "title": "Asm",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 3,
+        "startAt": "2026-10-26T14:00:00Z",
+        "endAt": "2026-10-26T14:10:00Z",
+        "date": "2026-10-26",
+        "start": 600,
+        "end": 610,
+        "change": "new",
+        "reason": null
+      },
+      {
+        "id": "proposed-4",
+        "taskId": "6adca766746b979ff7eb4275",
+        "title": "Test revision",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 3,
+        "startAt": "2026-10-26T14:10:00Z",
+        "endAt": "2026-10-26T14:50:00Z",
+        "date": "2026-10-26",
+        "start": 610,
+        "end": 650,
+        "change": "new",
+        "reason": null
+      },
+      {
+        "id": "proposed-5",
+        "taskId": null,
+        "title": "Break",
+        "type": "break",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 3,
+        "startAt": "2026-10-26T14:50:00Z",
+        "endAt": "2026-10-26T15:00:00Z",
+        "date": "2026-10-26",
+        "start": 650,
+        "end": 660,
+        "change": "new",
+        "reason": "Reserved break after reaching the focus limit"
+      },
+      {
+        "id": "proposed-6",
+        "taskId": "6adca766746b979ff7eb4275",
+        "title": "Test revision",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 3,
+        "startAt": "2026-10-26T15:00:00Z",
+        "endAt": "2026-10-26T15:20:00Z",
+        "date": "2026-10-26",
+        "start": 660,
+        "end": 680,
+        "change": "new",
+        "reason": null
+      }
+    ],
+    "removed": [],
+    "tasks": [
+      {
+        "taskId": "6adca766746b979ff7eb4274",
+        "title": "Asm",
+        "priority": "High",
+        "dueAt": "2026-10-28T04:00:00Z",
+        "estimatedMinutes": 60,
+        "completedMinutes": 0,
+        "remainingMinutes": 60,
+        "retainedMinutes": 0,
+        "inProgressMinutes": 0,
+        "newMinutes": 60,
+        "unallocatedMinutes": 0,
+        "overAllocatedMinutes": 0,
+        "atRisk": false,
+        "slackMinutes": 90,
+        "status": "scheduled",
+        "reasons": []
+      },
+      {
+        "taskId": "6adca766746b979ff7eb4275",
+        "title": "Test revision",
+        "priority": "Medium",
+        "dueAt": "2026-10-28T04:00:00Z",
+        "estimatedMinutes": 60,
+        "completedMinutes": 0,
+        "remainingMinutes": 60,
+        "retainedMinutes": 0,
+        "inProgressMinutes": 0,
+        "newMinutes": 60,
+        "unallocatedMinutes": 0,
+        "overAllocatedMinutes": 0,
+        "atRisk": false,
+        "slackMinutes": 30,
+        "status": "scheduled",
+        "reasons": []
+      }
+    ],
+    "conflicts": [],
+    "days": [
+      {
+        "date": "2026-10-26",
+        "workMinutes": 120,
+        "newWorkMinutes": 120,
+        "breakCount": 2,
+        "sessionCount": 6
+      }
+    ],
+    "firstProposedDate": "2026-10-26",
+    "explanations": [],
+    "note": "AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this heuristic found no valid place under your rules; that is not proof that no schedule exists.",
+    "inputFingerprint": "07ceabafcb2bfd4d997f1f14f51a9a2c33fd430aadeb6cb1773ab6b07fff0605"
+  }
+}

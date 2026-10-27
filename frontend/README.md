@@ -1,46 +1,37 @@
 # AutoPlan frontend
 
-React + TypeScript + Vite frontend for the AutoPlan workspace. The visual shell follows the prototype's warm neutral background, purple accents, and rounded cards.
-
-## Run locally
-
-Use Node.js 24 LTS (supported by the project's ESLint dependency).
+React + TypeScript + Vite. See the root [README](../README.md) for MongoDB/FastAPI setup, environment variables, API contracts, and verification commands.
 
 ```sh
 npm ci
-npm run dev
-```
-
-## Checks
-
-```sh
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 npm run build
 npm run lint
 npm test
 ```
 
-`npm run preview` serves the production build after `npm run build`.
+Use Node.js 24 LTS. The backend must run on port 8000; Vite forwards `/api` there using `API_PROXY_TARGET`. `VITE_API_URL` defaults to `/api`. Only public configuration belongs in frontend environment variables.
 
-## Navigation
+## Screens and authentication
 
-The frontend uses hash URLs, matching the prototype. The initial URL opens Login. Available screens are `#/login`, `#/home`, `#/tasks`, `#/assistant`, `#/analytics`, `#/calendar`, `#/profile`, and `#/settings`. Browser back/forward navigation and direct links are supported without server rewrite rules. Unknown routes show a recovery link.
+Hash routes: `#/login`, `#/signup` (signed out); `#/home` (default), `#/settings`, `#/profile`, `#/analytics` (signed in). Unknown routes go to `#/home`.
 
-Each screen lives in `src/screens/`. Shared layout, icons, headings, and placeholder states live in `src/components/`. Global design tokens live in `src/index.css`; responsive layout styles live in `src/App.css`.
+`src/firebase.ts` initializes Firebase from `VITE_FIREBASE_*`. `src/services/authSession.ts` handles email/password sign-in and signup, Google popup sign-in, password reset, logout, and account deletion, and confirms each Firebase user with `GET /auth/me` before opening the app. `src/services/api.ts` attaches the current Firebase ID token to every request.
 
-The desktop sidebar expands at widths above 1100px, becomes an icon rail on tablets, and becomes a dismissible menu at 640px and below. The mobile menu supports Escape, focus containment, and background scroll locking.
+Styles live in `src/App.css`, with light and dark theme tokens in `src/index.css` (`html[data-theme]`).
 
-## Demo scope
+## Workspace layout (from the team's sketch)
 
-Use `demo@autoplan.app` / `autoplan` on Login. `src/screens/LoginPage.tsx` matches the prototype’s two-column login, hiding the preview column at 760px and below. This is UI-only demo validation, not real authentication. The demo session is stored in sessionStorage (with a memory fallback); workspace views show Login while signed out. Profile’s “Log out of demo” and sidebar Sign out clear that session. Tasks support add, edit, complete/reopen, delete, case-insensitive title search, and All/Open/Done filters. Home and Calendar use the same task store; changes persist under `autoplan.demo.workspace.v2` in localStorage and synchronize on storage events across tabs. The first load seeds sample data; empty task lists stay empty after reload. Scheduling, analytics, external calendar connections, account editing, and settings remain future work. No API requests or backend changes are involved.
+- `components/AppLayout.tsx`: top bar with ☰ drawer (Home, Google/Outlook Calendar placeholders, Availability, Analytics), the visible month as the title, a reminders bell, and the user menu (Account details, Analytics, Theme, Settings, Log out, Delete account).
+- `screens/Home.tsx`: three panes. `TaskSidebar` (today's tasks and available hours, + Add Task, open/completed task list), `CalendarPane` (Today label, prev/next, D/W/M toggle; tasks appear in a "Due" row, availability shaded in the time grid), and `ChatPanel` (collapsible AI chatbox placeholder).
+- `components/TaskPopover.tsx`: task card with edit (pencil), close (×), planned-work progress, the task's work sessions, "Plan work time", complete, and delete.
+- `components/TaskForm.tsx`, `SessionForm.tsx` (both use `Modal.tsx`): add/edit tasks (optional due time, total hours) and plan/edit work sessions (task, day, from/until, quick lengths, overlap and due-time checks).
+- `components/EventForm.tsx`, `EventPopover.tsx`, `SlotMenu.tsx`: add/edit events (type, time, location, weekly repeat), the event card (delete one occurrence or the series), and the menu shown when an empty slot is clicked (plan work / add event).
+- `utils/events.ts`: event recurrence (`occursOn`), clashes, occurrence counts, and side-by-side layout for overlapping blocks (tested in `tests/events.test.ts`).
+- **Planner (merged in):** Lan's Planner page now lives on Home. Generated focus/break blocks show on the calendar (dashed, ✦), the AI Chatbox panel is the rules-based planning assistant (`services/plannerAssistant.ts`) with a confirm-to-generate button, and the sidebar has the Planner's task search/filter. `#/planner`, `#/tasks`, `#/calendar` and `#/assistant` redirect to Home. When generating, events and work sessions are sent as busy time (`busyIntervalsFor`) so focus blocks never overlap them.
+- **Theme:** light mode uses the original AutoPlan palette (cream, purple/lavender, soft green/peach); dark mode uses the sketch UI palette. Tokens live in `src/index.css`.
+- `utils/planning.ts`: planned minutes, overlap, due-time, and availability checks for sessions (tested in `tests/planning.test.ts`).
+- `services/workspaceStore.ts`: Lan's API-backed store for tasks and availability. `services/uiState.ts` stores theme, calendar view, and chat-panel state per device.
+- `utils/calendar.ts`: pure date/view helpers, tested in `tests/calendar.test.ts`.
 
-Typography uses Google Fonts (Manrope and DM Sans for the workspace; Outfit and DM Sans for Login), with system-font fallbacks when unavailable.
-
-## Data and source verification
-
-- `src/types/models.ts`: Task, Availability, CalendarEvent, ScheduledBlock, and workspace types.
-- `src/data/sampleData.ts`: sample task labels, priorities, durations, categories, and calendar event; dates are relative to first use.
-- `src/services/mockData.ts`: validation, CRUD, subscriptions, browser persistence, storage-error handling, and task selectors.
-- `src/components/TaskForm.tsx`: shared accessible modal form with native field validation.
-- `tests/mockData.test.ts`: store, search/filter, persistence, and error-path regression tests.
-
-The repository did not contain the prototype's `app.js`. Its private source download was blocked by automatic approval review. Task fields and sample labels were verified from the normal prototype UI; exact source parity remains unverified. Availability, CalendarEvent, and ScheduledBlock are explicitly provisional contracts, not claimed transcriptions of that source. Supply the local `app.js` to reconcile these types and any remaining behavior differences. Demo state uses a separate versioned key from the unfinished earlier mock service; it does not overwrite that older key.
+`npm run preview` serves static output; deploy an API reverse proxy alongside it or configure an appropriate API URL. It is not the development proxy.

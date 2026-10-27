@@ -1,0 +1,32 @@
+.availability-form { max-width: 920px; }
+.availability-form fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0; }
+.availability-week-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.availability-week-bar button { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 8px 12px; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.availability-week-bar button.is-active { background: var(--lavender); color: var(--primary); border-color: transparent; }
+.availability-week-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+.availability-week-add label { display: grid; gap: 6px; font-size: 13px; }
+.availability-day { display: grid; grid-template-columns: minmax(120px, 160px) 1fr; gap: 14px; align-items: start; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.availability-periods { display: grid; gap: 10px; }
+.availability-period { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+.availability-period label, .timezone-field, .availability-week-add label { display: grid; gap: 6px; font-size: 13px; }
+.day-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; padding-top: 8px; }
+.availability-form input[type='checkbox'] { accent-color: var(--primary); }
+.availability-form input[type='text'], .availability-form input[type='date'], .availability-form select, .timezone-field input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
+.availability-form .settings-row { margin: 18px 0; }
+.availability-form input:disabled, .availability-form select:disabled { opacity: .45; }
+@media (max-width: 640px) {
+  .availability-day { grid-template-columns: 1fr; }
+  .availability-period { grid-template-columns: 1fr 1fr; }
+  .availability-period .button { grid-column: 1 / -1; }
+}
+.plan-summary { margin-bottom: 20px; }
+.plan-summary p { line-height: 1.7; }
+.plan-notice { padding: 12px 16px; background: var(--notice-bg); color: var(--notice-text); border-radius: 10px; font-size: 13px; }
+.plan-results { list-style: none; padding: 0; margin: 18px 0 0; }
+.plan-results li { border-top: 1px solid var(--border); padding: 16px 0 4px; }
+.plan-results li > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.plan-status { font-size: 11px; background: var(--notice-bg); color: var(--notice-text); padding: 4px 9px; border-radius: 20px; text-transform: capitalize; }
+.plan-status.is-scheduled { background: var(--available-bg); color: var(--available-text); }
+
+.availability-form .ai-about { display: grid; gap: 6px; margin: 14px 0; font-weight: 600; }
+.availability-form .ai-about textarea { width: 100%; resize: vertical; font: inherit; font-weight: 400; }

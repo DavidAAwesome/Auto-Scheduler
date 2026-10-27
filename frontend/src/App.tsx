@@ -1,64 +1,64 @@
 import { useEffect, useSyncExternalStore } from "react";
+import WorkspaceGate from "./components/WorkspaceGate";
 import AppLayout from "./components/AppLayout";
 import LoginPage from "./screens/LoginPage";
-import { demoSession } from "./services/demoSession";
+import { authSession, useAuth } from "./services/authSession";
+import SignupPage from "./screens/SignupPage";
 import Home from "./screens/Home";
-import Tasks from "./screens/Tasks";
-import Assistant from "./screens/Assistant";
 import Analytics from "./screens/Analytics";
-import Calendar from "./screens/Calendar";
 import Profile from "./screens/Profile";
 import Settings from "./screens/Settings";
+import Calendars from "./screens/Calendars";
 import "./App.css";
 const screens = {
-  login: LoginPage,
   home: Home,
-  tasks: Tasks,
-  assistant: Assistant,
   analytics: Analytics,
-  calendar: Calendar,
   profile: Profile,
   settings: Settings,
+  calendars: Calendars,
 };
+const titles: Record<string, string> = { home: "Calendar", analytics: "Analytics", profile: "Account", settings: "Settings", calendars: "Calendars" };
 function subscribe(callback: () => void) {
   window.addEventListener("hashchange", callback);
   return () => window.removeEventListener("hashchange", callback);
 }
 function getRoute() {
-  return (
-    window.location.hash.replace(/^#\/?/, "").replace(/\/$/, "") || "login"
-  );
+  return window.location.hash.replace(/^#\/?/, "").replace(/\/$/, "") || "home";
 }
 export default function App() {
   const route = useSyncExternalStore(subscribe, getRoute);
-  const signedIn = useSyncExternalStore(
-    demoSession.subscribe,
-    demoSession.getSnapshot,
-  );
-  const showLogin = !signedIn || route === "login";
-  const isKnown = Object.prototype.hasOwnProperty.call(screens, route);
+  const session = useAuth();
+  useEffect(() => { authSession.initialize(); }, []);
+  const signedIn = session.status === "authenticated";
+  const authRoute = route === "signup" ? "signup" : "login";
+  const screen = Object.prototype.hasOwnProperty.call(screens, route) ? (route as keyof typeof screens) : "home";
+  // Keep the URL meaningful: signed-in users leave auth pages, and unknown or retired routes
+  // (#/planner, #/tasks, #/calendar, #/assistant: their features now live on Home) go home.
   useEffect(() => {
-    document.title = `${showLogin ? "Login" : isKnown ? route.charAt(0).toUpperCase() + route.slice(1) : "Page not found"} · AutoPlan`;
-    window.scrollTo(0, 0);
+    if (signedIn && route !== screen) window.location.replace("#/home");
+  }, [signedIn, route, screen]);
+  useEffect(() => {
+    document.title = `${signedIn ? titles[screen] : authRoute === "signup" ? "Sign up" : "Log in"} · AutoPlan`;
     document.getElementById("main-content")?.focus({ preventScroll: true });
-  }, [route, isKnown, showLogin]);
-  if (showLogin) return <LoginPage />;
-  if (!isKnown)
-    return (
-      <main className="login-page">
-        <section className="card not-found">
-          <h1>That page wandered off.</h1>
-          <p className="muted">Let’s get you back to your workspace.</p>
-          <a className="button" href="#/home">
-            Back to Home
-          </a>
-        </section>
-      </main>
-    );
-  const Screen = screens[route as keyof typeof screens];
+  }, [signedIn, screen, authRoute]);
+  if (session.status === "loading") return <main className="login-page"><p role="status">Checking your session…</p></main>;
+  if (session.status === "error") return (
+    <main className="login-page">
+      <section className="card session-error">
+        <h1>Couldn’t open AutoPlan</h1>
+        <p role="alert">{session.error}</p>
+        <div className="task-dialog-footer">
+          <button className="button secondary" onClick={() => void authSession.logout().catch(() => undefined)}>Sign out</button>
+          <button className="button" onClick={() => void authSession.retry()}>Try again</button>
+        </div>
+      </section>
+    </main>
+  );
+  if (!signedIn) return authRoute === "signup" ? <SignupPage /> : <LoginPage />;
+  const Screen = screens[screen];
   return (
-    <AppLayout key={route} route={route}>
-      <Screen />
+    <AppLayout key={screen} route={screen}>
+      <WorkspaceGate><Screen /></WorkspaceGate>
     </AppLayout>
   );
 }

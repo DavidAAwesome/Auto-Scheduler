@@ -1,149 +1,95 @@
-import ScreenHeading from "../components/ScreenHeading";
-import Icon from "../components/Icon";
 import { useState } from "react";
-import { useMockData } from "../hooks/useMockData";
-import { mockDataService } from "../services/mockData";
-import { formatDate, localDate } from "../utils/dates";
-import MockNotice from "../components/MockNotice";
-import "./Tasks.css";
+import type { CalendarEvent, Task, WorkSession } from "../types/models";
+import TaskSidebar from "../components/TaskSidebar";
+import CalendarPane from "../components/CalendarPane";
+import ChatPanel from "../components/ChatPanel";
+import TaskForm from "../components/TaskForm";
+import SessionForm from "../components/SessionForm";
+import EventForm from "../components/EventForm";
+import TaskPopover from "../components/TaskPopover";
+import EventPopover from "../components/EventPopover";
+import SlotMenu from "../components/SlotMenu";
+import { useWorkspace } from "../hooks/useWorkspace";
+import { dateInZone } from "../utils/calendar";
+
+type TaskFormState = { task?: Task; deadline?: string } | null;
+type SessionFormState = { session?: WorkSession; taskId?: string; date?: string; start?: number } | null;
+type EventFormState = { event?: CalendarEvent; date?: string; start?: number } | null;
+
+/** Main screen from the sketch: today's tasks | calendar | AI chatbox. */
 export default function Home() {
-  const { tasks, scheduledBlocks } = useMockData();
-  const [error, setError] = useState("");
-  const upcoming = tasks
-    .filter((task) => !task.done)
-    .sort((a, b) => a.deadline.localeCompare(b.deadline))
-    .slice(0, 4);
-  const focus = scheduledBlocks.filter((block) => block.type === "focus");
+  const { tasks, events, availability } = useWorkspace();
+  const [taskForm, setTaskForm] = useState<TaskFormState>(null);
+  const [sessionForm, setSessionForm] = useState<SessionFormState>(null);
+  const [eventForm, setEventForm] = useState<EventFormState>(null);
+  const [selected, setSelected] = useState<{ id: string; rect: DOMRect; sessionId?: string } | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<{ id: string; date: string; rect: DOMRect } | null>(null);
+  const [slot, setSlot] = useState<{ date: string; start: number; rect: DOMRect } | null>(null);
+  const [status, setStatus] = useState("");
+  const today = dateInZone(availability?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const selectedTask = selected && tasks.find(t => t.id === selected.id);
+  const openEvent = selectedEvent && events.find(e => e.id === selectedEvent.id);
+  const toast = (message: string) => { setStatus(message); setTimeout(() => setStatus(""), 2500); };
+  const closeFloating = () => { setSelected(null); setSelectedEvent(null); setSlot(null); };
+  const editTask = (task: Task) => { closeFloating(); setTaskForm({ task }); };
+  const plan = (state: NonNullable<SessionFormState>) => { closeFloating(); setSessionForm(state); };
+  const addEvent = (state: NonNullable<EventFormState>) => { closeFloating(); setEventForm(state); };
+  const showTask = (task: Task, rect: DOMRect, sessionId?: string) => { closeFloating(); setSelected({ id: task.id, rect, sessionId }); };
+  const showEvent = (event: CalendarEvent, date: string, rect: DOMRect) => { closeFloating(); setSelectedEvent({ id: event.id, date, rect }); };
   return (
-    <>
-      <ScreenHeading
-        title="Good morning, Mia 👋"
-        description="Here’s what your week is shaping up to look like."
-        action={
-          <a className="button" href="#/tasks">
-            + New task
-          </a>
-        }
+    <div className="home-layout">
+      <TaskSidebar
+        today={today}
+        onAdd={() => setTaskForm({})}
+        onAddEvent={() => addEvent({ date: today })}
+        onOpen={showTask}
+        onOpenSession={showTask}
+        onOpenEvent={showEvent}
       />
-      <MockNotice />
-      <section className="hero">
-        <div>
-          <p className="eyebrow">A LITTLE CLARITY GOES A LONG WAY</p>
-          <h2>Turn your to-dos into a doable week.</h2>
-          <p>
-            Add tasks, choose your available hours, and review a schedule that
-            makes room for breaks.
-          </p>
-          <a className="button" href="#/assistant">
-            <Icon name="assistant" size={18} />
-            Plan my week
-          </a>
-        </div>
-      </section>
-      <div className="stats-grid">
-        {(
-          [
-            {
-              icon: "tasks",
-              value: String(tasks.filter((task) => !task.done).length),
-              label: "Tasks to plan",
-              tone: "purple",
-            },
-            {
-              icon: "assistant",
-              value: `${(focus.filter((block) => block.date === localDate()).reduce((sum, block) => sum + block.end - block.start, 0) / 60).toFixed(1)}h`,
-              label: "Focus time today",
-              tone: "green",
-            },
-            {
-              icon: "calendar",
-              value: String(focus.length),
-              label: "Scheduled focus blocks",
-              tone: "peach",
-            },
-          ] as const
-        ).map((stat) => (
-          <section className="card stat" key={stat.label}>
-            <span className={`stat-icon ${stat.tone}`}>
-              <Icon name={stat.icon} />
-            </span>
-            <strong>{stat.value}</strong>
-            <span className="muted">{stat.label}</span>
-          </section>
-        ))}
-      </div>
-      <div className="two-column">
-        <section className="card">
-          <div className="card-heading">
-            <div>
-              <h2>Upcoming tasks</h2>
-              <p className="muted">What needs your attention</p>
-            </div>
-            <a className="text-link" href="#/tasks">
-              View all →
-            </a>
-          </div>
-          {error && (
-            <p role="alert" className="form-error">
-              {error}
-            </p>
-          )}
-          {upcoming.length ? (
-            <ul className="shared-task-list">
-              {upcoming.map((task) => (
-                <li key={task.id}>
-                  <input
-                    type="checkbox"
-                    checked={task.done}
-                    aria-label={`Complete ${task.title}`}
-                    onChange={() => {
-                      try {
-                        mockDataService.setCompleted(task.id, true);
-                        setError("");
-                      } catch (e) {
-                        setError((e as Error).message);
-                      }
-                    }}
-                  />
-                  <a href="#/tasks">
-                    {task.title}
-                    <small>
-                      {task.category} · {task.minutes} min · Due{" "}
-                      {formatDate(task.deadline)}
-                    </small>
-                  </a>
-                  <span
-                    className={`task-priority ${task.priority.toLowerCase()}`}
-                  >
-                    {task.priority}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="small-empty">
-              <h3>You’re all caught up</h3>
-              <p>Add a task when you’re ready to plan something new.</p>
-            </div>
-          )}
-        </section>
-        <section className="card">
-          <div className="card-heading">
-            <div>
-              <h2>Today’s timeline</h2>
-              <p className="muted">Make room for your priorities</p>
-            </div>
-            <a className="text-link" href="#/calendar">
-              Calendar →
-            </a>
-          </div>
-          <div className="small-empty">
-            <Icon name="calendar" size={28} />
-            <h3>A little room to breathe</h3>
-            <p>Your scheduled focus blocks will appear here.</p>
-          </div>
-        </section>
-      </div>
-    </>
+      <CalendarPane
+        today={today}
+        onOpen={showTask}
+        onOpenEvent={showEvent}
+        onAdd={deadline => setTaskForm({ deadline })}
+        onSlot={(date, start, rect) => { closeFloating(); setSlot({ date, start, rect }); }}
+        onPlan={date => plan({ date })}
+      />
+      <ChatPanel />
+      {selectedTask && (
+        <TaskPopover
+          task={selectedTask}
+          anchor={selected.rect}
+          focusSessionId={selected.sessionId}
+          onClose={() => setSelected(null)}
+          onEdit={editTask}
+          onPlan={task => plan({ taskId: task.id })}
+          onEditSession={session => plan({ session })}
+        />
+      )}
+      {openEvent && (
+        <EventPopover event={openEvent} date={selectedEvent.date} anchor={selectedEvent.rect} onClose={() => setSelectedEvent(null)} onEdit={event => addEvent({ event })} />
+      )}
+      {slot && (
+        <SlotMenu
+          date={slot.date}
+          start={slot.start}
+          anchor={slot.rect}
+          onClose={() => setSlot(null)}
+          onPlan={() => plan({ date: slot.date, start: slot.start })}
+          onAddEvent={() => addEvent({ date: slot.date, start: slot.start })}
+        />
+      )}
+      {taskForm && (
+        <TaskForm
+          task={taskForm.task}
+          defaultDeadline={taskForm.deadline}
+          onClose={() => setTaskForm(null)}
+          onSave={(message, saved, planNext) => { toast(message); if (planNext) setSessionForm({ taskId: saved.id }); }}
+        />
+      )}
+      {sessionForm && <SessionForm {...sessionForm} onClose={() => setSessionForm(null)} onSave={toast} />}
+      {eventForm && <EventForm {...eventForm} onClose={() => setEventForm(null)} onSave={toast} />}
+      <p className="toast" role="status" aria-live="polite">{status}</p>
+    </div>
   );
 }

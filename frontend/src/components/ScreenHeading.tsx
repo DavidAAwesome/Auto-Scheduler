@@ -7,7 +7,7 @@ export default function ScreenHeading({
 }: {
   eyebrow?: string;
   title: string;
-  description: string;
+  description?: string;
   action?: ReactNode;
 }) {
   return (
@@ -15,7 +15,7 @@ export default function ScreenHeading({
       <div>
         <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
-        <p className="muted">{description}</p>
+        {description ? <p className="muted">{description}</p> : null}
       </div>
       {action}
     </div>
