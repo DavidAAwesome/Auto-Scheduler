@@ -58,15 +58,17 @@ Frontend (`frontend/.env`):
 
 Tests optionally read `TEST_MONGODB_URI`. Tests create randomly named databases prefixed `autoplan_auth_test_`, then delete only those databases. Use a dedicated local/test MongoDB instance with permission to create indexes and databases.
 
-`.env` files are ignored by Git; committed `.env.example` files contain placeholders only. Production should serve the app and `/api` through the same HTTPS origin, forwarding `/api/auth/*` to backend `/auth/*`. Vite's development proxy is not a production deployment. `npm run preview` alone does not provide the API proxy.
+`.env` files are ignored by Git; committed `.env.example` files contain placeholders only. Production should serve the app and `/api` through the same HTTPS origin, forwarding `/api/*` to the backend with the `/api` prefix removed (for example `/api/auth/*` to `/auth/*` and `/api/avatars/*` to `/avatars/*`). Vite's development proxy is not a production deployment. `npm run preview` alone does not provide the API proxy.
 
 ## Authentication API
 
 Signup, login, Google sign-in, password reset and logout happen in the browser through the Firebase SDK. Every API request sends `Authorization: Bearer <Firebase ID token>`.
 
-- `GET /auth/me`: verifies the token, creates the MongoDB user on first sign-in (keyed by Firebase `uid`), keeps name/email in step with Firebase, and returns `{id, name, email}`; 401 otherwise.
-- `PUT /auth/avatar`: saves (or clears with `null`) the https link of an avatar uploaded to Firebase Storage; image bytes never go in MongoDB.
-- `DELETE /auth/account`: deletes the user's tasks, work sessions, events, availability, plan and user record, then returns 204. The frontend then deletes the Firebase account.
+- `GET /auth/me`: verifies the token, creates the MongoDB user on first sign-in (keyed by Firebase `uid`), keeps name/email in step with Firebase, and returns `{id, name, email, avatarUrl}`; 401 otherwise.
+- `PUT /auth/avatar`: replaces the signed-in user's avatar with the raw image in the request body (`Content-Type: image/jpeg`, `image/png` or `image/webp`; at most 5 MB, checked against the file's own signature). Returns the profile with a new `avatarUrl` such as `/avatars/<random id>`. The image is stored in the `avatars` collection, separate from the user record, and the previous image is deleted only after the profile points at the new one. Errors: 413 (too large), 415 (wrong format), 401 (not signed in).
+- `DELETE /auth/avatar`: removes the signed-in user's avatar and returns the profile.
+- `GET /avatars/{id}`: serves an avatar image without a token (an `<img>` can't send one). Each upload gets a new unguessable id, so responses are cached as immutable. Firebase Storage is not used, so avatars work on the free Spark plan.
+- `DELETE /auth/account`: deletes the user's tasks, work sessions, events, availability, plan, avatar images and user record, then returns 204. The frontend then deletes the Firebase account.
 - `GET /protected`: requires a valid token and returns the current user's ID.
 
 The API checks the token's RS256 signature against Google's published keys, plus its expiry, audience (`FIREBASE_PROJECT_ID`) and issuer. It returns 503 if Google's keys can't be fetched. Firebase manages passwords; MongoDB stores none. Browser mutations validate Origin, and CORS permits only configured origins.

@@ -8,6 +8,7 @@ import { addDays, formatDate, localDate } from "../utils/dates";
 import Icon, { type IconName } from "./Icon";
 import { categoryIcon } from "../utils/taskDisplay";
 import { eventIcon, occurrencesOn } from "../utils/events";
+import { initials } from "../services/avatarUpload";
 
 const pageTitles: Record<string, string> = {
   calendars: "Connected calendars",
@@ -16,13 +17,14 @@ const pageTitles: Record<string, string> = {
   analytics: "Analytics",
 };
 
+/** Shared by the header and the profile, so a saved avatar shows everywhere at once. */
 export function Avatar({ size = 32 }: { size?: number }) {
   const { user } = useAuth();
   // Remember which URL failed, so uploading a new avatar shows it again.
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
   if (user?.photoURL && user.photoURL !== brokenUrl)
     return <img className="avatar" src={user.photoURL} alt="" width={size} height={size} referrerPolicy="no-referrer" onError={() => setBrokenUrl(user.photoURL)} />;
-  return <span className="avatar" style={{ width: size, height: size }} aria-hidden="true">{user?.name.charAt(0).toUpperCase() || "?"}</span>;
+  return <span className="avatar" style={{ width: size, height: size }} aria-hidden="true">{initials(user?.name)}</span>;
 }
 
 function MenuDrawer({ open, onClose, route }: { open: boolean; onClose: () => void; route: string }) {
