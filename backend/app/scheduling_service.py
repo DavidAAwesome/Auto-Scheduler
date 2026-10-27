@@ -365,7 +365,7 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
 
     version = bump_schedule_version(db, owner, session=txn)
     id_map, created_tasks, created_events = _create_drafts(db, owner, drafts or [], request.get('batchId') or preview_id,
-                                                           ctx, txn)
+                                                           ctx.tasks, txn)
     for removal in preview.removed:
         query = {'_id': ObjectId(removal.session.id), 'user_id': owner, 'status': {'$nin': ['completed', 'cancelled']}}
         if removal.newEndAt is not None:
@@ -398,8 +398,9 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
             'tasks': created_tasks, 'events': created_events}
 
 
-def _create_drafts(db, owner: str, drafts: list[PlanDraft], batch_id: str, ctx: Context, txn):
-    """Inserts the drafts of a plan preview as real tasks and events, inside the Apply transaction.
+def _create_drafts(db, owner: str, drafts: list[PlanDraft], batch_id: str, tasks: list[TaskOutput], txn):
+    """Inserts reviewed drafts as real tasks and events, inside the caller's transaction (Apply, or a confirmed
+    "save these items" action). `tasks` holds each task draft converted by `draft_task`.
 
     `draft_key` (batch id + draft id) is unique per user, so the same reviewed draft can never be saved twice,
     even from two different previews of the same batch."""
@@ -410,7 +411,7 @@ def _create_drafts(db, owner: str, drafts: list[PlanDraft], batch_id: str, ctx: 
             db.events.find_one({'user_id': owner, 'draft_key': {'$in': keys}}, session=txn):
         raise HTTPException(409, 'These drafts were already saved. Review your calendar before adding them again.')
     id_map = {DRAFT_PREFIX + d.id: str(ObjectId()) for d in drafts}
-    by_id = {t.id: t for t in ctx.tasks}
+    by_id = {t.id: t for t in tasks}
     task_docs, event_docs = [], []
     for draft, key in zip(drafts, keys):
         if draft.kind == 'fixed_event':

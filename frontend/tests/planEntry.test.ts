@@ -152,18 +152,6 @@ test('a failed extraction keeps nothing half-done and leaves the drafts untouche
   assert.ok(!api.log.some(l => l.includes('/schedule/apply')));
 });
 
-test('chat “add task” makes a draft for review instead of saving a Medium task', async () => {
-  const api = backend();
-  const workspace = await store(api.request);
-  const request = parseRequest('Add a task called Study Networking, due October 30, 2026, with a duration of 50 minutes.', workspace.getSnapshot(), NOW);
-  assert.equal(request?.command, 'add_task');
-  const message = await runAssistantCommand(request!, workspace, NOW);
-  assert.match(message.text, /review panel as a draft\. Nothing is saved yet/);
-  assert.ok(!api.log.some(l => l === 'POST /tasks'), 'no task was saved');
-  const views = workspace.getSnapshot().planDrafts?.views ?? [];
-  assert.ok(views.length >= 1);
-});
-
 test('a reply answers the first open question on the same draft', () => {
   const views: DraftView[] = [
     { draft: emptyDraft('d1', { title: 'Essay', minutes: 60, deadline: '2026-10-30' }), issues: [], ready: true },

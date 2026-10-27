@@ -80,6 +80,7 @@ def initialize_indexes(db):
     db.sessions.create_index([('user_id', 1), ('task_id', 1)])
     db.sessions.create_index([('user_id', 1), ('start_at', 1)])
     db.schedule_previews.create_index([('user_id', 1), ('created_at', -1)])
+    db.pending_actions.create_index([('user_id', 1), ('status', 1), ('created_at', 1)])
     db.schedule_preferences.create_index('user_id', unique=True)
     db.events.create_index([('user_id', 1), ('date', 1)])
     db.events.create_index([('user_id', 1), ('source', 1), ('date', 1)])

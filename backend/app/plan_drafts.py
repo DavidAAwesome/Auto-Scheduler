@@ -191,8 +191,8 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
                 ask('start', f'What time does "{name}" start?', 'invalid')
     for dep in draft.dependsOn:
         if known_ids is not None and dep not in known_ids:
-            ask('dependsOn', f'"{name}" depends on an item that is not in this list or your tasks. Remove it or add it.',
-                'invalid')
+            ask('dependsOn', f'"{name}" depends on an item that is not selected or saved. Remove the link or select that '
+                'item too.', 'invalid')
     if 'priority' in draft.assumed:
         ask('priority', f'Priority of "{name}" was not stated, so it is Medium. Change it if needed.', 'warning', False)
     ready = not any(i.blocking for i in issues)
@@ -203,8 +203,10 @@ def review_all(drafts: list[PlanDraft], now: datetime, zone: ZoneInfo, saved_tas
     ids = [d.id for d in drafts]
     if len(ids) != len(set(ids)):
         raise ValueError('Draft ids must be unique.')
+    # A selected item may only depend on selected items (or saved tasks): unselected drafts are not saved.
+    selected = {d.id for d in drafts if d.include} | saved_task_ids
     known = set(ids) | saved_task_ids
-    return [review_draft(d, now, zone, known) for d in drafts]
+    return [review_draft(d, now, zone, selected if d.include else known) for d in drafts]
 
 
 # ---------------------------------------------------------------- conversion for the scheduler

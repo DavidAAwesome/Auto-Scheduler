@@ -233,3 +233,25 @@ export interface FeasibilityResult {
   status: FitStatus; summary: string; items: ItemFit[]; displaced: Displaced[]; alternatives: FitAlternative[];
   horizonDays: number; windowStart: string; windowEnd: string; searchLimits: string; savedDataChanged: false;
 }
+
+/**
+ * A change waiting for the user's confirmation, held as structured state (never remembered by the chat model).
+ * Server-backed types are stored by the API; "apply_schedule" stands for the pending schedule preview.
+ */
+export type PendingActionType = "delete_tasks" | "create_items" | "apply_schedule";
+export type PendingActionStatus = "awaiting_confirmation" | "processing" | "succeeded" | "cancelled" | "failed";
+export interface ActionTarget { id: string; title: string; detail?: string | null }
+export interface PendingAction {
+  id: string;
+  type: PendingActionType;
+  status: PendingActionStatus;
+  version: number;
+  summary: string;
+  targets: ActionTarget[];
+  sessionCount: number;
+  error: string | null;
+  createdAt: string;
+}
+export interface ActionResult { action: PendingAction; duplicate: boolean; deletedTaskIds: string[]; tasks: Task[]; events: CalendarEvent[]; scheduleVersion: number | null }
+/** A numbered list the chat showed; a reply like "1" or "1 and 3" is resolved against exactly this list. */
+export interface PendingChoice { id: string; purpose: "delete_tasks" | "confirm"; prompt: string; options: ActionTarget[] }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
+import { missingSummary } from "../services/workspaceStore";
 import type { DraftIssue, DraftKind, DraftView, EventKind, FeasibilityResult, FitStatus, PlanDraft, Priority } from "../types/models";
 import { clock12 } from "../utils/calendar";
 import Icon from "./Icon";
@@ -23,7 +24,7 @@ const fromTime = (value: string) => {
   return h * 60 + m;
 };
 
-function IssueRow({ draftId, issue, busy }: { draftId: string; issue: DraftIssue; busy: boolean }) {
+function IssueRow({ draftId, issue, busy, inline = false }: { draftId: string; issue: DraftIssue; busy: boolean; inline?: boolean }) {
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
   const canAnswer = issue.blocking && ANSWERABLE.has(issue.field);
@@ -38,7 +39,7 @@ function IssueRow({ draftId, issue, busy }: { draftId: string; issue: DraftIssue
     }
   }
   return (
-    <li className={`draft-issue ${issue.blocking ? "blocking" : "warning"}`}>
+    <li className={`draft-issue ${issue.blocking ? "blocking" : "warning"} ${inline ? "inline" : ""}`}>
       <span>{issue.question}</span>
       {canAnswer && (
         <form className="draft-answer" onSubmit={e => { e.preventDefault(); void submit(); }}>
@@ -55,9 +56,17 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
   const d = view.draft;
   const set = (patch: Partial<PlanDraft>) => workspaceService.updateDraft(d.id, patch);
   const fixed = d.kind === "fixed_event";
-  const uncertain = (field: string) => (d.ambiguous.includes(field) || d.unreadable.includes(field) ? "uncertain" : "");
+  const blocking = new Set(view.issues.filter(i => i.blocking).map(i => i.field));
+  const uncertain = (field: string) => (d.ambiguous.includes(field) || d.unreadable.includes(field) || blocking.has(field) ? "uncertain" : "");
+  // Questions are shown next to the field they are about; the rest (links, repeats) under the item.
+  const shown = new Set<string>();
+  const at = (...fields: string[]) => {
+    const issues = view.issues.filter(i => fields.includes(i.field));
+    issues.forEach(i => shown.add(i.field));
+    return issues.length ? <ul className="draft-issues field">{issues.map(issue => <IssueRow key={issue.field} draftId={d.id} issue={issue} busy={busy} inline />)}</ul> : null;
+  };
   return (
-    <li className={`draft-card ${view.ready ? "ready" : "needs-answer"} ${d.include ? "" : "skipped"}`} aria-label={`Item ${index + 1}: ${d.title ?? "untitled"}`}>
+    <li id={`draft-${d.id}`} className={`draft-card ${view.ready ? "ready" : "needs-answer"} ${d.include ? "" : "skipped"}`} aria-label={`Item ${index + 1}: ${d.title ?? "untitled"}`}>
       <div className="draft-row">
         <label className="draft-include" title="Include this item">
           <input type="checkbox" checked={d.include} onChange={e => set({ include: e.target.checked })} />
@@ -68,13 +77,15 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
         </select>
         <button className="icon-button ghost small" aria-label={`Remove ${d.title ?? "item"}`} onClick={() => workspaceService.removeDraft(d.id)}><Icon name="close" size={15} /></button>
       </div>
+      {at("title")}
       {d.sourceText && <p className="draft-source" title="Original wording">“{d.sourceText}”</p>}
       <div className="draft-fields">
         {fixed ? (
           <>
-            {!d.repeat && <label>Date<input type="date" className={uncertain("date")} value={d.date ?? ""} onChange={e => set({ date: e.target.value || null })} /></label>}
-            <label>Start<input type="time" step={300} className={uncertain("start")} value={toTime(d.start)} onChange={e => set({ start: fromTime(e.target.value), ambiguous: d.ambiguous.filter(f => f !== "start") })} /></label>
-            <label>End<input type="time" step={300} className={uncertain("end")} value={toTime(d.end)} onChange={e => set({ end: fromTime(e.target.value), ambiguous: d.ambiguous.filter(f => f !== "end") })} /></label>
+            {!d.repeat && <label>Date<input type="date" className={uncertain("date")} value={d.date ?? ""} onChange={e => set({ date: e.target.value || null })} />{at("date")}</label>}
+            <label>Start<input type="time" step={300} className={uncertain("start")} value={toTime(d.start)} onChange={e => set({ start: fromTime(e.target.value) })} />{at("start")}</label>
+            <label>End<input type="time" step={300} className={uncertain("end")} value={toTime(d.end)} onChange={e => set({ end: fromTime(e.target.value) })} />{at("end")}</label>
+            <label>Place<input value={d.location ?? ""} maxLength={120} className={uncertain("location")} onChange={e => set({ location: e.target.value || null })} />{at("location")}</label>
             <label>Type
               <select value={d.eventKind} onChange={e => set({ eventKind: e.target.value as EventKind })}>
                 {["Class", "Meeting", "Appointment", "Social", "Other"].map(k => <option key={k}>{k}</option>)}
@@ -83,36 +94,55 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
             <label className="draft-check"><input type="checkbox" checked={!!d.repeat} onChange={e => set({ repeat: e.target.checked ? { weekdays: d.date ? [(new Date(`${d.date}T12:00:00Z`).getUTCDay() + 6) % 7] : [], startDate: d.date, until: null } : null })} /> Weekly</label>
             {d.repeat && (
               <>
-                <div className="draft-weekdays" role="group" aria-label="Repeats on">
+                <div className={`draft-weekdays ${uncertain("repeat.weekdays")}`} role="group" aria-label="Repeats on">
                   {WEEKDAYS.map((name, i) => (
                     <button key={name} type="button" className={`chip ${d.repeat!.weekdays.includes(i) ? "on" : ""}`} aria-pressed={d.repeat!.weekdays.includes(i)}
                       onClick={() => set({ repeat: { ...d.repeat!, weekdays: d.repeat!.weekdays.includes(i) ? d.repeat!.weekdays.filter(x => x !== i) : [...d.repeat!.weekdays, i].sort() } })}>{name}</button>
                   ))}
+                  {at("repeat.weekdays")}
                 </div>
-                <label>First date<input type="date" className={uncertain("repeat.startDate")} value={d.repeat.startDate ?? ""} onChange={e => set({ repeat: { ...d.repeat!, startDate: e.target.value || null } })} /></label>
-                <label>Last date<input type="date" className={uncertain("repeat.until")} value={d.repeat.until ?? ""} onChange={e => set({ repeat: { ...d.repeat!, until: e.target.value || null } })} /></label>
+                <label>First date<input type="date" className={uncertain("repeat.startDate")} value={d.repeat.startDate ?? ""} onChange={e => set({ repeat: { ...d.repeat!, startDate: e.target.value || null } })} />{at("repeat.startDate")}</label>
+                <label>Last date<input type="date" className={uncertain("repeat.until")} value={d.repeat.until ?? ""} onChange={e => set({ repeat: { ...d.repeat!, until: e.target.value || null } })} />{at("repeat.until")}</label>
               </>
             )}
           </>
         ) : (
           <>
-            <label>Minutes<input type="number" min={5} step={5} max={6000} className={uncertain("minutes")} value={d.minutes ?? ""} onChange={e => set({ minutes: e.target.value ? Number(e.target.value) : null })} /></label>
-            <label>{d.kind === "task" ? "Due" : "By"}<input type="date" className={uncertain("deadline")} value={d.deadline ?? ""} onChange={e => set({ deadline: e.target.value || null })} /></label>
-            <label>at<input type="time" step={300} value={toTime(d.dueTime)} onChange={e => set({ dueTime: fromTime(e.target.value) })} /></label>
+            <label>Minutes<input type="number" min={5} step={5} max={6000} className={uncertain("minutes")} value={d.minutes ?? ""} onChange={e => set({ minutes: e.target.value ? Number(e.target.value) : null })} />{at("minutes")}</label>
+            <label>{d.kind === "task" ? "Due" : "By"}<input type="date" className={uncertain("deadline")} value={d.deadline ?? ""} onChange={e => set({ deadline: e.target.value || null })} />{at("deadline")}</label>
+            <label>at<input type="time" step={300} className={uncertain("dueTime")} value={toTime(d.dueTime)} onChange={e => set({ dueTime: fromTime(e.target.value) })} />
+              {d.dueTime == null && d.deadline && <small className="draft-default">No time given: end of day (11:59 PM)</small>}
+              {at("dueTime")}
+            </label>
             <label>Priority
-              <select value={d.priority} onChange={e => set({ priority: e.target.value as Priority, assumed: d.assumed.filter(f => f !== "priority") })}>
+              <select value={d.priority} className={d.assumed.includes("priority") ? "uncertain" : ""} onChange={e => set({ priority: e.target.value as Priority })}>
                 {["High", "Medium", "Low"].map(p => <option key={p}>{p}</option>)}
               </select>
+              {at("priority")}
             </label>
+            <label>Not before<input type="datetime-local" step={300} className={uncertain("earliestStart")} value={(d.earliestStart ?? "").slice(0, 16)} onChange={e => set({ earliestStart: e.target.value ? `${e.target.value}:00` : null })} />{at("earliestStart")}</label>
             <label className="draft-check" title={d.kind === "flexible_event" ? "Flexible events stay in one block unless you allow splitting" : "Allow the work to be split into sessions"}>
               <input type="checkbox" checked={d.allowSplit ?? d.kind === "task"} onChange={e => set({ allowSplit: e.target.checked })} /> Can split
             </label>
-            {d.dependsOn.length > 0 && <span className="draft-meta">After {d.dependsOn.map(id => others.find(o => o.draft.id === id)?.draft.title ?? "a saved task").join(", ")}</span>}
+            {(d.allowSplit ?? d.kind === "task") && (
+              <>
+                <label>Shortest session<input type="number" min={5} step={5} max={6000} placeholder="15" className={uncertain("minSessionMinutes")} value={d.minSessionMinutes ?? ""} onChange={e => set({ minSessionMinutes: e.target.value ? Number(e.target.value) : null })} /></label>
+                <label>Longest session<input type="number" min={5} step={5} max={6000} placeholder="60" value={d.maxSessionMinutes ?? ""} onChange={e => set({ maxSessionMinutes: e.target.value ? Number(e.target.value) : null })} />{at("minSessionMinutes")}</label>
+              </>
+            )}
+            {d.dependsOn.length > 0 && (
+              <span className="draft-meta">After {d.dependsOn.map(id => (
+                <span key={id} className="draft-link">{others.find(o => o.draft.id === id)?.draft.title ?? "a saved task"}
+                  <button type="button" className="icon-button ghost small" aria-label="Remove this link" onClick={() => set({ dependsOn: d.dependsOn.filter(x => x !== id) })}><Icon name="close" size={12} /></button>
+                </span>
+              ))}{at("dependsOn")}</span>
+            )}
+            {d.repeat && <span className="draft-meta">Repeats weekly <button type="button" className="button small ghost" onClick={() => set({ repeat: null })}>Remove repeat</button>{at("repeat")}</span>}
             {d.windows.length > 0 && <span className="draft-meta">Only {d.windows.map(w => `${w.weekdays.length ? w.weekdays.map(i => WEEKDAYS[i]).join("/") + " " : ""}${clock12(w.start)}–${clock12(w.end)}`).join(", ")}</span>}
           </>
         )}
       </div>
-      {view.issues.length > 0 && <ul className="draft-issues">{view.issues.map(issue => <IssueRow key={issue.field} draftId={d.id} issue={issue} busy={busy} />)}</ul>}
+      {view.issues.some(i => !shown.has(i.field)) && <ul className="draft-issues">{view.issues.filter(i => !shown.has(i.field)).map(issue => <IssueRow key={issue.field} draftId={d.id} issue={issue} busy={busy} />)}</ul>}
     </li>
   );
 }
@@ -151,7 +181,20 @@ export default function DraftReview() {
   const [open, setOpen] = useState(true);
   const lastReviewed = useRef("");
   const busy = planBusy || saving;
+  const panel = useRef<HTMLElement>(null);
   const key = JSON.stringify(planDrafts?.views.map(v => v.draft) ?? []);
+  // "Edit" in the chat opens the panel at the first item.
+  useEffect(() => {
+    const show = () => {
+      setOpen(true);
+      requestAnimationFrame(() => {
+        panel.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+        panel.current?.querySelector<HTMLInputElement>(".draft-card input:not([type=checkbox])")?.focus({ preventScroll: true });
+      });
+    };
+    window.addEventListener("autoplan:review-drafts", show);
+    return () => window.removeEventListener("autoplan:review-drafts", show);
+  }, []);
   // Edits are re-checked by the backend shortly after typing stops.
   useEffect(() => {
     if (!planDrafts || key === lastReviewed.current) return;
@@ -165,6 +208,14 @@ export default function DraftReview() {
   const views = planDrafts.views;
   const included = views.filter(v => v.draft.include);
   const blocked = included.filter(v => !v.ready);
+  const missing = missingSummary(views);
+  const why = !included.length ? "Tick at least one item to check or preview it."
+    : missing.length ? `Still needed: ${missing.map(m => `${m.title}: ${m.fields.join(", ")}`).join("; ")}.` : "";
+  function goTo(draftId: string) {
+    const card = document.getElementById(`draft-${draftId}`);
+    card?.scrollIntoView({ block: "center", behavior: "smooth" });
+    card?.querySelector<HTMLInputElement>("input.uncertain, select.uncertain, .draft-answer input")?.focus({ preventScroll: true });
+  }
   async function run(action: () => Promise<unknown>) {
     setError("");
     try { await action(); } catch (e) { setError((e as Error).message); }
@@ -178,7 +229,7 @@ export default function DraftReview() {
   }
   const planPreview = schedulePreview?.mode === "plan";
   return (
-    <section className="draft-review" aria-label="Review new items">
+    <section ref={panel} className="draft-review" aria-label="Review new items">
       <header className="draft-review-head">
         <button className="draft-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
           <Icon name={open ? "chevronDown" : "chevronRight"} size={16} />
@@ -190,6 +241,13 @@ export default function DraftReview() {
       {open && (
         <>
           {planDrafts.notes.map(note => <p key={note} className="muted small">{note}</p>)}
+          {missing.length > 0 && (
+            <div className="draft-summary" role="status">
+              <strong>Still needed before checking or previewing:</strong>
+              <ul>{missing.map(m => <li key={m.draftId}><a href={`#draft-${m.draftId}`} onClick={e => { e.preventDefault(); goTo(m.draftId); }}>{m.title}</a>: {m.fields.join(", ")}</li>)}</ul>
+              <span className="muted small">Fill the highlighted fields above or answer here. Unticked items are left out and never block the others.</span>
+            </div>
+          )}
           <ol className="draft-list">{views.map((v, i) => <DraftCard key={v.draft.id} view={v} index={i} others={views} busy={busy} />)}</ol>
           {feasibility && <FitReport result={feasibility} busy={busy} onAlternative={alternative} />}
           {error && <p role="alert" className="form-error">{error}</p>}
@@ -199,15 +257,15 @@ export default function DraftReview() {
                 {[7, 14, 21].map(n => <option key={n} value={n}>{n} days</option>)}
               </select>
             </label>
-            <button className="button small secondary" disabled={busy || !included.length || blocked.length > 0} onClick={() => void run(() => workspaceService.checkFit())}>
+            <button className="button small secondary" disabled={busy || !included.length || blocked.length > 0} aria-describedby={why ? "draft-why" : undefined} onClick={() => void run(() => workspaceService.checkFit())}>
               {planBusy ? "Checking…" : "Can this fit?"}
             </button>
-            <button className="button small" disabled={busy || !included.length || blocked.length > 0} onClick={() => void run(() => workspaceService.previewDrafts())}>
+            <button className="button small" disabled={busy || !included.length || blocked.length > 0} aria-describedby={why ? "draft-why" : undefined} onClick={() => void run(() => workspaceService.previewDrafts())}>
               {planPreview && previewStale ? "Preview again" : "Preview on calendar"}
             </button>
             <button className="button small ghost" disabled={busy} onClick={() => workspaceService.clearDrafts()}>Discard</button>
           </div>
-          {blocked.length > 0 && <p className="muted small">Answer the highlighted questions to check or preview. Unticked items are left out.</p>}
+          {why && <p className="muted small" id="draft-why">{why}</p>}
         </>
       )}
     </section>

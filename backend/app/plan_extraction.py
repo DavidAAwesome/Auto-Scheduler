@@ -110,6 +110,7 @@ Item kinds:
 
 Rules:
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
+- deadlineTime is the stated time only: noon is 12:00. Leave it null when no time is given (never fill in 23:59).
 - Never confuse a deadline with a scheduled date. "Essay due Friday" has deadlineDate Friday and no date/startTime.
 - Do not assume an event is movable, and do not invent anything: leave unknown fields null.
 - If AM/PM is not stated and not clear from context, give your best reading in startTime/endTime AND list the field
@@ -254,7 +255,7 @@ WEEKDAYS = {'mon': 0, 'monday': 0, 'mondays': 0, 'tue': 1, 'tues': 1, 'tuesday':
 WD = r'(?:mon(?:day)?s?|tue(?:s(?:day)?)?s?|wed(?:s|nesday)?s?|thu(?:r(?:s(?:day)?)?)?s?|fri(?:day)?s?|sat(?:urday)?s?|sun(?:day)?s?)'
 MONTH = r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?'
 DATE = (rf'(?:today|tonight|tomorrow|day after tomorrow|(?:next |this )?{WD}\b|\d{{4}}-\d{{2}}-\d{{2}}|'
-        rf'{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?|\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}|\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?)')
+        rf'{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+20\d\d\b)?|\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?:,?\s+20\d\d\b)?|\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?)')
 TIME = r'(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\d{1,2}:\d{2}|noon|midnight)'
 RANGE = re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|to|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b', re.I)
 CLASS_WORDS = r'class|lecture|lab|seminar|tutorial|recitation|studio|section'
@@ -300,12 +301,12 @@ def resolve_date(expr: str, today: date) -> tuple[date | None, bool]:
             year = int(match[3]) + (2000 if match[3] and len(match[3]) == 2 else 0) if match[3] else None
             value = _with_year(int(match[1]), int(match[2]), year, today)
             return value, int(match[1]) <= 12 and int(match[2]) <= 12 and match[1] != match[2]
-        match = re.fullmatch(rf'({MONTH})\s+(\d{{1,2}})(?:st|nd|rd|th)?', e) or None
+        match = re.fullmatch(rf'({MONTH})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(20\d\d))?', e) or None
         if match:
-            return _with_year(MONTHS[match[1][:3]], int(match[2]), None, today), False
-        match = re.fullmatch(rf'(\d{{1,2}})(?:st|nd|rd|th)?\s+({MONTH})', e)
+            return _with_year(MONTHS[match[1][:3]], int(match[2]), int(match[3]) if match[3] else None, today), False
+        match = re.fullmatch(rf'(\d{{1,2}})(?:st|nd|rd|th)?\s+({MONTH})(?:,?\s+(20\d\d))?', e)
         if match:
-            return _with_year(MONTHS[match[2][:3]], int(match[1]), None, today), False
+            return _with_year(MONTHS[match[2][:3]], int(match[1]), int(match[3]) if match[3] else None, today), False
     except (ValueError, KeyError):
         return None, True
     return None, True
@@ -316,6 +317,30 @@ def _with_year(month: int, day: int, year: int | None, today: date) -> date:
         return date(year, month, day)
     value = date(today.year, month, day)
     return value if value >= today - timedelta(days=60) else date(today.year + 1, month, day)
+
+
+class _TimeFirst:
+    """A due phrase written time-first ("by noon tomorrow"), read like the date-first form: [1] date, [2] time."""
+
+    def __init__(self, match: re.Match):
+        self.match = match
+
+    @classmethod
+    def search(cls, pattern: str, text: str):
+        match = re.search(pattern, text)
+        return cls(match) if match else None
+
+    def __getitem__(self, index: int):
+        return self.match[{1: 2, 2: 1}.get(index, index)]
+
+    def span(self):
+        return self.match.span()
+
+    def start(self):
+        return self.match.start()
+
+    def end(self):
+        return self.match.end()
 
 
 def parse_time(expr: str) -> tuple[int | None, bool]:
@@ -406,7 +431,8 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         if start_amb or end_amb:
             ambiguous += ['start', 'end']
 
-    due = re.search(rf'\b(?:due|by|before|deadline)\s*(?:on\s+|is\s+)?({DATE})(?:\s*(?:at|@|,)?\s*({TIME}))?', lower)
+    due = re.search(rf'\b(?:due|by|before|deadline)\s*(?:on\s+|is\s+)?({DATE})(?:\s*(?:at|@|,)?\s*({TIME}))?', lower) or \
+        _TimeFirst.search(rf'\b(?:due|by|before)\s*(?:at\s+)?({TIME})\s*,?\s*(?:on\s+)?({DATE})', lower)  # "by noon tomorrow"
     on = re.search(rf'\b(?:on\s+)?({DATE})(?:\s*(?:at|@)\s*({TIME}))?', lower)
     at_time = re.search(rf'\b(?:at|@)\s*({TIME})', lower)
     duration, duration_span = parse_duration(lower if not time_range else lower[:time_range.start()] + ' ' * (

@@ -306,3 +306,37 @@ def test_apply_plan_preview_over_http_survives_refresh(transaction_environment, 
     assert {t['title'] for t in client.get('/tasks').json()} == {'Lab report', 'Gym'}
     assert client.post('/schedule/apply', json={'previewId': proposal['previewId']}).json()['duplicate'] is True
     assert db.tasks.count_documents({}) == 2
+
+
+def test_noon_stays_noon_from_text_to_preview_to_saved_task(environment, monkeypatch):
+    client, db = environment
+    if not isinstance(db.client, mongomock.MongoClient):
+        pytest.skip('Logic-only test.')
+    setup_user(client, monkeypatch)
+    drafts = interpret(client, 'Submit lab report by noon tomorrow 60 min high priority')
+    assert (drafts[0]['deadline'], drafts[0]['dueTime']) == (TOMORROW, 720)
+    proposal = plan_preview(client, drafts, days=2)
+    allocation = proposal['tasks'][0]
+    assert allocation['unallocatedMinutes'] == 0
+    due_at = datetime(2026, 10, 27, 12, 0, tzinfo=ZoneInfo('America/New_York'))
+    assert all(datetime.fromisoformat(s['endAt'].replace('Z', '+00:00')) <= due_at for s in proposal['sessions'])
+    apply_logic(db, proposal['previewId'])
+    saved = client.get('/tasks').json()[0]
+    assert (saved['deadline'], saved['dueTime']) == (TOMORROW, 720)
+
+
+def test_infeasible_work_is_a_result_not_a_blocking_question(environment, monkeypatch):
+    client, db = environment
+    if not isinstance(db.client, mongomock.MongoClient):
+        pytest.skip('Logic-only test.')
+    setup_user(client, monkeypatch)
+    drafts = interpret(client, 'Thesis chapter 6 hours due today 12pm high priority')
+    views = client.post('/plan/review', json={'drafts': drafts, 'horizonDays': 1}).json()
+    assert views[0]['ready'] and not [i for i in views[0]['issues'] if i['blocking']]
+    proposal = plan_preview(client, drafts)
+    allocation = proposal['tasks'][0]
+    assert allocation['newMinutes'] > 0 and allocation['unallocatedMinutes'] == 360 - allocation['newMinutes']
+    # A partial plan can be applied: the task is saved with its unscheduled minutes still open.
+    apply_logic(db, proposal['previewId'])
+    saved = client.get('/tasks').json()[0]
+    assert saved['minutes'] == 360 and db.sessions.count_documents({'type': 'work'}) > 0

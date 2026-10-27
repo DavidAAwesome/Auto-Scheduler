@@ -181,7 +181,15 @@ For every open task: `remaining = estimated − completed`, and `retained + new 
 
 ### Chat
 
-Chat requests are parsed deterministically first and fall back to OpenAI only for intent classification: today's plan, busy time, generate, explain what didn't fit, request a break ("I need a 30-minute break now"), repair, and move a task. "Today's tasks" lists today's saved and proposed sessions, breaks and proposed events with their times, and lists deadlines separately. Proposed items are labelled as not saved. A message that lists tasks or events (several lines, or a length plus a date) goes to plan entry instead, and "add a task called …" now creates a draft for review rather than saving a Medium task directly.
+Chat requests are parsed deterministically first and fall back to OpenAI only for intent classification: today's plan, busy time, generate, explain what didn't fit, request a break ("I need a 30-minute break now"), repair, and move a task. "Today's tasks" lists today's saved and proposed sessions, breaks and proposed events with their times, and lists deadlines separately. Proposed items are labelled as not saved. A message that lists tasks or events (several lines, or a length plus a date) goes to plan entry instead. "Add a task called …" is read by the same parser (so "due Friday at noon" stays 12:00 PM; with no time the deadline is the end of the day, shown as such) and offers **Confirm tasks** / **Edit** instead of saving a Medium task directly.
+
+### Confirmations (pending actions)
+
+Deleting tasks and saving drafts without scheduling are **pending actions** stored by the API (`app/pending_actions.py`), never a sentence the chat model has to remember. A proposal has an id, a type, the exact targets with their names (and, for deletions, how many scheduled sessions go with them), a validated payload, a version and a status (`awaiting_confirmation`, `processing`, `succeeded`, `cancelled`, `failed`). The chat shows buttons for it: **Delete task** / **Cancel**, **Confirm tasks** / **Edit**, and for a schedule preview **Apply schedule** / **Cancel**. Typing "confirm" runs the one open action through the same handler, or asks which one when several are open; "1" or "1 and 3" is resolved against the exact numbered list shown before.
+
+- `POST /actions/delete-tasks` `{taskIds}` and `POST /actions/create-items` `{drafts, batchId}` propose; `GET /actions` lists open ones (they survive a refresh).
+- `POST /actions/{id}/confirm` `{version}` runs it once: other users' ids are 404, a wrong version or a schedule change since the proposal is 409, the status moves to `processing` atomically so a double click cannot run it twice, and the change plus `succeeded` are written in one transaction. A repeat confirm returns `duplicate: true` and changes nothing. A failure is kept on the action with its message and can be retried.
+- `POST /actions/{id}/cancel` changes nothing else.
 
 ## Plan entry: text and images → drafts → the same scheduler
 
@@ -211,7 +219,7 @@ Each item lists its causes marked proven or not proven. The planning horizon and
 - `POST /plan/feasibility` `{drafts, horizonDays}` → the result above
 - `POST /plan/preview` `{drafts, horizonDays, batchId}` → a schedule preview (mode `plan`), applied with `POST /schedule/apply`
 
-Drafts with open questions are refused with 422 by feasibility and preview.
+Drafts with open questions are refused with 422 by feasibility and preview. Only selected (ticked) items are checked: an unticked incomplete item never blocks the others, but a selected item may not depend on an unticked one. In the review panel, editing a field makes its value the answer: its "unclear" flag and question are cleared at once and the backend re-checks; an answer for drafts that changed meanwhile is ignored. Questions appear next to their fields, a summary links to each item that still needs something, and disabled buttons say what is missing. Not enough time is a scheduling result (a partial plan with its unscheduled minutes listed, which can be applied), not a question.
 
 ### Manual check (the acceptance scenario)
 

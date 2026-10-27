@@ -390,6 +390,18 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
                 ))}
               </div>
             )}
+            {unscheduled.length > 0 && (
+              <p className="form-warning small" role="status">
+                <strong>Partial plan:</strong> {unscheduled.reduce((n, t) => n + t.unallocatedMinutes, 0)} min of work can’t be placed in this window. You can still apply what fits; the rest stays on {unscheduled.length === 1 ? "its task" : "the tasks"} as unscheduled work (listed below).
+              </p>
+            )}
+            {added.length === 0 && moved.length === 0 && !(schedulePreview.proposedEvents?.length) && (
+              <p className="muted small" role="status">
+                {schedulePreview.mode === "plan"
+                  ? "No sessions could be placed in this window. Applying saves the new items with their work unscheduled."
+                  : schedulePreview.tasks.length === 0 ? "Nothing to schedule: you have no open tasks with remaining work in this window." : "Nothing changes: your saved plan already covers everything that fits."}
+              </p>
+            )}
             {previewStale && <p className="form-warning small">{schedulePreview.mode === "plan" ? "The items under review changed after this preview. Preview again before applying." : "Your tasks, events or settings changed after this preview. Generate it again before applying."}</p>}
             {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
               <ul className="form-warning small">
@@ -408,7 +420,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
             )}
           </div>
           <div className="schedule-preview-actions">
-            <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : "Apply"}</button>
+            <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : unscheduled.length ? "Apply partial plan" : "Apply schedule"}</button>
             <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
           </div>
         </div>

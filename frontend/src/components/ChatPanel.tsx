@@ -4,7 +4,8 @@ import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
 import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
-import type { PreferenceChange } from "../types/models";
+import type { PendingAction, PreferenceChange } from "../types/models";
+import { BUTTONS, CANCEL, CONFIRM, chosen, openActions, parseSelection, resolveConfirm } from "../services/pendingActions";
 import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
@@ -15,26 +16,45 @@ import Icon from "./Icon";
 const PROMPTS = ["Show my plan", "Plan my week", "Busy time", "Today’s tasks"];
 const ACTION_LABEL: Partial<Record<AssistantCommand, string>> = {
   generate_schedule: "Generate Schedule",
-  apply_schedule: "Apply",
+  apply_schedule: "Apply schedule",
   cancel_schedule: "Cancel",
   show_plan: "Show my plan",
   show_today: "Today’s plan",
   busy_time: "Busy time",
   explain_unscheduled: "What didn’t fit?",
   replan: "Repair schedule",
-  confirm_delete_task: "Confirm delete",
 };
 
 /**
  * AI chatbox. Scheduling questions run the same workspace actions as the calendar buttons, and the reply
  * reports only what those actions returned. Other questions go to OpenAI when configured, else to local rules.
  */
+/** The buttons of one pending action, or its outcome once it has run. */
+function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string; actions: PendingAction[]; busy: boolean; onConfirm: (a: PendingAction) => void; onDecline: (a: PendingAction) => void }) {
+  const action = actions.find(a => a.id === id);
+  if (!action) return null;
+  if (action.status === "succeeded") return <p className="chat-action-status">Done.</p>;
+  if (action.status === "cancelled") return <p className="chat-action-status">{action.error ?? "Cancelled. Nothing was changed."}</p>;
+  const labels = BUTTONS[action.type];
+  return (
+    <div className="chat-actions" role="group" aria-label={action.summary}>
+      {action.targets.length > 0 && action.type === "delete_tasks" && (
+        <ul className="chat-action-targets">{action.targets.map(t => <li key={t.id}>{t.title}{t.detail ? ` · ${t.detail}` : ""}</li>)}</ul>
+      )}
+      {action.status === "failed" && action.error && <p role="alert" className="form-error">{action.error}</p>}
+      <button className={`button small ${action.type === "delete_tasks" ? "danger" : ""}`} disabled={busy || action.status === "processing"} onClick={() => onConfirm(action)}>
+        {action.status === "processing" ? "Working…" : action.status === "failed" ? `Try again: ${labels.confirm(action)}` : labels.confirm(action)}
+      </button>
+      <button className="button small secondary" disabled={busy || action.status === "processing"} onClick={() => onDecline(action)}>{labels.other}</button>
+    </div>
+  );
+}
+
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const { user } = useAuth();
-  const { tasks, sessions, events, connections, availability, schedulePreview, saving, planDrafts, planBusy } = useWorkspace();
+  const { tasks, sessions, events, connections, availability, schedulePreview, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
-  const [pendingDeleteTaskId, setPendingDeleteTaskId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   /** An image waiting to be sent with the next message (e.g. a class timetable). */
   const [image, setImage] = useState<(ImageAttachment & { url: string }) | null>(null);
@@ -60,15 +80,93 @@ export default function ChatPanel() {
   async function run(request: ParsedRequest | AssistantCommand) {
     setError("");
     setWorking("generate_schedule");
-  try {
-    if (typeof request !== "string" && request.command === "delete_task") {
-    setPendingDeleteTaskId(request.taskId);
+    try {
+      append(await runAssistantCommand(request, workspaceService));
+    } finally {
+      setWorking(null);
     }
+  }
 
-    append(await runAssistantCommand(request, workspaceService));
-  } finally {
-  setWorking(null);
-} 
+  /** The confirm button of a pending action (or a typed “confirm” routed here). Reports only the server's result. */
+  async function confirm(action: PendingAction) {
+    if (action.type === "apply_schedule") return run("apply_schedule");
+    setError("");
+    const id = `act-${++nextId.current}`;
+    try {
+      const result = await workspaceService.confirmAction(action.id);
+      const names = result.action.targets.map(t => `“${t.title}”`).join(", ");
+      append({ id, role: "assistant", text: result.duplicate
+        ? "That was already done, so nothing else changed."
+        : result.action.type === "delete_tasks"
+          ? `Deleted ${names}${result.action.sessionCount ? ` and ${result.action.sessionCount} scheduled session${result.action.sessionCount === 1 ? "" : "s"}` : ""}.`
+          : `Saved ${names} as ${result.tasks.length + result.events.length === 1 ? "an item" : "items"} on your list. They are not scheduled yet: say “plan my week” or use Generate Schedule.` });
+    } catch (e) {
+      setError((e as Error).message);
+      append({ id, role: "assistant", text: `Not done: ${(e as Error).message} Nothing was changed. You can try again.` });
+    }
+  }
+
+  /** The second button: Cancel (deletions, schedule) or Edit (drafts, which stay in the review panel). */
+  async function decline(action: PendingAction) {
+    if (action.type === "apply_schedule") return run("cancel_schedule");
+    setError("");
+    try {
+      await workspaceService.cancelAction(action.id);
+      if (action.type === "create_items") {
+        window.dispatchEvent(new CustomEvent("autoplan:review-drafts"));
+        append({ id: `act-${++nextId.current}`, role: "assistant", text: "Okay, nothing was saved. Edit the items in the review panel above the calendar." });
+      } else append({ id: `act-${++nextId.current}`, role: "assistant", text: "Cancelled. Nothing was changed." });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  /** Confirmations waiting in the chat itself (event add/delete, preference save), alongside stored actions. */
+  function confirmCandidates() {
+    const state = workspaceService.getSnapshot();
+    const last = messages[messages.length - 1];
+    const chat = last?.pendingEvent ? [{ id: `chat:${last.id}`, summary: last.text }] : last?.pendingChange ? [{ id: `chat:${last.id}`, summary: last.text }] : [];
+    return [...openActions(state).map(a => ({ id: a.id, summary: a.summary, action: a })), ...chat.map(c => ({ ...c, action: null as PendingAction | null }))];
+  }
+
+  async function confirmById(id: string, yes: boolean) {
+    if (id.startsWith("chat:")) {
+      const message = messages.find(m => m.id === id.slice(5));
+      if (message?.pendingEvent) return resolveEvent(message.id, message.pendingEvent, yes);
+      if (message?.pendingChange) return resolveChange(message.id, message.pendingChange, yes);
+      return;
+    }
+    const action = openActions(workspaceService.getSnapshot()).find(a => a.id === id);
+    if (action) await (yes ? confirm(action) : decline(action));
+  }
+
+  /** Typed “confirm”/“cancel” and numbered replies. Returns true when the message was handled here. */
+  async function typedReply(text: string, id: string) {
+    const state = workspaceService.getSnapshot();
+    const choice = state.pendingChoice;
+    const picked = choice ? parseSelection(text, choice.options.length) : null;
+    if (choice && picked) {
+      if ("error" in picked) { append({ id: `${id}-a`, role: "assistant", text: picked.error }); return true; }
+      workspaceService.setChoice(null);
+      const options = chosen(choice, picked.indexes);
+      if (choice.purpose === "delete_tasks") await run({ command: "delete_task", taskIds: options.map(o => o.id) });
+      else for (const option of options) await confirmById(option.id, true);
+      return true;
+    }
+    const yes = CONFIRM.test(text);
+    if (!yes && !CANCEL.test(text)) return false;
+    const decision = resolveConfirm(confirmCandidates());
+    if (decision.kind === "none") {
+      append({ id: `${id}-a`, role: "assistant", text: yes ? "Nothing is waiting for confirmation." : "There is nothing to cancel." });
+    } else if (decision.kind === "one") {
+      await confirmById(decision.target.id, yes);
+    } else if (yes) {
+      workspaceService.setChoice({ id: `confirm-${id}`, purpose: "confirm", prompt: "Which one should I do?", options: decision.options });
+      append({ id: `${id}-a`, role: "assistant", text: `Several things are waiting. Which one should I do?\n${decision.options.map((o, i) => `${i + 1}. ${o.title}`).join("\n")}\nReply with its number, or use its button.` });
+    } else {
+      append({ id: `${id}-a`, role: "assistant", text: "Several things are waiting. Use the Cancel button on the one you mean." });
+    }
+    return true;
   }
 
   /**
@@ -120,6 +218,7 @@ export default function ChatPanel() {
     setImage(null);
     setError("");
 
+    if (!attachment && await typedReply(text, id)) return;
     // Images and multi-item messages always become drafts; a single line is checked for commands first.
     const multiline = text.split(/\n/).filter(l => l.trim()).length > 1;
     if (attachment || (multiline && looksLikePlanEntry(text))) return interpret(text, id, attachment);
@@ -157,7 +256,7 @@ export default function ChatPanel() {
 
     // The model only picks an intent. Every scheduling answer comes from the service, so chat never claims an
     // action that did not happen.
-    const request = requestFromIntent(reply, workspaceService.getSnapshot());
+    const request = requestFromIntent(reply, workspaceService.getSnapshot(), text);
     if (request) await run(request);
     else append({ id: `${id}-a`, role: "assistant", text: reply.reply });
   }
@@ -250,6 +349,7 @@ export default function ChatPanel() {
                 <button className="button small secondary" disabled={busy} onClick={() => void resolveChange(m.id, m.pendingChange!, false)}>Not now</button>
               </div>
             )}
+            {m.actionId && <ActionButtons id={m.actionId} actions={pendingActions} busy={busy} onConfirm={a => void confirm(a)} onDecline={a => void decline(a)} />}
             {m.id === actionMessageId && m.actions && (
               <div className="chat-actions" role="group" aria-label="Schedule actions">
                 {m.actions
@@ -259,20 +359,7 @@ export default function ChatPanel() {
                       key={action}
                       className={`button small ${action === "cancel_schedule" ? "secondary" : ""}`}
                       disabled={busy}
-                     onClick={() => {
-                      if (action === "confirm_delete_task") {
-                        if (!pendingDeleteTaskId) return;
-
-                        void run({
-                         command: "confirm_delete_task",
-                         taskId: pendingDeleteTaskId,
-                        });
-
-    setPendingDeleteTaskId(null);
-  } else {
-    void run(action);
-  }
-}}
+                      onClick={() => void run(action)}
                     >
                       {ACTION_LABEL[action]}
                     </button>

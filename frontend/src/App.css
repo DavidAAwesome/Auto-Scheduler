@@ -619,3 +619,18 @@ main:focus { outline: none; }
 .fit-alternatives, .conflict-choices { display: inline-flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0 6px; }
 .event-block.preview { outline: 2px dashed var(--event-strong); outline-offset: -2px; opacity: 0.85; }
 .event-line.proposed, .today-event.proposed, .today-break.proposed { opacity: 0.85; font-style: italic; }
+
+/* Pending actions and draft questions next to their fields */
+.chat-action-status { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+.chat-action-targets { margin: 0 0 6px; padding-left: 18px; font-size: 12.5px; width: 100%; }
+.chat-actions { flex-wrap: wrap; }
+.draft-card { scroll-margin: 12px; }
+.draft-issues.field { margin: 3px 0 0; max-width: 260px; font-weight: 500; color: var(--text); }
+.draft-issue.inline { padding: 4px 7px; font-size: 12px; }
+.draft-default { font-weight: 500; color: var(--muted); }
+.draft-summary { border-radius: 10px; padding: 8px 12px; margin: 6px 0; background: var(--notice-bg); color: var(--notice-text); font-size: 12.5px; }
+.draft-summary ul { margin: 4px 0; padding-left: 18px; }
+.draft-summary a { color: inherit; font-weight: 700; }
+.draft-link { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+.draft-weekdays.uncertain { outline: 1px dashed var(--cat-work); border-radius: 8px; padding: 2px; }
+.draft-actions { position: static; }
