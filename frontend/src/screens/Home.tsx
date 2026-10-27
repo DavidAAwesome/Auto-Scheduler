@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CalendarEvent, Task, WorkSession } from "../types/models";
 import TaskSidebar from "../components/TaskSidebar";
 import CalendarPane from "../components/CalendarPane";
@@ -10,7 +10,8 @@ import TaskPopover from "../components/TaskPopover";
 import EventPopover from "../components/EventPopover";
 import SlotMenu from "../components/SlotMenu";
 import { useWorkspace } from "../hooks/useWorkspace";
-import { dateInZone } from "../utils/calendar";
+import { accountToday } from "../utils/timeZones";
+import { alignCalendarToday } from "../services/uiState";
 
 type TaskFormState = { task?: Task; deadline?: string } | null;
 type SessionFormState = { session?: WorkSession; taskId?: string; date?: string; start?: number } | null;
@@ -26,7 +27,8 @@ export default function Home() {
   const [selectedEvent, setSelectedEvent] = useState<{ id: string; date: string; rect: DOMRect } | null>(null);
   const [slot, setSlot] = useState<{ date: string; start: number; rect: DOMRect } | null>(null);
   const [status, setStatus] = useState("");
-  const today = dateInZone(availability?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const today = accountToday(availability);
+  useEffect(() => alignCalendarToday(today), [today]);
   const selectedTask = selected && tasks.find(t => t.id === selected.id);
   const openEvent = selectedEvent && events.find(e => e.id === selectedEvent.id);
   const toast = (message: string) => { setStatus(message); setTimeout(() => setStatus(""), 2500); };

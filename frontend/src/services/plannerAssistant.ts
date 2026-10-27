@@ -4,6 +4,7 @@ import type { PendingEventAction } from "./eventCommands.ts";
 import { formatDate } from "../utils/dates.ts";
 import { dateInZone } from "../utils/calendar.ts";
 import { todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { accountTimeZone } from "../utils/timeZones.ts";
 
 export type AssistantMessage = {
   id: string;
@@ -38,7 +39,7 @@ export function calendarStatus(context: AssistantContext) {
     return "No external calendar is connected. Connect Google Calendar or Outlook from the ☰ menu → Calendars to import your events as busy time.";
   }
   return connections
-    .map((c) => `${PROVIDER[c.provider]} is connected (${c.account}): ${c.eventCount} event(s) imported, last synced ${new Date(c.lastSynced).toLocaleString()}. Sync again from Calendars to pick up changes.`)
+    .map((c) => `${PROVIDER[c.provider]} is connected (${c.account}): ${c.eventCount} event(s) imported, last synced ${new Date(c.lastSynced).toLocaleString("en-US", { timeZone: accountTimeZone(context.availability), dateStyle: "medium", timeStyle: "short" })}. Sync again from Calendars to pick up changes.`)
     .join(" ");
 }
 
@@ -55,19 +56,18 @@ export function scheduleStatus(context: AssistantContext) {
 }
 
 export function buildWelcome(context: AssistantContext): AssistantMessage {
-  const zone = context.availability?.timeZone ?? "your saved timezone";
   const open = openTasks(context.tasks).length;
   return {
     id: "welcome",
     role: "assistant",
-    text: `Planning helper using your AutoPlan account data (${zone}). You have ${open} open task(s). ${scheduleStatus(context)} Ask about your tasks or busy time, or say “plan my week”. A new schedule is a preview until you Apply it.`,
+    text: `Planning helper using your AutoPlan account data. You have ${open} open task(s). ${scheduleStatus(context)} Ask about your tasks or busy time, or say “plan my week”. A new schedule is a preview until you Apply it.`,
   };
 }
 
 /** Local answers used when OpenAI is not configured. Schedule and busy-time requests are handled by assistantCommands. */
-export function replyToPrompt(prompt: string, context: AssistantContext, id: string): AssistantMessage {
+export function replyToPrompt(prompt: string, context: AssistantContext, id: string, aiUnavailable = false): AssistantMessage {
   const text = prompt.trim().toLowerCase();
-  const zone = context.availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(context.availability);
   const today = dateInZone(zone);
   const open = openTasks(context.tasks);
 
@@ -101,10 +101,13 @@ export function replyToPrompt(prompt: string, context: AssistantContext, id: str
     return {
       id,
       role: "assistant",
-      text: "Try: “today”, “list tasks”, “busy time”, “show my plan”, or “plan my week”. With OPENAI_API_KEY set on the API, other questions use GPT; schedules still come from AutoPlan’s engine.",
+      text: "Try: “today”, “list tasks”, “busy time”, “show my plan”, or “plan my week”.",
     };
   }
 
+  if (aiUnavailable) {
+    return { id, role: "assistant", text: "The AI assistant isn’t available right now. I can still help with “today”, “list tasks”, “busy time”, or “plan my week”." };
+  }
   return {
     id,
     role: "assistant",

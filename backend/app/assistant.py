@@ -190,7 +190,7 @@ def validate_intent(parsed: ChatResponseModel, snapshot: dict, now: datetime, pr
 def chat(body: ChatRequest, user=Depends(get_current_user), db=Depends(get_database)):
     settings = get_settings()
     if not settings.openai_api_key:
-        raise HTTPException(status_code=503, detail='OpenAI is not configured. Set OPENAI_API_KEY in backend/.env.')
+        raise HTTPException(status_code=503, detail='The AI assistant isn’t available right now.')  # OPENAI_API_KEY is not set
     now = utc_now()
     preview_id = body.previewId if body.previewId and ObjectId.is_valid(body.previewId) else None
     snapshot = schedule_snapshot(user, db, now, preview_id, SNAPSHOT_DAYS)

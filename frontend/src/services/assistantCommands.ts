@@ -8,6 +8,7 @@ import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
 import { busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { accountTimeZone } from "../utils/timeZones.ts";
 
 /** Actions the chat can run. Each one calls the same workspace method the calendar uses. */
 export type AssistantCommand =
@@ -200,7 +201,7 @@ export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
 }
 
 export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events">>, now = new Date()): ParsedRequest | null {
-  const zone = state.availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(state.availability);
   const open = state.tasks.filter(t => !t.done);
   // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
   if (state.preferences) {
@@ -343,7 +344,7 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     ? { command: request as Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
     : request;
   const state = workspace.getSnapshot();
-  const zone = state.availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(state.availability);
   const today = dateInZone(zone, now);
   const endDate = addDays(today, PLAN_DAYS - 1);
 

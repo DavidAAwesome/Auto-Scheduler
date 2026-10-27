@@ -64,7 +64,6 @@ export default function ChatPanel() {
   const [thinking, setThinking] = useState(false);
   /** The command currently awaiting a real response from the workspace, if any. */
   const [working, setWorking] = useState<ParsedRequest["command"] | null>(null);
-  const [usingOpenAI, setUsingOpenAI] = useState(false);
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
   const context = { tasks, sessions, events, availability, connections, schedulePreview };
@@ -238,13 +237,11 @@ export default function ChatPanel() {
         .slice(-8)
         .map(m => ({ role: m.role, text: m.text }));
       reply = await workspaceService.chatAssistant(text, history);
-      setUsingOpenAI(true);
     } catch (e) {
       const status = e instanceof ApiError ? e.status : 0;
-      // No key / unavailable: keep the local helper so chat still works offline.
+      // AI unavailable: answer what the local helper can, and say so plainly when it can't.
       if (status === 503 || status === 0) {
-        setUsingOpenAI(false);
-        append(replyToPrompt(text, context, `${id}-a`));
+        append(replyToPrompt(text, context, `${id}-a`, true));
       } else {
         setError((e as Error).message);
         append({ id: `${id}-a`, role: "assistant", text: "I couldn’t reach the assistant just now. Try again, or use the buttons above the calendar." });
@@ -395,11 +392,6 @@ export default function ChatPanel() {
           placeholder={planDrafts ? "Answer the question, or add more…" : "Ask, plan my week, or list tasks (one per line)…"} aria-label="Message the assistant" disabled={busy} />
         <button className="icon-button" disabled={(!input.trim() && !image) || busy} aria-label="Send"><Icon name="send" size={17} /></button>
       </form>
-      <p className="chat-foot">
-        {usingOpenAI
-          ? "OpenAI answers from your account data. Schedules come from AutoPlan’s engine and stay previews until you Apply them."
-          : "Local helper until OPENAI_API_KEY is set. Schedules stay previews until you Apply them."}
-      </p>
     </aside>
   );
 }
