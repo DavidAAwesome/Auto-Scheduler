@@ -2,8 +2,40 @@ import { DEFAULT_PREFERENCES, type ApplyResult, type Availability, type Calendar
 import { normalizeAvailability } from '../utils/availability.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
-export type AssistantIntent = 'show_today' | 'show_plan' | 'busy_time' | 'generate_schedule' | 'explain_unscheduled' | 'request_break' | 'replan' | 'move_task' | 'clarify' | 'none';
-export interface AssistantReply { reply: string; intent: AssistantIntent; params: { breakMinutes: number | null; taskId: string | null; notBefore: string | null }; provider: 'openai' }
+export type AssistantIntent =
+  | "show_today"
+  | "show_plan"
+  | "busy_time"
+  | "generate_schedule"
+  | "explain_unscheduled"
+  | "request_break"
+  | "replan"
+  | "move_task"
+  | "add_task"
+  | "delete_task"
+  | "add_event"
+  | "delete_event"
+  | "clarify"
+  | "none";
+
+export interface AssistantReply {
+  reply: string;
+  intent: AssistantIntent;
+  params: {
+    breakMinutes: number | null;
+    taskId: string | null;
+    notBefore: string | null;
+    taskTitle: string | null;
+    taskDeadline: string | null;
+    taskDuration: number | null;
+    eventId: string | null;
+    eventTitle: string | null;
+    eventDate: string | null;
+    eventStart: string | null;
+    eventEnd: string | null;
+  };
+  provider?: "openai";
+}
 export type Requester = <T>(path: string, options?: RequestInit) => Promise<T>;
 export interface WorkspaceState {
   status: 'idle' | 'loading' | 'ready' | 'error';
