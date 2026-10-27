@@ -2,6 +2,7 @@ import type { AIProfile, PreferenceChange, SchedulePreferences, SchedulePreview,
 import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
+import { eventFromIntent, parseEventRequest, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
 import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
@@ -34,6 +35,7 @@ export type ParsedRequest =
   | { command: "request_break"; minutes: number }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
   | { command: "update_preferences"; change: PreferenceChange; summary: string }
+  | { command: "propose_event"; action: PendingEventAction; summary: string }
   | {
       command: "add_task";
       title: string;
@@ -195,13 +197,22 @@ export function parsePreference(text: string, state: Pick<WorkspaceState, "prefe
 }
 
 /** Deterministic interpretation for requests that must never depend on a model's guess. */
-export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile">>, now = new Date()): ParsedRequest | null {
+function fromEventProposal(proposal: EventProposal): ParsedRequest {
+  return proposal.action ? { command: "propose_event", action: proposal.action, summary: proposal.summary } : { command: "clarify", question: proposal.question };
+}
+
+export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events">>, now = new Date()): ParsedRequest | null {
   const zone = state.availability?.timeZone ?? "UTC";
   const open = state.tasks.filter(t => !t.done);
   // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
   if (state.preferences) {
     const preference = parsePreference(text, { preferences: state.preferences, aiProfile: state.aiProfile ?? DEFAULT_AI_PROFILE });
     if (preference) return preference;
+  }
+  // "Add a meeting tomorrow 3-4pm" / "Delete the event called Project sync": confirmed before anything changes.
+  if (state.events) {
+    const event = parseEventRequest(text, { events: state.events, availability: state.availability });
+    if (event) return fromEventProposal(event);
   }
   if (BREAK.test(text)) {
     const minutes = durationMinutes(text);
@@ -327,7 +338,7 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile">>): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
     case "update_preferences": {
@@ -390,13 +401,9 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       };
     }
 
-    case "delete_task":
     case "add_event":
     case "delete_event":
-      return {
-        command: "clarify",
-        question: "This action is not available yet."
-      };
+      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }));
 
     default:
       return { command: intent };
@@ -404,8 +411,8 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
 }
 
 let counter = 0;
-function reply(text: string, actions: AssistantCommand[] = [], pendingChange?: PreferenceChange): AssistantMessage {
-  return { id: `cmd-${++counter}`, role: "assistant", text, actions, ...(pendingChange ? { pendingChange } : {}) };
+function reply(text: string, actions: AssistantCommand[] = [], pendingChange?: PreferenceChange, pendingEvent?: PendingEventAction): AssistantMessage {
+  return { id: `cmd-${++counter}`, role: "assistant", text, actions, ...(pendingChange ? { pendingChange } : {}), ...(pendingEvent ? { pendingEvent } : {}) };
 }
 
 /** Saves a preference change the user confirmed with the Save button, and reports the real outcome. */
@@ -457,6 +464,8 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(req.question);
     case "update_preferences":
       return reply(req.summary, [], req.change);
+    case "propose_event":
+      return reply(req.summary, [], undefined, req.action);
     case "delete_task": {
       const task = workspace.getSnapshot().tasks.find(
       t => t.id === req.taskId && !t.done

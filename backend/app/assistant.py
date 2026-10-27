@@ -116,8 +116,11 @@ section), none (answer a question yourself from the snapshot).
 Task and event management intents:
 - add_task: when the user asks to create a task. Extract params.taskTitle, params.taskDeadline (YYYY-MM-DD), and params.taskDuration (minutes).
 - delete_task: when the user asks to delete a task. Use params.taskId from the snapshot.
-- add_event: when the user asks to create a calendar event. Extract params.eventTitle, params.eventDate (YYYY-MM-DD), params.eventStart and params.eventEnd (HH:MM).
-- delete_event: when the user asks to delete a calendar event. Use params.eventId from the snapshot.
+- add_event: when the user asks to create a calendar event. Extract params.eventTitle, params.eventDate (YYYY-MM-DD, resolve
+  today/tomorrow/weekdays from the snapshot's "today"), params.eventStart and params.eventEnd (24-hour HH:MM). If the end is not
+  given, use one hour after the start. The app asks the user to confirm before saving.
+- delete_event: when the user asks to delete a calendar event. Put the event's exact title from the snapshot in params.eventTitle,
+  and params.eventDate (YYYY-MM-DD) when the user names a day. The app asks the user to confirm before deleting.
 - clarify: when required information is missing or ambiguous. Ask one short question.
 Never invent task IDs, event IDs, dates, or times.
 Never claim an item was created or deleted before the application confirms success.

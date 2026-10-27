@@ -1,5 +1,6 @@
 import type { CalendarConnection, CalendarEvent, Availability, PreferenceChange, SchedulePreview, Task, WorkSession } from "../types/models.ts";
 import type { AssistantCommand } from "./assistantCommands.ts";
+import type { PendingEventAction } from "./eventCommands.ts";
 import { formatDate } from "../utils/dates.ts";
 import { dateInZone } from "../utils/calendar.ts";
 import { todayAgenda, todayText } from "../utils/schedulePreview.ts";
@@ -12,6 +13,8 @@ export type AssistantMessage = {
   actions?: AssistantCommand[];
   /** A preference change waiting for the user to press Save or Not now. */
   pendingChange?: PreferenceChange;
+  /** An event to add or delete, waiting for the user to confirm. */
+  pendingEvent?: PendingEventAction;
 };
 
 export type AssistantContext = {

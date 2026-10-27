@@ -5,6 +5,7 @@ import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
 import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
 import type { PreferenceChange } from "../types/models";
+import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
 import Icon from "./Icon";
@@ -124,6 +125,22 @@ export default function ChatPanel() {
     }
   }
 
+  /** Confirm / Cancel on a proposed event add or delete. The buttons disappear once either is pressed. */
+  async function resolveEvent(messageId: string, action: PendingEventAction, confirm: boolean) {
+    setMessages(previous => previous.map(m => (m.id === messageId ? { ...m, pendingEvent: undefined } : m)));
+    if (!confirm) {
+      append({ id: `${messageId}-cancel`, role: "assistant", text: "Okay, nothing was changed." });
+      return;
+    }
+    setError("");
+    setWorking("propose_event");
+    try {
+      append({ id: `${messageId}-done`, role: "assistant", text: await confirmEventAction(action, workspaceService) });
+    } finally {
+      setWorking(null);
+    }
+  }
+
   function submit(event: FormEvent) { event.preventDefault(); void ask(input); }
 
   if (!open)
@@ -146,6 +163,12 @@ export default function ChatPanel() {
         {messages.map(m => (
           <div key={m.id} className={`bubble-group ${m.role}`}>
             <p className={`bubble ${m.role}`}>{m.text}</p>
+            {m.pendingEvent && m.id === messages[messages.length - 1]?.id && (
+              <div className="chat-actions" role="group" aria-label="Confirm event change">
+                <button className={`button small ${m.pendingEvent.type === "add_event" ? "" : "danger"}`} disabled={busy} onClick={() => void resolveEvent(m.id, m.pendingEvent!, true)}>{confirmLabel(m.pendingEvent)}</button>
+                <button className="button small secondary" disabled={busy} onClick={() => void resolveEvent(m.id, m.pendingEvent!, false)}>Cancel</button>
+              </div>
+            )}
             {m.pendingChange && m.id === messages[messages.length - 1]?.id && (
               <div className="chat-actions" role="group" aria-label="Confirm preference change">
                 <button className="button small" disabled={busy} onClick={() => void resolveChange(m.id, m.pendingChange!, true)}>Save preference</button>
@@ -188,6 +211,7 @@ export default function ChatPanel() {
         {working === "request_break" && <p className="bubble assistant muted">Finding room for a protected break…</p>}
         {working === "apply_schedule" && <p className="bubble assistant muted">Saving the proposed sessions…</p>}
         {working === "update_preferences" && <p className="bubble assistant muted">Saving your preference…</p>}
+        {working === "propose_event" && <p className="bubble assistant muted">Updating your calendar…</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
       </div>
       <div className="chat-prompts">
