@@ -1,7 +1,8 @@
-import type { AIProfile, PreferenceChange, SchedulePreferences, SchedulePreview, Task, TaskInput, WorkSession } from "../types/models.ts";
+import type { ActionTarget, AIProfile, InterpretResult, PendingAction, PendingChoice, PreferenceChange, SchedulePreferences, SchedulePreview, Task, WorkSession } from "../types/models.ts";
 import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
+import { draftsReply } from "./planEntry.ts";
 import { eventFromIntent, parseEventRequest, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
 import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
@@ -20,42 +21,22 @@ export type AssistantCommand =
   | "cancel_schedule"
   | "add_task"
   | "delete_task"
-  | "confirm_delete_task"
   | "add_event"
   | "delete_event";
 
 /** A chat request turned into validated, structured parameters for the scheduling service. */
 export type ParsedRequest =
-  | {
-    command: Exclude<
-      AssistantCommand,
-      "add_task" | "delete_task" | "confirm_delete_task" | "add_event" | "delete_event"  
-    >;
-    }
+  | { command: Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
   | { command: "request_break"; minutes: number }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
   | { command: "update_preferences"; change: PreferenceChange; summary: string }
   | { command: "propose_event"; action: PendingEventAction; summary: string }
-  | {
-      command: "add_task";
-      title: string;
-      deadline: string;
-      duration: number;
-    }
-  | {
-      command: "delete_task";
-      taskId: string;
-      title: string;
-    }
-  | {
-    command: "confirm_delete_task";
-    taskId: string;
-    }
-  | {
-    command: "confirm_delete_task";
-    taskId: string;
-    title: string;
-    }
+  /** The user's own words, read by the same parser as any plan entry (so "due Friday at noon" keeps its time). */
+  | { command: "add_task"; text: string }
+  /** Exact task ids; the server shows their names and session count, and deletes only after confirmation. */
+  | { command: "delete_task"; taskIds: string[] }
+  /** Several tasks fit the request: show a numbered list and resolve the reply against exactly that list. */
+  | { command: "pick_tasks"; prompt: string; options: ActionTarget[] }
   | { command: "clarify"; question: string };
 
 /** The subset of the workspace store the commands need; tests pass a store built on a fake transport. */
@@ -64,8 +45,11 @@ export interface CommandWorkspace {
   requestPreview(request: PreviewRequest): Promise<SchedulePreview>;
   applySchedulePreview(): Promise<WorkSession[]>;
   clearSchedulePreview(): void;
-  createTask(input: TaskInput): Promise<Task>;
-  deleteTask(id: string): Promise<void>;
+  /** Reads the user's words into drafts in the review panel; nothing is saved. */
+  interpretPlan(text: string): Promise<InterpretResult>;
+  proposeDeleteTasks(taskIds: string[]): Promise<PendingAction>;
+  proposeCreateItems(): Promise<PendingAction>;
+  setChoice(choice: PendingChoice | null): void;
 }
 
 export const PLAN_DAYS = 7;
@@ -201,6 +185,20 @@ function fromEventProposal(proposal: EventProposal): ParsedRequest {
   return proposal.action ? { command: "propose_event", action: proposal.action, summary: proposal.summary } : { command: "clarify", question: proposal.question };
 }
 
+/** Which task(s) a delete request means. An exact name picks one; anything else shows a numbered list. */
+export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
+  const open = tasks.filter(t => !t.done);
+  const label = (t: Task) => ({ id: t.id, title: t.title, detail: `due ${t.deadline}` });
+  if (!open.length) return { command: "clarify", question: "You have no open tasks to delete." };
+  const wanted = name.replace(/^["“']|["”']$/g, "").trim().toLowerCase();
+  const exact = open.filter(t => t.title.trim().toLowerCase() === wanted);
+  if (wanted && exact.length === 1) return { command: "delete_task", taskIds: [exact[0].id] };
+  const close = wanted ? open.filter(t => t.title.toLowerCase().includes(wanted) || wanted.includes(t.title.toLowerCase())) : open;
+  if (close.length === 1 && !exact.length) return { command: "pick_tasks", prompt: `Did you mean this task? Reply 1 to choose it.`, options: [label(close[0])] };
+  if (!close.length) return { command: "pick_tasks", prompt: `I couldn’t find a task named “${name}”. Which one should I delete?`, options: open.slice(0, 12).map(label) };
+  return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
+}
+
 export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events">>, now = new Date()): ParsedRequest | null {
   const zone = state.availability?.timeZone ?? "UTC";
   const open = state.tasks.filter(t => !t.done);
@@ -234,93 +232,16 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow” or “this afternoon”.` };
     return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}` };
   }
-    // Recognize simple task creation requests without OpenAI.
-  if (/^\s*(add|create)\s+(a\s+)?task\b/i.test(text)) {
-   const match =
-      text.match(
-        /^\s*(?:add|create)\s+(?:a\s+)?task\s+called\s+(.+?),?\s+due\s+(.+?),?\s+with\s+a\s+duration\s+of\s+(\d+)\s+minutes?\.?\s*$/i
-      ) ??
-      text.match(
-        /^\s*(?:add|create)\s+(?:a\s+)?task\s+called\s+(.+?)\s+for\s+(\d+)\s+minutes?\s+due\s+(.+?)\.?\s*$/i
-      )?.map((value, index, values) =>
-        index === 2 ? values[3] : index === 3 ? values[2] : value
-      );
-
-    if (!match) {
-      return {
-        command: "clarify",
-        question:
-          'Please use: Add a task called Study Networking, due October 30, 2026, with a duration of 60 minutes.'
-      };
-    }
-
-    const title = match[1].trim();
-    const deadlineDate = new Date(match[2].trim());
-    const duration = Number(match[3]);
-
-    if (
-      !title ||
-      title.length > 80 ||
-      Number.isNaN(deadlineDate.getTime()) ||
-      !Number.isInteger(duration) ||
-      duration < 15 ||
-      duration > 6000 ||
-      duration % 15 !== 0
-    ) {
-      return {
-        command: "clarify",
-        question:
-          "Please provide a valid task title, deadline, and duration in multiples of 15 minutes."
-      };
-    }
-
-    const deadline = [
-      deadlineDate.getFullYear(),
-      String(deadlineDate.getMonth() + 1).padStart(2, "0"),
-      String(deadlineDate.getDate()).padStart(2, "0")
-    ].join("-");
-
-    return {
-      command: "add_task",
-      title,
-      deadline,
-      duration
-    };
+  // "Add a task called Essay, due Friday at noon, 90 minutes": read by the plan-entry parser, then confirmed.
+  if (/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\b/i.test(text)) {
+    const rest = text.replace(/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\s*(?:called|named|:)?\s*/i, "")
+      .replace(/,?\s*with a duration of\s+/i, ", ");
+    if (!rest.trim()) return { command: "clarify", question: "What is the task? For example: “Add a task: Essay, 90 minutes, due Friday at noon.”" };
+    return { command: "add_task", text: rest };
   }
-    // Recognize task deletion requests locally.
-  if (/^\s*(delete|remove)\s+(the\s+|a\s+)?task\b/i.test(text)) {
-    const match = text.match(
-      /^\s*(?:delete|remove)\s+(?:the\s+|a\s+)?task\s+(?:called\s+)?(.+?)\.?\s*$/i
-    );
-
-    if (!match) {
-      return {
-        command: "clarify",
-        question: 'Which task should I delete? Example: Delete the task called Study Networking.'
-      };
-    }
-
-    const title = match[1].trim().replace(/\.$/, "");
-
-    const matches = open.filter(
-      task => task.title.toLowerCase() === title.toLowerCase()
-    );
-
-    if (matches.length !== 1) {
-      return {
-        command: "clarify",
-        question: matches.length > 1
-          ? `Multiple tasks are named "${title}". Please identify which one you mean.`
-          : `I couldn't find an open task named "${title}".`
-      };
-    }
-
-    return {
-      command: "delete_task",
-      taskId: matches[0].id,
-      title: matches[0].title
-    };
-  }
+  // "Delete the task called Essay", "remove task essay", "delete a task": exact ids, or a numbered list to pick from.
+  const del = text.match(/^\s*(?:please\s+)?(?:delete|remove)\s+(?:the\s+|a\s+|my\s+)?tasks?\b\s*(?:called\s+|named\s+)?(.*?)[.!]?\s*$/i);
+  if (del) return deleteRequest(del[1].trim(), state.tasks);
   if (EXPLAIN.test(text)) return { command: "explain_unscheduled" };
   if (TODAY.test(text)) return { command: "show_today" };
   if (SHOW_PLAN.test(text)) return { command: "show_plan" };
@@ -338,7 +259,7 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>, userText = ""): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
     case "update_preferences": {
@@ -362,44 +283,14 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       if (!params.notBefore || Number.isNaN(Date.parse(params.notBefore))) return { command: "clarify", question: `When should “${task.title}” start instead?` };
       return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: task.title };
     }
-    case "delete_task":
-      return {
-        command: "clarify",
-        question: "Task deletion requires confirmation."
-  };
-     case "add_task": {
-      const title = params.taskTitle;
-      const deadline = params.taskDeadline;
-      const duration = params.taskDuration;
-
-      if (!title || !title.trim()) {
-        return {
-          command: "clarify",
-          question: "What should I call the task?"
-        };
-      }
-
-      if (!deadline) {
-        return {
-          command: "clarify",
-          question: "What is the deadline for this task?"
-        };
-      }
-
-      if (duration == null) {
-        return {
-          command: "clarify",
-          question: "How many minutes will this task take?"
-        };
-      }
-
-      return {
-        command: "add_task",
-        title,
-        deadline,
-        duration
-      };
+    case "delete_task": {
+      // Confirmation is a real pending action with buttons, never a sentence the model has to remember.
+      const task = state.tasks.find(t => t.id === params.taskId && !t.done);
+      return task ? { command: "delete_task", taskIds: [task.id] } : deleteRequest(params.taskTitle ?? "", state.tasks);
     }
+    case "add_task":
+      // The model only recognised the request; the user's words go through the plan-entry parser.
+      return userText ? { command: "add_task", text: userText.replace(/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\s*(?:called|named|:)?\s*/i, "") } : { command: "clarify", question: answer.reply };
 
     case "add_event":
     case "delete_event":
@@ -449,10 +340,7 @@ async function preview(workspace: CommandWorkspace, request: PreviewRequest, int
 export async function runAssistantCommand(request: ParsedRequest | AssistantCommand, workspace: CommandWorkspace, now = new Date()): Promise<AssistantMessage> {
   const req: ParsedRequest =
   typeof request === "string"
-    ? { command: request as Exclude<
-        AssistantCommand,
-      "add_task" | "delete_task" | "confirm_delete_task" | "add_event" | "delete_event"  
-      > }
+    ? { command: request as Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
     : request;
   const state = workspace.getSnapshot();
   const zone = state.availability?.timeZone ?? "UTC";
@@ -466,37 +354,18 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(req.summary, [], req.change);
     case "propose_event":
       return reply(req.summary, [], undefined, req.action);
-    case "delete_task": {
-      const task = workspace.getSnapshot().tasks.find(
-      t => t.id === req.taskId && !t.done
-      );
-
-      if (!task) {
-        return reply("This task no longer exists or has already been completed.");
-      }
-
-      return reply(
-        `Are you sure you want to delete "${task.title}"?`,
-        ["confirm_delete_task"]
-      );
-    
-    }
-    case "confirm_delete_task": {
-      const task = workspace.getSnapshot().tasks.find(
-        t => t.id === req.taskId && !t.done
-      );
-
-      if (!task) {
-        return reply("This task no longer exists.");
-      }
-
+    case "delete_task":
       try {
-        await workspace.deleteTask(task.id);
-        return reply(`Task "${task.title}" was deleted successfully.`);
-      } catch {
-        return reply("Sorry, I couldn't delete the task.");
+        const action = await workspace.proposeDeleteTasks(req.taskIds);
+        return { ...reply(`${action.summary} Nothing is deleted until you press Delete.`), actionId: action.id };
+      } catch (error) {
+        return reply(`I couldn’t prepare that deletion: ${errorText(error)} Nothing was deleted.`);
       }
-}
+    case "pick_tasks": {
+      workspace.setChoice({ id: `choice-${++counter}`, purpose: "delete_tasks", prompt: req.prompt, options: req.options });
+      const lines = req.options.map((o, i) => `${i + 1}. ${o.title}${o.detail ? ` (${o.detail})` : ""}`);
+      return reply(`${req.prompt}\n${lines.join("\n")}\nReply with a number, or several like “1 and 3”. Nothing is deleted yet.`);
+    }
     case "generate_schedule":
       return preview(workspace, { kind: "generate", horizonDays: PLAN_DAYS });
     case "replan":
@@ -554,54 +423,17 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
     
     case "add_task": {
-      const title = req.title.trim();
-      const deadline = req.deadline;
-      const duration = req.duration;
-    
-      if (!title || title.length > 80) {
-        return reply("Please provide a task title between 1 and 80 characters.");
+      try {
+        const result = await workspace.interpretPlan(req.text);
+        const text = draftsReply(result.drafts, result.provider, result.notes);
+        const selected = result.drafts.filter(v => v.draft.include);
+        if (!selected.length || selected.some(v => !v.ready)) return reply(text);
+        const action = await workspace.proposeCreateItems();
+        return { ...reply(`${text}\nConfirm to save ${selected.length === 1 ? "it" : "them"} as ${selected.length === 1 ? "a task" : "tasks"} now (not scheduled yet), or Edit them in the review panel.`), actionId: action.id };
+      } catch (error) {
+        return reply(`I couldn’t read that task: ${errorText(error)} Nothing was saved.`);
       }
-
-  const parsedDate = new Date(`${deadline}T12:00:00Z`);
-
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(deadline) ||
-    Number.isNaN(parsedDate.getTime()) ||
-    parsedDate.toISOString().slice(0, 10) !== deadline
-  ) {
-    return reply("Please provide a valid deadline in YYYY-MM-DD format.");
-  }
-
-  if (
-    !Number.isInteger(duration) ||
-    duration < 15 ||
-    duration > 6000 ||
-    duration % 15 !== 0
-  ) {
-    return reply("Task duration must be between 15 and 6000 minutes, in multiples of 15.");
-  }
-
-  try {
-    const task = await workspace.createTask({
-      title,
-      deadline,
-      minutes: duration,
-      completedMinutes: 0,
-      dueTime: 1439,
-      priority: "Medium",
-      category: "Personal",
-      earliestStart: null,
-      allowSplit: true,
-      minSessionMinutes: 15,
-      maxSessionMinutes: 60,
-      dependsOn: [],
-    });
-
-    return reply(`Task "${task.title}" was created successfully.`);
-  } catch {
-    return reply("Sorry, I couldn't create the task. Please try again.");
-  }
-}  
     }
+  }
 return reply("This command is not supported yet.");
 }

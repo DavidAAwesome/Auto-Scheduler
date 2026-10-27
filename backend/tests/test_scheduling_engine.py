@@ -142,14 +142,18 @@ def test_past_time_is_never_planned_and_now_is_clipped():
 
 # ------------------------------------------------------------------ ordering, risk, dependencies
 
-def test_task_at_risk_goes_before_higher_priority_work():
+def test_deadline_risk_is_reported_but_never_overrides_priority():
+    """The user's priority policy decides who gets scarce time; risk is only a warning."""
     high = task('h', 'Report', 'High', minutes=150, due_day=MONDAY + timedelta(days=3))
     low = task('l', 'Form', 'Low', minutes=40, due_day=MONDAY, due_minute=720)
     result = plan([high, low], days=2)
+    assert result.order == ['h', 'l']
     assert alloc(result, 'l').at_risk is True
-    assert alloc(result, 'l').unallocated == 0
-    assert rows(result)[0][1:] == ('09:00-09:40', 'work', 'Form')
-    assert result.order == ['l', 'h']
+    assert rows(result)[0][1:] == ('09:00-09:50', 'work', 'Report')
+    assert alloc(result, 'h').unallocated == 0
+    assert alloc(result, 'l').unallocated == 40
+    assert [r.code for r in alloc(result, 'l').reasons] == ['insufficient_capacity']
+    conserved(result)
 
 
 def test_dependencies_finish_first_and_cycles_are_reported():

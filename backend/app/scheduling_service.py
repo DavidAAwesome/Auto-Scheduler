@@ -17,15 +17,16 @@ from fastapi import HTTPException
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
 
-from app.events import occurs_on
+from app.events import event_output, occurs_on
+from app.plan_drafts import DRAFT_PREFIX, PlanDraft, draft_event, draft_event_doc, draft_task
 from app.schedule_model import (
-    AllocationReason, ConflictItem, DaySummary, SavedSchedule, ScheduleConflict, SchedulePreferences,
-    SchedulePreview, ScheduleSession, SessionRemoval, TaskAllocation,
+    AllocationReason, ConflictChoice, ConflictItem, DaySummary, ProposedEvent, SavedSchedule, ScheduleConflict,
+    SchedulePreferences, SchedulePreview, ScheduleSession, SessionRemoval, TaskAllocation,
 )
 from app.schedule_version import bump_schedule_version, current_schedule_version
 from app.scheduling_engine import (
-    HEURISTIC_NOTE, Busy, EngineTask, Existing, Prefs, fingerprint, from_abs, local_parts, local_span,
-    local_to_abs, plan_schedule, to_abs,
+    HEURISTIC_NOTE, MAX_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_PER_TASK, Busy, EngineTask, Existing, Prefs, fingerprint,
+    from_abs, local_parts, local_span, local_to_abs, plan_schedule, resolve_windows, to_abs,
 )
 from app.scheduling_validator import EventRef, SavedRef, ValidationError, validate_preview
 from app.workspace import (
@@ -52,10 +53,13 @@ def save_preferences(db, user, prefs: SchedulePreferences) -> SchedulePreference
 
 def expand_events(db, user_id: str, start_date: str, end_date: str, session=None) -> list[dict]:
     """The user's events (repeats expanded) that happen between two local dates, inclusive."""
+    return expand_event_docs(list(db.events.find({'user_id': user_id}, session=session)), start_date, end_date)
+
+
+def expand_event_docs(events: list[dict], start_date: str, end_date: str) -> list[dict]:
     occurrences: list[dict] = []
     day = date_cls.fromisoformat(start_date)
     last = date_cls.fromisoformat(end_date)
-    events = list(db.events.find({'user_id': user_id}, session=session))
     while day <= last:
         day_s = day.isoformat()
         for doc in events:
@@ -83,6 +87,7 @@ class Context:
     version: int
     start_date: str
     end_date: str
+    drafts: list[PlanDraft] | None = None
 
 
 def task_due(task: TaskOutput, zone: ZoneInfo) -> int:
@@ -100,9 +105,15 @@ def _earliest(task: TaskOutput, zone: ZoneInfo) -> int | None:
     return to_abs(moment if moment.tzinfo else moment.replace(tzinfo=zone))
 
 
-def load_context(user, db, now: datetime, horizon_days: int = 7, session=None) -> Context:
+def load_context(user, db, now: datetime, horizon_days: int = 7, session=None,
+                 drafts: list[PlanDraft] | None = None) -> Context:
+    """Everything the engine reads. `drafts` (already reviewed as ready) are added as hypothetical tasks
+    and events with `draft:` ids; they are never written here."""
     owner = str(user['_id'])
     tasks = [task_output(doc) for doc in db.tasks.find({'user_id': owner}, session=session)]
+    included = [d for d in (drafts or []) if d.include]
+    draft_ids = {d.id for d in included}
+    tasks += [draft_task(d, draft_ids) for d in included if d.kind != 'fixed_event']
     saved = db.availability.find_one({'user_id': owner}, {'_id': 0, 'user_id': 0}, session=session)
     availability = Availability(**saved) if saved else default_availability()
     prefs = get_preferences(db, user, session=session)
@@ -111,8 +122,12 @@ def load_context(user, db, now: datetime, horizon_days: int = 7, session=None) -
     start_date = today.isoformat()
     end_date = (today + timedelta(days=horizon_days - 1)).isoformat()
     events = []
-    for item in expand_events(db, owner, (today - timedelta(days=1)).isoformat(),
-                              (today + timedelta(days=horizon_days)).isoformat(), session=session):
+    first, last = (today - timedelta(days=1)).isoformat(), (today + timedelta(days=horizon_days)).isoformat()
+    for item in expand_events(db, owner, first, last, session=session):
+        day = date_cls.fromisoformat(item['date'])
+        events.append(Busy(f"{item['id']}:{item['date']}", item['title'],
+                           local_to_abs(day, item['start'], zone), local_to_abs(day, item['end'], zone)))
+    for item in expand_event_docs([draft_event_doc(d) for d in included if d.kind == 'fixed_event'], first, last):
         day = date_cls.fromisoformat(item['date'])
         events.append(Busy(f"{item['id']}:{item['date']}", item['title'],
                            local_to_abs(day, item['start'], zone), local_to_abs(day, item['end'], zone)))
@@ -128,7 +143,7 @@ def load_context(user, db, now: datetime, horizon_days: int = 7, session=None) -
                                  'Break' if kind == 'break' else titles.get(doc.get('task_id'), 'Task')))
     return Context(owner, tasks, availability, prefs, zone, sorted(events, key=lambda b: (b.start, b.id)), docs,
                    sorted(existing, key=lambda x: (x.start, x.id)), titles,
-                   current_schedule_version(db, owner, session=session), start_date, end_date)
+                   current_schedule_version(db, owner, session=session), start_date, end_date, included or None)
 
 
 def context_fingerprint(ctx: Context, request: dict) -> str:
@@ -144,8 +159,11 @@ def context_fingerprint(ctx: Context, request: dict) -> str:
 
 
 def engine_tasks(ctx: Context) -> list[EngineTask]:
+    first = date_cls.fromisoformat(ctx.start_date) - timedelta(days=1)
+    last = date_cls.fromisoformat(ctx.end_date) + timedelta(days=1)
     return [EngineTask(t.id, t.title, t.priority, task_due(t, ctx.zone), t.minutes, t.completedMinutes, t.allowSplit,
-                       t.minSessionMinutes, t.maxSessionMinutes, _earliest(t, ctx.zone), tuple(t.dependsOn), t.done)
+                       t.minSessionMinutes, t.maxSessionMinutes, _earliest(t, ctx.zone), tuple(t.dependsOn), t.done,
+                       t.kind, resolve_windows(t.windows, first, last, ctx.zone) if t.windows else ())
             for t in ctx.tasks]
 
 
@@ -180,20 +198,28 @@ def _existing_model(item: Existing, zone, version) -> ScheduleSession:
                            startAt=from_abs(item.start), endAt=from_abs(item.end), date=day, start=start, end=end)
 
 
-def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, request: dict) -> SchedulePreview:
+PLAN_NOTE = ('Search limits: earliest-fit in priority order, then at most {attempts} local repairs '
+             '({per_task} per task) over the next {days} days. Unplaced work means no plan was found within these '
+             'limits, not that none exists, unless a reason says it is impossible.')
+
+
+def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, request: dict,
+               displace: bool = True) -> SchedulePreview:
     now_min = to_abs(now)
     requested_break = None
     if request.get('breakMinutes'):
         requested_break = (now_min, now_min + int(request['breakMinutes']))
     result = plan_schedule(engine_tasks(ctx), ctx.availability, engine_prefs(ctx.prefs), ctx.events, ctx.existing,
-                           now_min, horizon_days, 'repair' if mode in {'repair', 'break'} else 'generate',
-                           requested_break, request.get('notBefore') or None)
+                           now_min, horizon_days, 'generate' if mode == 'generate' else 'repair',
+                           requested_break, request.get('notBefore') or None, displace)
     sessions = [_session_model(p, ctx.zone, ctx.version, i) for i, p in enumerate(result.sessions, 1)]
     removed = [SessionRemoval(session=_existing_model(r.session, ctx.zone, ctx.version), reason=r.reason,
                               newEndAt=from_abs(r.new_end) if r.new_end is not None else None)
                for r in result.removals]
+    kinds = {t.id: t.kind for t in ctx.tasks}
     tasks = [TaskAllocation(
-        taskId=a.task_id, title=a.title, priority=a.priority, dueAt=from_abs(a.due), estimatedMinutes=a.estimated,
+        taskId=a.task_id, title=a.title, priority=a.priority, kind=kinds.get(a.task_id, 'task'), dueAt=from_abs(a.due),
+        estimatedMinutes=a.estimated,
         completedMinutes=a.completed, remainingMinutes=a.remaining, retainedMinutes=a.retained,
         inProgressMinutes=a.in_progress, newMinutes=a.new, unallocatedMinutes=a.unallocated,
         overAllocatedMinutes=a.over_allocated, atRisk=a.at_risk, slackMinutes=a.slack, status=a.status,
@@ -201,7 +227,8 @@ def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, reques
     conflicts = [ScheduleConflict(code=c.code, message=c.message, items=[ConflictItem(
         kind=i['kind'], id=i.get('id'), title=i['title'],
         startAt=from_abs(i['start']) if i.get('start') is not None else None,
-        endAt=from_abs(i['end']) if i.get('end') is not None else None) for i in c.items]) for c in result.conflicts]
+        endAt=from_abs(i['end']) if i.get('end') is not None else None) for i in c.items],
+        choices=[ConflictChoice(**choice) for choice in c.choices]) for c in result.conflicts]
     days: dict[str, DaySummary] = {}
     for s in sessions:
         summary = days.setdefault(s.date, DaySummary(date=s.date, workMinutes=0, newWorkMinutes=0, breakCount=0, sessionCount=0))
@@ -213,21 +240,46 @@ def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, reques
                 summary.newWorkMinutes += minutes
         else:
             summary.breakCount += 1
-    first_new = next((s.date for s in sessions if s.change == 'new'), None)
+    proposed_events = []
+    for b in ctx.events:
+        if not b.id.startswith(DRAFT_PREFIX) or b.end <= result.window_start or b.start >= result.window_end:
+            continue
+        draft_id = b.id[len(DRAFT_PREFIX):].rsplit(':', 1)[0]
+        draft = next(d for d in ctx.drafts or [] if d.id == draft_id)
+        day, start, end = local_span(b.start, b.end, ctx.zone)
+        proposed_events.append(ProposedEvent(draftId=draft_id, title=b.title, kind=draft.eventKind, date=day, start=start,
+                                             end=end, startAt=from_abs(b.start), endAt=from_abs(b.end),
+                                             repeats=draft.repeat is not None))
+    first_new = min([s.date for s in sessions if s.change == 'new'] + [e.date for e in proposed_events], default=None)
+    note = HEURISTIC_NOTE
+    if mode == 'plan':
+        note += ' ' + PLAN_NOTE.format(attempts=MAX_REPAIR_ATTEMPTS, per_task=MAX_REPAIR_ATTEMPTS_PER_TASK, days=horizon_days)
     return SchedulePreview(
         previewId='', status='proposed', mode=mode, baseScheduleVersion=ctx.version, generatedAt=now,
         timeZone=ctx.availability.timeZone, windowStart=from_abs(result.window_start), windowEnd=from_abs(result.window_end),
         startDate=ctx.start_date, endDate=ctx.end_date, preferences=ctx.prefs, sessions=sessions, removed=removed,
         tasks=tasks, conflicts=conflicts, days=sorted(days.values(), key=lambda d: d.date), firstProposedDate=first_new,
-        explanations=result.explanations, note=HEURISTIC_NOTE, inputFingerprint=context_fingerprint(ctx, request))
+        explanations=result.explanations, note=note, inputFingerprint=context_fingerprint(ctx, request),
+        proposedEvents=proposed_events, horizonDays=horizon_days)
+
+
+def draft_request(drafts: list[PlanDraft], batch_id: str) -> dict:
+    return {'drafts': [d.model_dump() for d in drafts if d.include], 'batchId': batch_id}
+
+
+def stored_drafts(request: dict) -> list[PlanDraft] | None:
+    return [PlanDraft(**d) for d in request['drafts']] if request.get('drafts') else None
 
 
 def build_preview(user, db, now: datetime, horizon_days: int = 7, mode: str = 'generate', *,
-                  break_minutes: int | None = None, moves: dict[str, datetime] | None = None) -> SchedulePreview:
+                  break_minutes: int | None = None, moves: dict[str, datetime] | None = None,
+                  drafts: list[PlanDraft] | None = None, batch_id: str | None = None) -> SchedulePreview:
+    """Runs the engine, validates the result independently and stores it as a proposal. Never changes saved data
+    other than the proposal record itself."""
     if not 1 <= horizon_days <= MAX_HORIZON_DAYS:
         raise HTTPException(422, f'Plan between 1 and {MAX_HORIZON_DAYS} days.')
-    ctx = load_context(user, db, now, horizon_days)
-    request: dict = {}
+    request: dict = draft_request(drafts, batch_id or '') if drafts is not None else {}
+    ctx = load_context(user, db, now, horizon_days, drafts=stored_drafts(request))
     if break_minutes:
         request['breakMinutes'] = break_minutes
     if moves:
@@ -300,8 +352,10 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
     preview = SchedulePreview(**doc['preview'])
     if current_schedule_version(db, owner, session=txn) != doc['base_version']:
         raise HTTPException(409, 'This preview is stale: your schedule changed after it was made. Generate a new preview.')
-    ctx = load_context(user, db, now, int(doc['horizon_days']), session=txn)
-    if context_fingerprint(ctx, doc.get('request') or {}) != doc['input_fingerprint']:
+    request = doc.get('request') or {}
+    drafts = stored_drafts(request)
+    ctx = load_context(user, db, now, int(doc['horizon_days']), session=txn, drafts=drafts)
+    if context_fingerprint(ctx, request) != doc['input_fingerprint']:
         raise HTTPException(409, 'This preview is stale: tasks, events, availability or sessions changed. Generate a new preview.')
     try:
         validate_preview(preview, tasks=ctx.tasks, availability=ctx.availability, prefs=ctx.prefs,
@@ -310,6 +364,8 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
         raise HTTPException(409, f'This preview is no longer valid ({exc.message}) Generate a new preview.') from exc
 
     version = bump_schedule_version(db, owner, session=txn)
+    id_map, created_tasks, created_events = _create_drafts(db, owner, drafts or [], request.get('batchId') or preview_id,
+                                                           ctx.tasks, txn)
     for removal in preview.removed:
         query = {'_id': ObjectId(removal.session.id), 'user_id': owner, 'status': {'$nin': ['completed', 'cancelled']}}
         if removal.newEndAt is not None:
@@ -325,7 +381,8 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
         if proposed.change != 'new':
             continue
         created.append({
-            '_id': ObjectId(), 'user_id': owner, 'task_id': proposed.taskId, 'type': proposed.type, 'status': 'saved',
+            '_id': ObjectId(), 'user_id': owner, 'task_id': id_map.get(proposed.taskId, proposed.taskId),
+            'type': proposed.type, 'status': 'saved',
             'locked': proposed.locked, 'source': proposed.source, 'start_at': proposed.startAt, 'end_at': proposed.endAt,
             'date': proposed.date, 'start': proposed.start, 'end': proposed.end, 'schedule_version': version,
             'preview_id': preview_id,
@@ -337,7 +394,39 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
                                              session=txn)
     if marked.modified_count != 1:
         raise HTTPException(409, 'This preview changed while saving. Generate a new preview.')
-    return {'previewId': preview_id, 'status': 'applied', 'duplicate': False, 'schedule': saved_schedule(user, db, session=txn)}
+    return {'previewId': preview_id, 'status': 'applied', 'duplicate': False, 'schedule': saved_schedule(user, db, session=txn),
+            'tasks': created_tasks, 'events': created_events}
+
+
+def _create_drafts(db, owner: str, drafts: list[PlanDraft], batch_id: str, tasks: list[TaskOutput], txn):
+    """Inserts reviewed drafts as real tasks and events, inside the caller's transaction (Apply, or a confirmed
+    "save these items" action). `tasks` holds each task draft converted by `draft_task`.
+
+    `draft_key` (batch id + draft id) is unique per user, so the same reviewed draft can never be saved twice,
+    even from two different previews of the same batch."""
+    if not drafts:
+        return {}, [], []
+    keys = [f'{owner}:{batch_id}:{d.id}' for d in drafts]
+    if db.tasks.find_one({'user_id': owner, 'draft_key': {'$in': keys}}, session=txn) or \
+            db.events.find_one({'user_id': owner, 'draft_key': {'$in': keys}}, session=txn):
+        raise HTTPException(409, 'These drafts were already saved. Review your calendar before adding them again.')
+    id_map = {DRAFT_PREFIX + d.id: str(ObjectId()) for d in drafts}
+    by_id = {t.id: t for t in tasks}
+    task_docs, event_docs = [], []
+    for draft, key in zip(drafts, keys):
+        if draft.kind == 'fixed_event':
+            event_docs.append({'_id': ObjectId(), **draft_event(draft).model_dump(), 'user_id': owner, 'skipDates': [],
+                               'source': 'manual', 'draft_key': key})
+            continue
+        task = by_id[DRAFT_PREFIX + draft.id].model_dump(exclude={'id', 'done'})
+        task['dependsOn'] = [id_map.get(dep, dep) for dep in task['dependsOn']]
+        task.update({'_id': ObjectId(id_map[DRAFT_PREFIX + draft.id]), 'done': False, 'user_id': owner, 'draft_key': key})
+        task_docs.append(task)
+    if task_docs:
+        db.tasks.insert_many(task_docs, session=txn)
+    if event_docs:
+        db.events.insert_many(event_docs, session=txn)
+    return id_map, [task_output(doc) for doc in task_docs], [event_output(doc) for doc in event_docs]
 
 
 # ---------------------------------------------------------------- grounded views for chat

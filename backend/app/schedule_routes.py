@@ -19,7 +19,8 @@ from app.scheduling_service import (
     MAX_HORIZON_DAYS, apply_preview, build_preview, get_preferences, owned_preview, save_preferences, saved_schedule,
     stored_preview,
 )
-from app.workspace import get_availability, list_tasks
+from app.events import EventOutput
+from app.workspace import TaskOutput, get_availability, list_tasks
 
 router = APIRouter(prefix='/schedule', tags=['schedule'])
 
@@ -58,6 +59,8 @@ class ApplyResponse(BaseModel):
     status: Literal['applied']
     duplicate: bool
     schedule: SavedSchedule
+    tasks: list[TaskOutput] = []  # tasks created from drafts by this Apply
+    events: list[EventOutput] = []  # events created from drafts by this Apply
 
 
 class InterpretRequest(BaseModel):

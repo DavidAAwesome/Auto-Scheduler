@@ -16,12 +16,33 @@ router = APIRouter(tags=['workspace'])
 DEFAULT_DUE_TIME = 23 * 60 + 59  # 11:59 PM when no due time is given
 
 
+class TimeWindow(BaseModel):
+    """A recurring local time window when a task or flexible event may be placed. Empty weekdays = every day."""
+    model_config = ConfigDict(extra='forbid')
+    weekdays: list[int] = Field(default_factory=list, max_length=7)  # Monday = 0
+    start: int = Field(strict=True, ge=0, le=1435, multiple_of=5)
+    end: int = Field(strict=True, ge=5, le=1440, multiple_of=5)
+
+    @field_validator('weekdays')
+    @classmethod
+    def valid_weekdays(cls, value):
+        if any(isinstance(day, bool) or day not in range(7) for day in value) or len(set(value)) != len(value):
+            raise ValueError('Choose weekdays from Monday (0) to Sunday (6), each once.')
+        return sorted(value)
+
+    @model_validator(mode='after')
+    def ordered(self):
+        if self.end <= self.start:
+            raise ValueError('A time window must end after it starts; overnight windows are not supported.')
+        return self
+
+
 class TaskInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=80)
     deadline: str
     # Total estimated work. Tasks can be split into several work sessions, so allow up to 100 hours.
-    minutes: int = Field(strict=True, ge=15, le=6000, multiple_of=15)
+    minutes: int = Field(strict=True, ge=5, le=6000, multiple_of=5)
     # Work actually done. Remaining work is always minutes - completedMinutes; scheduled work is not completed work.
     completedMinutes: int | None = Field(default=None, strict=True, ge=0, le=6000)
     # Accepted for older clients: remainingMinutes sets completedMinutes = minutes - remainingMinutes.
@@ -31,9 +52,13 @@ class TaskInput(BaseModel):
     category: Literal['Project', 'Study', 'Personal', 'Work']
     earliestStart: str | None = None  # ISO-8601 datetime; null = as soon as allowed
     allowSplit: bool = Field(default=True, strict=True)
-    minSessionMinutes: int = Field(default=15, strict=True, ge=15, le=6000, multiple_of=15)
-    maxSessionMinutes: int = Field(default=60, strict=True, ge=15, le=6000, multiple_of=15)
+    minSessionMinutes: int = Field(default=15, strict=True, ge=5, le=6000, multiple_of=5)
+    maxSessionMinutes: int = Field(default=60, strict=True, ge=5, le=6000, multiple_of=5)
     dependsOn: list[str] = Field(default_factory=list, max_length=32)
+    # "task" is focus work. "flexible_event" (gym, coffee with a friend) is placed by the scheduler in one
+    # contiguous slot unless allowSplit is set, and does not count toward focus or daily work limits.
+    kind: Literal['task', 'flexible_event'] = 'task'
+    windows: list[TimeWindow] = Field(default_factory=list, max_length=14)
 
     @field_validator('title')
     @classmethod
@@ -89,6 +114,8 @@ TASK_DEFAULTS = {
     'minSessionMinutes': 15,
     'maxSessionMinutes': 60,
     'dependsOn': [],
+    'kind': 'task',
+    'windows': [],
 }
 
 

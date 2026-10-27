@@ -49,6 +49,9 @@ export default function TaskForm({
       minSessionMinutes: Number(data.get("minSessionMinutes") || task?.minSessionMinutes || 15),
       maxSessionMinutes: Number(data.get("maxSessionMinutes") || task?.maxSessionMinutes || 60),
       dependsOn: task?.dependsOn ?? [],
+      // Fields this form does not edit (set by plan entry) are kept as they are.
+      kind: task?.kind ?? "task",
+      windows: task?.windows ?? [],
     };
     setSaving(true);
     setError("");

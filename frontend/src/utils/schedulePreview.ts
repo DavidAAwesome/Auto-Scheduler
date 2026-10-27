@@ -1,4 +1,4 @@
-import type { CalendarEvent, SchedulePreview, ScheduleSession, Task, TaskAllocation } from '../types/models.ts';
+import type { CalendarEvent, ProposedEvent, SchedulePreview, ScheduleSession, Task, TaskAllocation } from '../types/models.ts';
 import { addDays } from './dates.ts';
 import { clock12, longDate } from './calendar.ts';
 import { occurrencesOn } from './events.ts';
@@ -32,12 +32,19 @@ export function calendarSessions(sessions: ScheduleSession[], preview: ScheduleP
 
 export type AgendaItem =
   | { kind: 'event'; start: number; end: number; event: CalendarEvent }
+  | { kind: 'proposedEvent'; start: number; end: number; proposed: ProposedEvent }
   | { kind: 'session'; start: number; end: number; item: CalendarItem };
+
+/** Draft fixed events that a plan preview would add, for one date. */
+export function proposedEventsOn(preview: SchedulePreview | null, date: string): ProposedEvent[] {
+  return (preview?.proposedEvents ?? []).filter(e => e.date === date);
+}
 
 /** Today's plan: events and sessions happening today, with deadlines kept separate from work times. */
 export function todayAgenda(state: { sessions: ScheduleSession[]; events: CalendarEvent[]; tasks: Task[]; schedulePreview: SchedulePreview | null }, today: string) {
   const items: AgendaItem[] = [
     ...occurrencesOn(state.events, today).map(({ event }) => ({ kind: 'event' as const, start: event.start, end: event.end, event })),
+    ...proposedEventsOn(state.schedulePreview, today).map(proposed => ({ kind: 'proposedEvent' as const, start: proposed.start, end: proposed.end, proposed })),
     ...calendarSessions(state.sessions, state.schedulePreview)
       .filter(item => item.session.date === today && item.kind !== 'removed')
       .map(item => ({ kind: 'session' as const, start: item.session.start, end: item.session.end, item })),
@@ -60,10 +67,11 @@ function sessionLine(item: CalendarItem) {
 /** Deterministic answer for "Today's tasks", drawn from the same data as the calendar. */
 export function todayText(agenda: ReturnType<typeof todayAgenda>, today: string, zone: string, tasks: Task[] = []) {
   const lines = [`Today, ${longDate(today)} (${zone}):`];
-  const proposed = agenda.items.some(i => i.kind === 'session' && i.item.kind === 'proposed');
+  const proposed = agenda.items.some(i => i.kind === 'proposedEvent' || (i.kind === 'session' && i.item.kind === 'proposed'));
   if (!agenda.items.length) lines.push('Nothing is scheduled today: no saved or proposed work sessions, breaks, or events.');
   for (const entry of agenda.items) {
     if (entry.kind === 'event') lines.push(`• ${timeRange(entry.start, entry.end)} ${entry.event.title} (event)`);
+    else if (entry.kind === 'proposedEvent') lines.push(`• ${timeRange(entry.start, entry.end)} ${entry.proposed.title} (event · proposed)`);
     else lines.push(sessionLine(entry.item));
   }
   if (proposed) lines.push('Sessions marked “proposed” are a preview and are not saved until you Apply.');
@@ -82,7 +90,7 @@ export function unscheduledLine(task: TaskAllocation) {
   return `${task.title}: ${task.unallocatedMinutes} min not placed. ${reasons || 'No valid slot was found.'}`;
 }
 
-const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break' };
+const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break', plan: 'Proposed plan with your new items' };
 
 /** Human summary of a preview: the same sessions the calendar draws, what moves and why, and what did not fit. */
 export function previewText(preview: SchedulePreview) {
@@ -93,6 +101,11 @@ export function previewText(preview: SchedulePreview) {
   for (const [date, sessions] of byDay) {
     lines.push(longDate(date));
     for (const s of sessions) lines.push(sessionLine({ session: s, kind: 'saved' }));
+  }
+  const newEvents = preview.proposedEvents ?? [];
+  if (newEvents.length) {
+    lines.push('New fixed events (not moved by AutoPlan):');
+    for (const e of newEvents) lines.push(`• ${longDate(e.date)} ${timeRange(e.start, e.end)} ${e.title}${e.repeats ? ' (weekly)' : ''}`);
   }
   if (!added.length) lines.push('No new sessions.');
   const busyDays = preview.days.filter(d => d.workMinutes > 0);

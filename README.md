@@ -47,8 +47,8 @@ Backend (`backend/.env`; never expose these with a `VITE_` prefix):
 - `DATABASE_NAME`: MongoDB database, default `auto_scheduler`.
 - `FIREBASE_PROJECT_ID`: required; the Firebase project whose ID tokens the API accepts. Must match `VITE_FIREBASE_PROJECT_ID`.
 - `ALLOWED_ORIGINS`: comma-separated exact frontend origins, without paths. Examples include localhost and 127.0.0.1 on ports 5173/5174. Wildcards are rejected.
-- `OPENAI_API_KEY`: optional. Enables `/assistant/chat` and `/schedule/interpret` via the OpenAI Responses API. Never commit a real key; leave blank to use structured scheduling without AI.
-- `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`).
+- `OPENAI_API_KEY`: optional. Enables `/assistant/chat`, `/schedule/interpret` and AI reading of text and images in `/plan/interpret` via the OpenAI Responses API (without it, typed plans use the built-in parser and images are refused). Never commit a real key; leave blank to use structured scheduling without AI.
+- `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`; it must accept images for timetable photos).
 
 Frontend (`frontend/.env`):
 
@@ -148,9 +148,13 @@ A **work run** is a sequence of work sessions with no rest between them. A gap c
 
 ### Priority and deadlines
 
-Tasks are ordered by deadline risk first, then priority (High, Medium, Low), then earliest deadline, then task id, respecting dependencies (a cycle is reported as `dependency_cycle`). A task is at risk when its remaining minutes exceed the usable capacity before its deadline, approximated as free time × focus / (focus + break), capped by the daily limit. This is an approximation for ordering only. In repair mode an at-risk task may displace flexible sessions of lower-priority work, at most 20 moves in total and 6 per task, and only when the urgent task gains minutes and the displaced task loses no more than that. Unsplit tasks get one session that must also fit the focus length.
+Work is placed in this order: **priority tier first** (High, Medium, Low), then earliest deadline, then earliest start, then task id, so ties always break the same way. Dependencies are respected (a task waits for the tasks it depends on; a cycle is reported as `dependency_cycle`). Deadline risk is calculated (`atRisk`, slack) and shown as a warning, but it **never overrides the priority you chose**: a Low task due tomorrow does not jump ahead of a High task due Friday.
 
-Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, and others). This is a greedy heuristic: an unplaced task is **not** proof that no schedule exists.
+After the earliest-fit pass, a bounded **local repair** looks at each task that is still short, in priority order. It may move unlocked, automatic, future sessions of the same or lower tier (at most 4 victims per attempt, 20 attempts in total, 6 per task), re-places the victims afterwards, and keeps the change only when the lexicographic score strictly improves: for each tier from High to Low, (number of fully scheduled tasks, which tasks are fully scheduled in deadline order, scheduled minutes). So a repair can never trade a High task for Medium work, or an earlier deadline for more total minutes. Locked, manual and in-progress sessions and all events are never moved. Displaced work keeps its task; its lost minutes are listed as unscheduled with the reason `displaced_by_priority`.
+
+Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, `displaced_by_priority`, and others). This is a heuristic: an unplaced task is **not** proof that no schedule exists. “Can this fit?” separates what is proven from what is not (below).
+
+**Why not a solver?** OR-Tools is in `requirements.txt` but unused. At this project's scale (a student's week: tens of tasks, a few hundred five-minute slots per day) the deterministic heuristic plus bounded repair finishes in milliseconds and its decisions can be explained line by line. The focus/break rules (a run may cross task boundaries, a free gap counts as rest but a meeting does not, breaks are reserved during allocation) are awkward to express in CP-SAT, and an optimal-but-opaque answer would be harder to explain in chat. The cost is that the result is not guaranteed optimal; that is why only input-based facts are ever called proof.
 
 ### Duration invariant
 
@@ -177,7 +181,45 @@ For every open task: `remaining = estimated − completed`, and `retained + new 
 
 ### Chat
 
-Chat requests are parsed deterministically first and fall back to OpenAI only for intent classification: today's plan, busy time, generate, explain what didn't fit, request a break ("I need a 30-minute break now"), repair, and move a task. "Today's tasks" lists today's saved and proposed sessions and breaks with their times, and lists deadlines separately. Proposed sessions are labelled as not saved.
+Chat requests are parsed deterministically first and fall back to OpenAI only for intent classification: today's plan, busy time, generate, explain what didn't fit, request a break ("I need a 30-minute break now"), repair, and move a task. "Today's tasks" lists today's saved and proposed sessions, breaks and proposed events with their times, and lists deadlines separately. Proposed items are labelled as not saved. A message that lists tasks or events (several lines, or a length plus a date) goes to plan entry instead. "Add a task called …" is read by the same parser (so "due Friday at noon" stays 12:00 PM; with no time the deadline is the end of the day, shown as such) and offers **Confirm tasks** / **Edit** instead of saving a Medium task directly.
+
+### Confirmations (pending actions)
+
+Deleting tasks and saving drafts without scheduling are **pending actions** stored by the API (`app/pending_actions.py`), never a sentence the chat model has to remember. A proposal has an id, a type, the exact targets with their names (and, for deletions, how many scheduled sessions go with them), a validated payload, a version and a status (`awaiting_confirmation`, `processing`, `succeeded`, `cancelled`, `failed`). The chat shows buttons for it: **Delete task** / **Cancel**, **Confirm tasks** / **Edit**, and for a schedule preview **Apply schedule** / **Cancel**. Typing "confirm" runs the one open action through the same handler, or asks which one when several are open; "1" or "1 and 3" is resolved against the exact numbered list shown before.
+
+- `POST /actions/delete-tasks` `{taskIds}` and `POST /actions/create-items` `{drafts, batchId}` propose; `GET /actions` lists open ones (they survive a refresh).
+- `POST /actions/{id}/confirm` `{version}` runs it once: other users' ids are 404, a wrong version or a schedule change since the proposal is 409, the status moves to `processing` atomically so a double click cannot run it twice, and the change plus `succeeded` are written in one transaction. A repeat confirm returns `duplicate: true` and changes nothing. A failure is kept on the action with its message and can be retried.
+- `POST /actions/{id}/cancel` changes nothing else.
+
+## Plan entry: text and images → drafts → the same scheduler
+
+The composer in the chat takes multi-line text (Enter sends, Shift+Enter adds a line) and an image attachment (JPG, PNG or WebP, up to 5 MB, checked by signature on the backend). The pipeline has separate stages; the model only reads input, and every time on the calendar comes from the engine:
+
+1. **Interpretation** (`plan_extraction.py`): text or image → structured drafts. With `OPENAI_API_KEY`, the OpenAI Responses API returns structured output validated against a strict schema; times and dates come back as strings that the backend converts and checks itself. The prompt forbids guessing AM/PM, semester dates or recurrence bounds, and asks for the original wording of each row. Without a key, typed text is read by a deterministic built-in parser; images need the key and return a clear 503. Relative dates ("tomorrow", "Friday") are resolved against the server's current time in the user's timezone. Provider failures (rate limit, timeout, refusal, bad output) return 429/504/502/422 with the user's input kept in the composer.
+2. **Review** (`plan_drafts.py`): business rules turn missing, ambiguous, unreadable or invalid fields into focused questions. A deadline is never treated as a scheduled date. Kinds are kept apart: a **flexible task** (work minutes, deadline, split rules), a **fixed event** (date or weekly repeat with first and last dates, start and end), and a **flexible event** (a length the engine places; one contiguous block unless splitting is allowed). A weekly class is never turned into a one-time event: without semester dates it stays blocked until they are given. Answers (in the chat or the panel) update the same draft through `/plan/clarify`.
+3. **Scheduling and validation**: drafts go through the same service, engine and independent validator as Generate/Repair. Draft tasks appear as `draft:<id>` and draft fixed events as busy time.
+4. **Preview and Apply**: the preview (mode `plan`) shows new sessions, reserved breaks, proposed events, moves, removals and unscheduled minutes. Apply creates the tasks, events and sessions in one transaction, after the usual staleness check. Each draft gets a unique `draft_key` (`owner:batch:draft`), so a double submit cannot save it twice.
+
+### Can this fit?
+
+`POST /plan/feasibility` changes no saved data (not even a stored proposal; the response says `savedDataChanged: false`). It runs the engine three times on one snapshot: saved work alone, the drafts with no displacement, and the drafts with bounded displacement. The status is one of:
+
+- `fits_without_moving`: everything fits in unused time.
+- `fits_after_changes`: everything fits if the listed lower-priority sessions move; their tasks are kept and any minutes they lose are listed.
+- `no_plan_found`: the heuristic found no complete plan within the search limits. This is **not** proof.
+- `proven_infeasible`: only when a cause follows from the inputs alone: a deadline already passed, an earliest start at or after the deadline, a dependency cycle, a one-piece item longer than the focus or daily limit, more work than all free time in its window (an upper bound ignoring every flexible session), no free block long enough for a one-piece item, or a fixed event overlapping another fixed commitment.
+
+Each item lists its causes marked proven or not proven. The planning horizon and search limits are stated. Alternatives (allow splitting, a 21-day window, raise the priority) are offered as new previews; nothing is relaxed silently.
+
+### Plan API
+
+- `POST /plan/interpret` `{text, image?: {mediaType, dataBase64, name}, batchId}` → `{provider, drafts: [{draft, issues, ready}], notes, now, timeZone}`
+- `POST /plan/review` `{drafts, horizonDays, batchId}` → reviewed drafts
+- `POST /plan/clarify` `{draft, field, answer, otherDraftIds}` → the same draft, updated
+- `POST /plan/feasibility` `{drafts, horizonDays}` → the result above
+- `POST /plan/preview` `{drafts, horizonDays, batchId}` → a schedule preview (mode `plan`), applied with `POST /schedule/apply`
+
+Drafts with open questions are refused with 422 by feasibility and preview. Only selected (ticked) items are checked: an unticked incomplete item never blocks the others, but a selected item may not depend on an unticked one. In the review panel, editing a field makes its value the answer: its "unclear" flag and question are cleared at once and the backend re-checks; an answer for drafts that changed meanwhile is ignored. Questions appear next to their fields, a summary links to each item that still needs something, and disabled buttons say what is missing. Not enough time is a scheduling result (a partial plan with its unscheduled minutes listed, which can be applied), not a question.
 
 ### Manual check (the acceptance scenario)
 
@@ -189,12 +231,27 @@ Chat requests are parsed deterministically first and fall back to OpenAI only fo
 
 The acceptance scenario and the other scenarios run as backend API tests (`tests/test_schedule_api.py`). `backend/tests/test_frontend_fixture.py` checks that the frontend's captured fixture still matches the API (`UPDATE_FIXTURES=1` rewrites it). Live OpenAI calls are not covered by CI.
 
+### Classroom demonstration (plan entry)
+
+Offline, without a browser or database server: `cd backend && .venv/bin/python tests/plan_demo.py`. It walks through a bulk message (fit check, preview, Apply, a second Apply that writes nothing), a timetable image with a canned model answer (weekly classes, AM/PM and semester-date questions, answers updating the same draft), urgent High work displacing saved Low work, and a proven capacity shortfall.
+
+In the app (MongoDB replica set needed for Apply):
+
+1. Set availability to 9 AM–12 PM every day in America/New_York.
+2. In the chat, type three lines and press Enter: `Lab report 90 min due tomorrow high priority`, `Advisor meeting today 11-11:30am`, `Gym 30 min sometime today, low priority`. The review panel above the calendar shows a task, a fixed event and a flexible event; nothing is saved.
+3. Press **Can this fit?** (“fits without moving existing work”), then **Preview on calendar**. The calendar shows the dashed proposed sessions, the reserved break and the proposed meeting; ask the chat “Today’s tasks” to see the same items.
+4. **Apply**, refresh, sign out and in: the tasks, the event and the sessions are still there. Pressing Apply twice writes nothing extra.
+5. With `OPENAI_API_KEY` set, attach a timetable photo. Check that each class is weekly, that unclear times and missing semester dates are asked about, answer in the chat, then preview.
+6. Add `Problem set 100 min due today 12pm high priority` on a day already planned with Low work, press **Can this fit?**, and see which sessions would move and how many minutes the Low task loses.
+
 ### Known limitations
 
-- Allocation is greedy with bounded repair, not an optimal solver; deadline risk uses the capacity approximation above.
+- Allocation is a deterministic heuristic with bounded repair, not an optimal solver. “No plan found” is reported as such and never as proof.
 - Breaks are only reserved between work runs. A manual or locked session longer than the focus length is left as the user placed it; new work is never added to extend such a run.
 - A requested break always starts now; a break at a later time should be added as an event.
 - External calendar events are a snapshot from the last sync.
+- Plan entry: the built-in text parser handles common phrasings (lengths, “due Friday 5pm”, “11-11:30am”, “weekday evenings”, “after X”); anything else should be fixed in the review panel or read with the AI. Recurring drafts are weekly only. Images need `OPENAI_API_KEY`. Live OpenAI text and image extraction is not covered by automated tests (the model is mocked).
+- A flexible event is placed once in the planning window; weekly flexible events are not supported yet.
 
 ## Current scope
 
@@ -214,4 +271,4 @@ Older databases may have a unique, non-sparse `sessions.jti` index from token st
 
 Database failures return a safe `detail`, a category in `code`, and a `reference` that matches the backend error log. The log includes the method, route, exception type, and MongoDB error code, without credentials, request bodies, or driver error text. Categories distinguish connectivity, database authentication, database permissions, uniqueness conflicts, document validation, unsupported transactions, and other operations. User authentication errors remain HTTP 401; database credentials/roles are backend configuration failures and do not sign users out.
 
-Backend tests run with `cd backend && .venv/bin/pytest -q`. Set `TEST_MONGODB_URI` through your environment to a test-capable MongoDB replica set to exercise persistence and rollback. The fixture creates and cleans up uniquely named `aptest_*` databases; it never substitutes a production database name. Transaction tests skip mongomock and standalone MongoDB rather than pretending to verify persistence. Frontend checks: `cd frontend && npm test && npm run build`.
+Backend tests run with `cd backend && .venv/bin/pytest -q`. Set `TEST_MONGODB_URI` through your environment to a test-capable MongoDB replica set to exercise persistence and rollback. A single-node replica set for local testing: `docker run -d --name autoplan-rs -p 127.0.0.1:27018:27017 mongo:8 --replSet rs0 --bind_ip_all`, then `docker exec autoplan-rs mongosh --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'` and `TEST_MONGODB_URI='mongodb://127.0.0.1:27018/?directConnection=true'`. The fixture creates and cleans up uniquely named `aptest_*` databases; it never substitutes a production database name. Transaction tests skip mongomock and standalone MongoDB rather than pretending to verify persistence. Frontend checks: `cd frontend && npm test && npm run build`.

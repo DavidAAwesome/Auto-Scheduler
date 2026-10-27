@@ -87,9 +87,33 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                   </li>
                 );
               }
+              if (item.kind === "proposedEvent") {
+                const e = item.proposed;
+                return (
+                  <li key={`pe-${e.draftId}-${e.date}`}>
+                    <span className={`today-event kind-${e.kind.toLowerCase()} proposed`}>
+                      <span className="today-session-time">{clock12(e.start)}</span>
+                      <span className="today-session-title"><Icon name={eventIcon[e.kind]} size={13} /> {e.title}</span>
+                      <small>{duration(e.end - e.start)} · proposed</small>
+                    </span>
+                  </li>
+                );
+              }
               const s = item.item.session;
               const proposed = item.item.kind === "proposed";
               const task = s.taskId ? taskById.get(s.taskId) : undefined;
+              if (s.type === "work" && !task) {
+                // Work for an item still under review: it has no saved task yet, only the preview.
+                return (
+                  <li key={s.id}>
+                    <span className="today-break proposed draft-work">
+                      <span className="today-session-time">{clock12(s.start)}</span>
+                      <span className="today-session-title">✦ {s.title}</span>
+                      <small>{duration(s.end - s.start)} · proposed</small>
+                    </span>
+                  </li>
+                );
+              }
               if (s.type === "break" || !task) {
                 return (
                   <li key={s.id}>
@@ -114,7 +138,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
             })}
           </ul>
         )}
-        {agenda.some(i => i.kind === "session" && i.item.kind === "proposed") && <p className="muted small">Proposed sessions are a preview until you Apply.</p>}
+        {agenda.some(i => i.kind === "proposedEvent" || (i.kind === "session" && i.item.kind === "proposed")) && <p className="muted small">Proposed items are a preview until you Apply.</p>}
         {dueNow.length > 0 && <h3 className="today-subhead">Deadlines: due today{dueNow.some(t => t.deadline < today) ? " & overdue" : ""}</h3>}
         {dueNow.length ? <ul className="task-list">{dueNow.map(row)}</ul> : !agenda.length && <p className="muted small">Nothing scheduled or due today.</p>}
       </section>

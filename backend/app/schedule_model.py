@@ -67,6 +67,7 @@ class TaskAllocation(BaseModel):
     taskId: str
     title: str
     priority: str
+    kind: Literal['task', 'flexible_event'] = 'task'
     dueAt: AwareDatetime
     estimatedMinutes: int
     completedMinutes: int
@@ -91,11 +92,19 @@ class ConflictItem(BaseModel):
     endAt: AwareDatetime | None = None
 
 
+class ConflictChoice(BaseModel):
+    """An explicit option offered to resolve a conflict. Never applied without the user choosing it."""
+    model_config = ConfigDict(extra='forbid')
+    id: str
+    label: str
+
+
 class ScheduleConflict(BaseModel):
     model_config = ConfigDict(extra='forbid')
     code: str
     message: str
     items: list[ConflictItem]
+    choices: list[ConflictChoice] = []
 
 
 class SessionRemoval(BaseModel):
@@ -115,11 +124,25 @@ class DaySummary(BaseModel):
     sessionCount: int
 
 
+class ProposedEvent(BaseModel):
+    """One occurrence of a fixed event that only exists as a draft until Apply."""
+    model_config = ConfigDict(extra='forbid')
+    draftId: str
+    title: str
+    kind: str
+    date: str
+    start: int
+    end: int
+    startAt: AwareDatetime
+    endAt: AwareDatetime
+    repeats: bool = False
+
+
 class SchedulePreview(BaseModel):
     model_config = ConfigDict(extra='forbid')
     previewId: str
     status: Literal['proposed', 'applied']
-    mode: Literal['generate', 'repair', 'break']
+    mode: Literal['generate', 'repair', 'break', 'plan']
     baseScheduleVersion: int
     generatedAt: AwareDatetime
     timeZone: str
@@ -137,6 +160,8 @@ class SchedulePreview(BaseModel):
     explanations: list[str]
     note: str
     inputFingerprint: str
+    proposedEvents: list[ProposedEvent] = []  # draft fixed events in the window (plan mode)
+    horizonDays: int = 7
 
 
 class SavedSchedule(BaseModel):

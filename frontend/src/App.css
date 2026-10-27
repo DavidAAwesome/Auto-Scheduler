@@ -283,7 +283,13 @@ main:focus { outline: none; }
 .bubble.assistant { background: var(--hover); border-bottom-left-radius: 4px; }
 .bubble.example { align-self: flex-end; background: var(--lavender); color: var(--primary); border-bottom-right-radius: 4px; font-style: italic; }
 .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
-.chat-input input { flex: 1; min-width: 0; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-2); padding: 9px 12px; font-size: 13px; }
+.chat-input input, .chat-input textarea { flex: 1; min-width: 0; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-2); color: var(--text); padding: 9px 12px; font-size: 13px; }
+.chat-input { align-items: flex-end; }
+.chat-input textarea { resize: none; font: inherit; font-size: 13px; line-height: 1.4; max-height: 140px; }
+.chat-attachment { display: flex; align-items: center; gap: 8px; margin: 0 12px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 12px; }
+.chat-attachment img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
+.chat-attachment span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble { white-space: pre-line; }
 .chat-tab {
   width: 44px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 16px;
   border: 0; border-left: 1px solid var(--border); background: var(--surface); color: var(--primary); font-weight: 800; font-size: 12px;
@@ -575,3 +581,56 @@ main:focus { outline: none; }
 /* Today's panel: breaks and proposed sessions from the shared schedule list. */
 .today-sessions .today-break { width: 100%; display: flex; align-items: center; gap: 8px; border-left: 3px solid var(--muted); border-radius: 7px; background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(127,127,127,0.08) 6px 12px); padding: 6px 9px; color: var(--muted); font-size: 12px; }
 .today-sessions .proposed { border-left-style: dashed; opacity: 0.9; }
+
+/* ---------- Plan entry: draft review, “Can this fit?”, proposed items ---------- */
+.draft-review { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); margin: 10px 0; padding: 10px 14px; }
+.draft-review-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.draft-toggle { border: 0; background: none; color: var(--text); font-weight: 700; font-size: 14px; padding: 4px 0; text-align: left; }
+.draft-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+.draft-card { border: 1px solid var(--border-strong); border-left: 4px solid var(--available-line); border-radius: 10px; padding: 8px 10px; background: var(--surface-2); }
+.draft-card.needs-answer { border-left-color: var(--cat-work); }
+.draft-card.skipped { opacity: 0.55; }
+.draft-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.draft-include { display: flex; align-items: center; }
+.draft-title { flex: 1; min-width: 140px; font-weight: 700; }
+.draft-review input, .draft-review select { min-width: 0; min-height: 30px; padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 12.5px; }
+.draft-review input[type="checkbox"] { min-height: 0; }
+.draft-review input.uncertain, .draft-review select.uncertain { border-color: var(--cat-work); background: var(--cat-work-bg); }
+.draft-source { margin: 4px 0; font-size: 12px; color: var(--muted); font-style: italic; }
+.draft-fields { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-top: 6px; }
+.draft-fields label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; font-weight: 700; color: var(--muted); }
+.draft-fields label.draft-check { flex-direction: row; align-items: center; gap: 5px; }
+.draft-weekdays { display: flex; gap: 4px; flex-wrap: wrap; }
+.draft-weekdays .chip { padding: 3px 8px; }
+.chip.on { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.draft-meta { font-size: 11.5px; color: var(--muted); }
+.draft-issues { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.draft-issue { padding: 5px 8px; border-radius: 7px; background: var(--hover); }
+.draft-issue.blocking { background: var(--notice-bg); color: var(--notice-text); }
+.draft-answer { display: flex; gap: 6px; margin-top: 4px; }
+.draft-answer input { flex: 1; }
+.draft-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.draft-actions label { display: flex; align-items: center; gap: 6px; }
+.fit-report { border-radius: 10px; padding: 8px 12px; margin: 8px 0; border: 1px solid var(--border); background: var(--surface-2); font-size: 13px; }
+.fit-report.status-fits_without_moving { background: var(--available-bg); color: var(--available-text); }
+.fit-report.status-fits_after_changes { background: var(--notice-bg); color: var(--notice-text); }
+.fit-report.status-proven_infeasible { background: var(--danger-bg); color: var(--danger); }
+.fit-report ul { margin: 4px 0; padding-left: 18px; }
+.fit-alternatives, .conflict-choices { display: inline-flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0 6px; }
+.event-block.preview { outline: 2px dashed var(--event-strong); outline-offset: -2px; opacity: 0.85; }
+.event-line.proposed, .today-event.proposed, .today-break.proposed { opacity: 0.85; font-style: italic; }
+
+/* Pending actions and draft questions next to their fields */
+.chat-action-status { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+.chat-action-targets { margin: 0 0 6px; padding-left: 18px; font-size: 12.5px; width: 100%; }
+.chat-actions { flex-wrap: wrap; }
+.draft-card { scroll-margin: 12px; }
+.draft-issues.field { margin: 3px 0 0; max-width: 260px; font-weight: 500; color: var(--text); }
+.draft-issue.inline { padding: 4px 7px; font-size: 12px; }
+.draft-default { font-weight: 500; color: var(--muted); }
+.draft-summary { border-radius: 10px; padding: 8px 12px; margin: 6px 0; background: var(--notice-bg); color: var(--notice-text); font-size: 12.5px; }
+.draft-summary ul { margin: 4px 0; padding-left: 18px; }
+.draft-summary a { color: inherit; font-weight: 700; }
+.draft-link { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+.draft-weekdays.uncertain { outline: 1px dashed var(--cat-work); border-radius: 8px; padding: 2px; }
+.draft-actions { position: static; }

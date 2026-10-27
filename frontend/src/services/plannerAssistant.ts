@@ -15,6 +15,8 @@ export type AssistantMessage = {
   pendingChange?: PreferenceChange;
   /** An event to add or delete, waiting for the user to confirm. */
   pendingEvent?: PendingEventAction;
+  /** A stored pending action (delete tasks, save drafts) whose buttons this message shows. */
+  actionId?: string;
 };
 
 export type AssistantContext = {
