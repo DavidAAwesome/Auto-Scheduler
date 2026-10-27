@@ -10,7 +10,7 @@ import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
 import Icon from "./Icon";
 
 const PROMPTS = ["Show my plan", "Plan my week", "Busy time", "Today’s tasks"];
-const ACTION_LABEL: Record<AssistantCommand, string> = {
+const ACTION_LABEL: Partial<Record<AssistantCommand, string>> = {
   generate_schedule: "Generate Schedule",
   apply_schedule: "Apply",
   cancel_schedule: "Cancel",
@@ -19,6 +19,7 @@ const ACTION_LABEL: Record<AssistantCommand, string> = {
   busy_time: "Busy time",
   explain_unscheduled: "What didn’t fit?",
   replan: "Repair schedule",
+  confirm_delete_task: "Confirm delete",
 };
 
 /**
@@ -30,6 +31,7 @@ export default function ChatPanel() {
   const { user } = useAuth();
   const { tasks, sessions, events, connections, availability, schedulePreview, saving } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const [pendingDeleteTaskId, setPendingDeleteTaskId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [thinking, setThinking] = useState(false);
@@ -50,12 +52,16 @@ export default function ChatPanel() {
   /** Runs a command and posts its real outcome. The loading line is shown only while this await is pending. */
   async function run(request: ParsedRequest | AssistantCommand) {
     setError("");
-    setWorking(typeof request === "string" ? request : request.command);
-    try {
-      append(await runAssistantCommand(request, workspaceService));
-    } finally {
-      setWorking(null);
+    setWorking("generate_schedule");
+  try {
+    if (typeof request !== "string" && request.command === "delete_task") {
+    setPendingDeleteTaskId(request.taskId);
     }
+
+    append(await runAssistantCommand(request, workspaceService));
+  } finally {
+  setWorking(null);
+} 
   }
 
   async function ask(prompt: string) {
@@ -155,7 +161,20 @@ export default function ChatPanel() {
                       key={action}
                       className={`button small ${action === "cancel_schedule" ? "secondary" : ""}`}
                       disabled={busy}
-                      onClick={() => void run(action)}
+                     onClick={() => {
+                      if (action === "confirm_delete_task") {
+                        if (!pendingDeleteTaskId) return;
+
+                        void run({
+                         command: "confirm_delete_task",
+                         taskId: pendingDeleteTaskId,
+                        });
+
+    setPendingDeleteTaskId(null);
+  } else {
+    void run(action);
+  }
+}}
                     >
                       {ACTION_LABEL[action]}
                     </button>

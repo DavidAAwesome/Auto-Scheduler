@@ -2,8 +2,42 @@ import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type AIProfile, type ApplyResu
 import { normalizeAvailability } from '../utils/availability.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
-export type AssistantIntent = 'show_today' | 'show_plan' | 'busy_time' | 'generate_schedule' | 'explain_unscheduled' | 'request_break' | 'replan' | 'move_task' | 'update_preferences' | 'clarify' | 'none';
-export interface AssistantReply { reply: string; intent: AssistantIntent; params: { breakMinutes: number | null; taskId: string | null; notBefore: string | null; preferences?: PreferenceChange | null }; provider: 'openai' }
+export type AssistantIntent =
+  | "show_today"
+  | "show_plan"
+  | "busy_time"
+  | "generate_schedule"
+  | "explain_unscheduled"
+  | "request_break"
+  | "replan"
+  | "move_task"
+  | "update_preferences"
+  | "add_task"
+  | "delete_task"
+  | "add_event"
+  | "delete_event"
+  | "clarify"
+  | "none";
+
+export interface AssistantReply {
+  reply: string;
+  intent: AssistantIntent;
+  params: {
+    breakMinutes: number | null;
+    taskId: string | null;
+    notBefore: string | null;
+    taskTitle: string | null;
+    taskDeadline: string | null;
+    taskDuration: number | null;
+    eventId: string | null;
+    eventTitle: string | null;
+    eventDate: string | null;
+    eventStart: string | null;
+    eventEnd: string | null;
+    preferences?: PreferenceChange | null;
+  };
+  provider?: "openai";
+}
 
 /** Accepts only a well-formed profile; anything else falls back to defaults so chat never breaks on it. */
 export function normalizeProfile(value: unknown): AIProfile {
