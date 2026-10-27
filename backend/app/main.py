@@ -16,6 +16,7 @@ from app.calendars import router as calendars_router
 from app.assistant import router as assistant_router
 from app.personalization import router as personalization_router
 from app.schedule_routes import router as schedule_router
+from app.plan_routes import router as plan_router
 
 
 def create_app(database=None):
@@ -75,6 +76,7 @@ def create_app(database=None):
     app.include_router(assistant_router)
     app.include_router(personalization_router)
     app.include_router(schedule_router)
+    app.include_router(plan_router)
 
     @app.get('/')
     def root():

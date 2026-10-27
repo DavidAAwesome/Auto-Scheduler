@@ -17,6 +17,12 @@ Rules (hard constraints for every new work session)
 - Daily task-work limit per local day.
 - Dependencies finish first; earliestStart is honoured; unsplit tasks get one session no longer
   than the focus limit.
+- Optional allowed time windows (e.g. weekday evenings) restrict where a task may be placed.
+
+Flexible events (kind "flexible_event", e.g. "gym for an hour sometime Saturday") are placed by the
+engine like tasks but are not focus work: they get one contiguous slot unless splitting is allowed,
+they use their own allowed windows (or availability when none are given), they do not count toward
+the daily or continuous-work limits, and once placed they are busy time that is not rest.
 
 Breaks are reserved during allocation: a placement is only accepted when the run it joins stays
 within the focus limit, which keeps the rest gap free. After allocation a break session is
@@ -24,18 +30,28 @@ materialised at the start of each rest gap that separates two same-day runs whos
 exceeds the focus limit (that is, where the break is what makes continuing legal). No trailing
 break is added when no more work follows.
 
-Ordering (deterministic, stable): tasks at risk of missing their deadline, then High/Medium/Low,
-then earliest due instant, then task id; dependencies are respected with this key as tie-break.
+Priority policy and deterministic tie-breaking: High, then Medium, then Low; within a tier the
+earliest due instant, then the earliest allowed start, then task id. Dependencies are respected with
+this key as tie-break. Deadline risk is reported (`at_risk`, `slack`) but never reorders work: the
+user's priorities decide who gets scarce time.
 
-Deadline-risk approximation: usable capacity before a deadline is the free availability before it
+Deadline-risk estimate: usable capacity before a deadline is the free availability before it
 (after events, retained work, protected breaks and lunch), limited per day by the daily work limit
 minus retained work, multiplied by focus / (focus + break) for break overhead. A task is at risk
 when its unretained remaining work exceeds that capacity minus the work of tasks ordered ahead of
-it by priority (each clipped to the same capacity). This is an estimate, not an exact feasibility
-test.
+it. This is an estimate for warnings only.
 
-This is a greedy heuristic. Work it cannot place is reported with reasons; that is not proof that
-no valid schedule exists.
+Search: a greedy earliest-fit baseline in priority order, then bounded local repair. For each task
+that is short, sessions of same- or lower-priority unlocked work (new, or kept saved sessions in
+repair mode) that overlap its window are removed one by one (at most MAX_VICTIMS per attempt), the
+task is re-placed, then the displaced tasks are re-placed. The move is kept only when the
+lexicographic objective strictly improves. Per tier, High then Medium then Low: number of fully
+scheduled tasks, then which tasks are full in (due, earliest start, id) order, then scheduled
+minutes. Otherwise the state is restored exactly. Fixed events, locked, manual and in-progress sessions are never moved. Attempts are
+bounded (MAX_REPAIR_ATTEMPTS in total, MAX_REPAIR_ATTEMPTS_PER_TASK per task).
+
+This is a heuristic. Work it cannot place is reported with reasons; that is not proof that no valid
+schedule exists (see app.feasibility for the cases that are actually proven).
 """
 from __future__ import annotations
 
@@ -54,6 +70,8 @@ GRID = 5  # new sessions start on 5-minute boundaries (or on an existing boundar
 PRIORITY_RANK = {'High': 0, 'Medium': 1, 'Low': 2}
 MAX_REPAIR_ATTEMPTS = 20
 MAX_REPAIR_ATTEMPTS_PER_TASK = 6
+MAX_VICTIMS = 4  # sessions removed in one repair attempt
+FAR_FUTURE = 2 ** 40
 CONTEXT_LOOKBACK = 12 * 60  # recent past work that still counts toward the continuous-work run
 
 HEURISTIC_NOTE = ('AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this '
@@ -172,6 +190,12 @@ class EngineTask:
     earliest: int | None = None
     depends_on: tuple[str, ...] = ()
     done: bool = False
+    kind: str = 'task'  # task | flexible_event
+    windows: tuple[tuple[int, int], ...] = ()  # allowed absolute intervals; empty = no extra restriction
+
+    @property
+    def is_work(self) -> bool:
+        return self.kind != 'flexible_event'
 
     @property
     def remaining(self) -> int:
@@ -253,6 +277,7 @@ class Conflict:
     code: str
     message: str
     items: list[dict]
+    choices: list[dict] = field(default_factory=list)  # explicit options offered to the user, never applied silently
 
 
 @dataclass
@@ -288,10 +313,11 @@ class _Work:
 
 class _Planner:
     def __init__(self, tasks, availability, prefs, zone, events, existing, now, horizon_days, mode,
-                 requested_break, not_before):
+                 requested_break, not_before, displace=True):
         self.prefs = prefs
         self.zone = zone
         self.mode = mode
+        self.displace = displace
         self.now = now
         self.start = ceil_grid(now)
         first_day, _ = local_parts(now, zone)
@@ -308,11 +334,15 @@ class _Planner:
         self.conflicts: list[Conflict] = []
         self.explanations: list[str] = []
         self.work: list[_Work] = []
+        self.flex: list[_Work] = []  # placed flexible events: busy, not rest, not counted as work
         self.rest_items: list[tuple[int, int]] = []  # protected breaks and lunch: block work, count as rest
         self.flexible: list[Existing] = []
         self.allocations: dict[str, Allocation] = {}
         self.pending: dict[str, bool] = {}
         self.cyclic: set[str] = set()
+        self.need: dict[str, int] = {}
+        self.rank: dict[str, int] = {}
+        self.displaced_by: dict[str, str] = {}
 
         self.lunch = []
         if prefs.lunch:
@@ -335,12 +365,37 @@ class _Planner:
                 if e > s:
                     self.availability.append((s, e))
         self.availability = merge(self.availability)
+        self._allowed: dict[str, list[tuple[int, int]]] = {}
 
     # -- setup
 
     def clock(self, minute: int) -> str:
         _, m = local_parts(minute, self.zone)
         return f"{(m // 60) % 12 or 12}:{m % 60:02d} {'AM' if m < 720 else 'PM'}"
+
+    def is_work(self, task_id: str | None) -> bool:
+        task = self.task_by_id.get(task_id or '')
+        return task is None or task.is_work
+
+    def allowed(self, task: EngineTask) -> list[tuple[int, int]]:
+        """Where `task` may be placed: availability (intersected with its windows), or for a flexible event
+        its own windows (availability when it has none). Always clipped to [now, window end)."""
+        if task.id not in self._allowed:
+            windows = merge((max(s, self.start), min(e, self.window_end)) for s, e in task.windows)
+            if not task.windows:
+                spans = list(self.availability)
+            elif task.is_work:
+                spans = merge((max(a, b), min(c, d)) for a, c in self.availability for b, d in windows)
+            else:
+                spans = windows
+            self._allowed[task.id] = [(s, e) for s, e in spans if e > s]
+        return self._allowed[task.id]
+
+    def _track(self, start: int, end: int, task_id: str | None, fixed: bool, counts_daily: bool = True,
+               ref: Placed | None = None):
+        bucket = self.work if self.is_work(task_id) else self.flex
+        bucket.append(_Work(start, end, task_id, fixed, counts_daily, ref))
+        bucket.sort(key=lambda w: (w.start, w.end))
 
     def _clip_requested_break(self, existing: list[Existing], requested):
         """A requested break never overlaps a fixed event or locked/manual work; the conflict is explained instead."""
@@ -371,11 +426,11 @@ class _Planner:
             if item.end <= item.start or item.status == 'cancelled':
                 continue
             if item.status == 'completed':
-                if item.type == 'work' and item.end > now - CONTEXT_LOOKBACK:
+                if item.type == 'work' and item.end > now - CONTEXT_LOOKBACK and self.is_work(item.task_id):
                     self.work.append(_Work(item.start, item.end, item.task_id, True))
                 continue
             if item.end <= now:
-                if item.type == 'work' and item.end > now - CONTEXT_LOOKBACK:
+                if item.type == 'work' and item.end > now - CONTEXT_LOOKBACK and self.is_work(item.task_id):
                     # Past and not marked complete: counts toward the run (conservative), not the daily total.
                     self.work.append(_Work(item.start, item.end, item.task_id, True, counts_daily=False))
                 continue
@@ -394,13 +449,13 @@ class _Planner:
                 placed = self._retained(item, 'In progress; shortened for your break')
                 placed.end, placed.change = cut, 'truncated'
                 self.sessions.append(placed)
-                self.work.append(_Work(item.start, cut, item.task_id, True, ref=placed))
+                self._track(item.start, cut, item.task_id, True, ref=placed)
                 continue
             if in_progress or not flexible:
                 why = 'In progress' if in_progress else ('Locked' if item.locked else 'Placed by you')
                 placed = self._retained(item, why)
                 self.sessions.append(placed)
-                self.work.append(_Work(item.start, item.end, item.task_id, True, ref=placed))
+                self._track(item.start, item.end, item.task_id, True, ref=placed)
                 continue
             self.flexible.append(item)
         if requested_break:
@@ -419,19 +474,30 @@ class _Planner:
         if not any(r.code == code for r in reasons):
             reasons.append(Reason(code, message))
 
+    def add_conflict(self, conflict: Conflict):
+        key = (conflict.code, tuple(i.get('id') for i in conflict.items))
+        if not any((c.code, tuple(i.get('id') for i in c.items)) == key for c in self.conflicts):
+            self.conflicts.append(conflict)
+
     # -- queries
 
     def day(self, minute: int) -> date:
         return local_parts(minute, self.zone)[0]
 
+    def busy(self) -> list[tuple[int, int]]:
+        """Time that is occupied but is not rest: events and placed flexible events."""
+        return merge([*self.events, *[(w.start, w.end) for w in self.flex]])
+
     def blockers(self) -> list[tuple[int, int]]:
-        return merge([*self.events, *self.rest_items, *[(w.start, w.end) for w in self.work]])
+        return merge([*self.events, *self.rest_items, *[(w.start, w.end) for w in self.work],
+                      *[(w.start, w.end) for w in self.flex]])
 
     def day_work(self, day: date) -> int:
         return sum(w.end - w.start for w in self.work if w.counts_daily and self.day(w.start) == day)
 
-    def free_until(self, t: int, blockers) -> int:
-        span = next(((s, e) for s, e in self.availability if s <= t < e), None)
+    @staticmethod
+    def free_until(t: int, blockers, allowed) -> int:
+        span = next(((s, e) for s, e in allowed if s <= t < e), None)
         if span is None:
             return t
         limit = span[1]
@@ -446,28 +512,29 @@ class _Planner:
 
     def run_total(self, start: int, end: int) -> int:
         """Work minutes in the continuous-work run that [start, end) would belong to."""
+        busy = self.busy()
         items = sorted([(w.start, w.end) for w in self.work] + [(start, end)])
         index = items.index((start, end))
         total = end - start
         i = index
-        while i > 0 and not is_rest_gap(items[i - 1][1], items[i][0], self.events, self.prefs.brk):
+        while i > 0 and not is_rest_gap(items[i - 1][1], items[i][0], busy, self.prefs.brk):
             total += items[i - 1][1] - items[i - 1][0]
             i -= 1
         i = index
-        while i < len(items) - 1 and not is_rest_gap(items[i][1], items[i + 1][0], self.events, self.prefs.brk):
+        while i < len(items) - 1 and not is_rest_gap(items[i][1], items[i + 1][0], busy, self.prefs.brk):
             total += items[i + 1][1] - items[i + 1][0]
             i += 1
         return total
 
-    def candidates(self, lo: int, hi: int) -> list[int]:
+    def candidates(self, lo: int, hi: int, allowed) -> list[int]:
         points: set[int] = set()
-        for s, e in self.availability:
+        for s, e in allowed:
             if e <= lo or s >= hi:
                 continue
             first = max(s, lo)
             points.add(first)
             points.update(range(ceil_grid(first), min(e, hi), GRID))
-        for w in self.work:
+        for w in [*self.work, *self.flex]:
             points.update((w.end, w.end + self.prefs.brk))
         for _s, e in [*self.events, *self.rest_items]:
             points.update((e, e + self.prefs.brk))
@@ -489,39 +556,45 @@ class _Planner:
     # -- placement
 
     def place(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str]) -> list[Placed]:
-        """Earliest valid work sessions for `need` minutes inside [lo, hi)."""
+        """Earliest valid sessions for `need` minutes inside [lo, hi) and the task's allowed time."""
         placed: list[Placed] = []
         if need <= 0 or hi <= lo:
             return placed
         exact = not task.allow_split
-        points = self.candidates(lo, hi)
+        allowed = self.allowed(task)
+        points = self.candidates(lo, hi, allowed)
         blockers = self.blockers()
         i = 0
         while i < len(points) and need > 0:
             t = points[i]
             i += 1
-            fu = self.free_until(t, blockers)
+            fu = self.free_until(t, blockers, allowed)
             if fu <= t:
                 continue
-            daily_left = self.prefs.max_daily - self.day_work(self.day(t))
-            if daily_left <= 0:
-                notes.add('daily_limit')
-                continue
-            upper = min(need, need if exact else task.max_session, fu - t, hi - t, daily_left, self.prefs.focus)
-            if exact and upper < need:
-                if daily_left < need:
+            if task.is_work:
+                daily_left = self.prefs.max_daily - self.day_work(self.day(t))
+                if daily_left <= 0:
                     notes.add('daily_limit')
-                continue
-            length = self.best_length(t, upper, need, exact)
-            if length <= 0:
-                notes.add('focus_limit')
-                continue
+                    continue
+                upper = min(need, need if exact else task.max_session, fu - t, hi - t, daily_left, self.prefs.focus)
+                if exact and upper < need:
+                    if daily_left < need:
+                        notes.add('daily_limit')
+                    continue
+                length = self.best_length(t, upper, need, exact)
+                if length <= 0:
+                    notes.add('focus_limit')
+                    continue
+            else:
+                upper = min(need, need if exact else task.max_session, fu - t, hi - t)
+                if exact and upper < need:
+                    continue
+                length = upper
             if length < need and length < task.min_session:
                 continue  # only the final piece may be shorter than the minimum session
             session = Placed(task.id, 'work', t, t + length, 'proposed', False, 'auto', 'new', title=task.title)
             placed.append(session)
-            self.work.append(_Work(t, t + length, task.id, False, ref=session))
-            self.work.sort(key=lambda w: (w.start, w.end))
+            self._track(t, t + length, task.id, False, ref=session)
             blockers = self.blockers()
             need -= length
             for extra in (t + length, t + length + self.prefs.brk):
@@ -536,6 +609,7 @@ class _Planner:
     def remove_session(self, session: Placed):
         self.sessions = [s for s in self.sessions if s is not session]
         self.work = [w for w in self.work if w.ref is not session]
+        self.flex = [w for w in self.flex if w.ref is not session]
 
     def allocated(self, task_id: str) -> int:
         return sum(s.end - s.start for s in self.sessions
@@ -545,11 +619,14 @@ class _Planner:
         return sum(s.end - s.start for s in self.sessions
                    if s.task_id == task_id and s.type == 'work' and s.change in {'retained', 'truncated'})
 
+    def short(self, task_id: str) -> int:
+        return max(0, self.need.get(task_id, 0) - self.allocated(task_id))
+
     # -- capacity / ordering
 
     def capacity_before(self, deadline: int) -> int:
         free = subtract([(s, min(e, deadline)) for s, e in self.availability if s < deadline],
-                        [*self.events, *self.rest_items, *[(w.start, w.end) for w in self.work if w.fixed]])
+                        [*self.events, *self.rest_items, *[(w.start, w.end) for w in [*self.work, *self.flex] if w.fixed]])
         per_day: dict[date, int] = {}
         for s, e in free:
             day = self.day(s)
@@ -561,17 +638,23 @@ class _Planner:
         total = sum(max(0, min(minutes, self.prefs.max_daily - fixed_daily.get(day, 0))) for day, minutes in per_day.items())
         return total * self.prefs.focus // (self.prefs.focus + self.prefs.brk)
 
+    @staticmethod
+    def priority_key(task: EngineTask):
+        """The documented, deterministic order: priority, due instant, earliest start, id."""
+        return PRIORITY_RANK.get(task.priority, 3), task.due, task.earliest or 0, task.id
+
     def ordered(self, need: dict[str, int]) -> list[EngineTask]:
-        base = sorted(self.open_tasks, key=lambda t: (PRIORITY_RANK.get(t.priority, 3), t.due, t.id))
+        base = sorted(self.open_tasks, key=self.priority_key)
         keys = {}
         for index, task in enumerate(base):
-            cap = self.capacity_before(task.due)
-            ahead = sum(min(need[other.id], cap) for other in base[:index])
-            slack = cap - ahead - need[task.id]
             alloc = self.allocations[task.id]
-            alloc.slack = slack
-            alloc.at_risk = need[task.id] > 0 and task.due > self.now and slack < 0
-            keys[task.id] = (0 if alloc.at_risk else 1, PRIORITY_RANK.get(task.priority, 3), task.due, task.id)
+            if task.is_work:
+                cap = self.capacity_before(task.due)
+                ahead = sum(min(need[other.id], cap) for other in base[:index] if other.is_work)
+                slack = cap - ahead - need[task.id]
+                alloc.slack = slack
+                alloc.at_risk = need[task.id] > 0 and task.due > self.now and slack < 0
+            keys[task.id] = self.priority_key(task)  # deadline risk is a warning only; it never reorders
         ids = {t.id for t in self.open_tasks}
         waiting = {t.id: {d for d in t.depends_on if d in ids} for t in self.open_tasks}
         order: list[EngineTask] = []
@@ -594,7 +677,7 @@ class _Planner:
 
     def run(self) -> EngineResult:
         self._detect_conflicts()
-        need: dict[str, int] = {}
+        need = self.need
         for task in self.open_tasks:
             retained = self.retained_minutes(task.id)
             alloc = Allocation(task.id, task.title, task.priority, task.due, task.estimated, task.completed,
@@ -622,7 +705,7 @@ class _Planner:
             self._allocate_task(task, need)
         for tid in self.cyclic:
             self.pending[tid] = need[tid] > 0
-        if self.mode == 'repair':
+        if self.displace:
             self._displace(order, need)
         self._materialise_breaks()
 
@@ -636,6 +719,10 @@ class _Planner:
             alloc.unallocated = 0 if alloc.over_allocated else task.remaining - alloc.retained - alloc.new
             if alloc.unallocated < 0:
                 raise RuntimeError(f'Duration conservation violated for task {task.id}.')
+            if alloc.unallocated and task.id in self.displaced_by:
+                self.add_reason(task.id, 'displaced_by_priority',
+                                f'Some of its time went to higher-priority "{self.displaced_by[task.id]}". '
+                                'The task itself was kept.')
             if alloc.unallocated:
                 self.explanations.append(f'{task.title}: {alloc.unallocated} min unallocated '
                                          f'({", ".join(r.code for r in alloc.reasons) or "unknown"}).')
@@ -644,11 +731,15 @@ class _Planner:
                             [self.allocations[t.id] for t in self.open_tasks], self.conflicts,
                             [t.id for t in order], self.explanations)
 
+    def _bounds(self, task: EngineTask) -> tuple[int, int]:
+        lo = max(self.start, task.earliest or self.start, self.not_before.get(task.id, self.start))
+        return lo, min(task.due, self.window_end)
+
     def _window(self, task: EngineTask) -> tuple[int, int] | None:
         if task.due <= self.now:
             self.add_reason(task.id, 'deadline_passed', 'The deadline has passed; no new work is placed after it.')
             return None
-        lo = max(self.start, task.earliest or self.start, self.not_before.get(task.id, self.start))
+        lo, hi = self._bounds(task)
         for dep in task.depends_on:
             dep_task = self.task_by_id.get(dep)
             if dep_task is None or dep_task.done:
@@ -660,18 +751,27 @@ class _Planner:
             ends = [s.end for s in self.sessions if s.task_id == dep and s.type == 'work']
             if ends:
                 lo = max(lo, max(ends))
-        hi = min(task.due, self.window_end)
-
         if lo >= hi:
-            self.add_reason(
-                task.id,
-                'invalid_time_window',
-                'This task cannot be scheduled because its earliest allowed '
-                'start time is at or after its deadline or planning window end.'
-            )
+            self.add_reason(task.id, 'invalid_time_window',
+                            'This task cannot be scheduled because its earliest allowed start time is at or after its '
+                            'deadline or the planning window end.')
             return None
+        return lo, hi
 
-        return lo, hi   
+    def _settings_conflict(self, task: EngineTask):
+        self.add_reason(task.id, 'unsplit_exceeds_focus_limit',
+                        f'Splitting is off and {task.remaining} minutes exceeds your {self.prefs.focus}-minute '
+                        'focus limit. Allow splitting or raise the limit.')
+        self.add_conflict(Conflict(
+            'settings_conflict',
+            f'"{task.title}" is {task.remaining} minutes in one piece, but your focus limit is {self.prefs.focus} '
+            'minutes of continuous work. Nothing was changed; choose how to handle it.',
+            [{'kind': 'task', 'id': task.id, 'title': task.title}],
+            choices=[
+                {'id': 'allow_split', 'label': f'Allow splitting "{task.title}" into sessions of up to {self.prefs.focus} min'},
+                {'id': 'raise_focus_limit', 'label': f'Raise the focus limit to {min(240, task.remaining)} min in Settings'},
+                {'id': 'make_flexible_event', 'label': f'Treat "{task.title}" as an event (not counted as focus work)'},
+            ]))
 
     def _allocate_task(self, task: EngineTask, need: dict[str, int]):
         alloc = self.allocations[task.id]
@@ -690,12 +790,10 @@ class _Planner:
             if self.retained_minutes(task.id) or self.allocated(task.id):
                 self.add_reason(task.id, 'unsplit_has_sessions', 'Splitting is off, but part of this task already has a session.')
                 window = None
-            elif task.remaining > self.prefs.focus:
-                self.add_reason(task.id, 'unsplit_exceeds_focus_limit',
-                                f'Splitting is off and {task.remaining} minutes exceeds your {self.prefs.focus}-minute '
-                                'focus limit. Allow splitting or raise the limit.')
+            elif task.is_work and task.remaining > self.prefs.focus:
+                self._settings_conflict(task)
                 window = None
-            elif task.remaining > self.prefs.max_daily:
+            elif task.is_work and task.remaining > self.prefs.max_daily:
                 self.add_reason(task.id, 'unsplit_exceeds_daily_limit',
                                 f'Splitting is off and {task.remaining} minutes exceeds your daily work limit.')
                 window = None
@@ -704,15 +802,21 @@ class _Planner:
         short = need[task.id] - self.allocated(task.id)
         if short > 0 and window:
             self._explain_short(task, short, notes)
+        elif short <= 0:
+            alloc.reasons = [r for r in alloc.reasons if r.code not in {
+                'insufficient_capacity', 'daily_limit', 'no_contiguous_slot', 'beyond_planning_window'}]
         self.pending[task.id] = short > 0
 
     def _explain_short(self, task: EngineTask, short: int, notes: set[str]):
         alloc = self.allocations[task.id]
         alloc.reasons = [r for r in alloc.reasons if r.code not in {
             'insufficient_capacity', 'daily_limit', 'no_contiguous_slot', 'beyond_planning_window'}]
+        where = 'in its allowed times' if task.windows else 'in your available hours'
         if not task.allow_split:
-            self.add_reason(task.id, 'no_contiguous_slot', f'Splitting is off and no single free block of {short} minutes '
-                            'fits before the deadline within your focus and daily limits.')
+            limits = ' within your focus and daily limits' if task.is_work else ''
+            self.add_reason(task.id, 'no_contiguous_slot', f'It needs one uninterrupted block of {short} minutes and no '
+                            f'block that long was left {where} before the deadline{limits}, after events and '
+                            'higher-priority work.')
         if 'daily_limit' in notes:
             self.add_reason(task.id, 'daily_limit', f'Your daily task-work limit ({self.prefs.max_daily} min) was reached '
                             'on available days before the deadline.')
@@ -720,8 +824,8 @@ class _Planner:
             self.add_reason(task.id, 'beyond_planning_window', 'The deadline is after the planning window, so the rest can '
                             'be planned later; extend the window to plan it now.')
         elif task.allow_split:
-            self.add_reason(task.id, 'insufficient_capacity', f'{short} minutes did not fit in the free time before the '
-                            'deadline after events, breaks, limits and higher-ranked work.')
+            self.add_reason(task.id, 'insufficient_capacity', f'{short} minutes did not fit in the free time {where} before '
+                            'the deadline after events, breaks, limits and higher-priority work.')
 
     # -- repair
 
@@ -750,13 +854,13 @@ class _Planner:
                     reason = f'It overlaps "{clash.title}".'
                 elif any(overlaps(s, e, item.start, item.end) for s, e in self.rest_items):
                     reason = 'It overlaps a protected break or lunch.'
-                elif any(overlaps(w.start, w.end, item.start, item.end) for w in self.work):
+                elif any(overlaps(w.start, w.end, item.start, item.end) for w in [*self.work, *self.flex]):
                     reason = 'It overlaps fixed work.'
-                elif not any(s <= item.start and item.end <= e for s, e in self.availability):
-                    reason = 'It is outside your available hours.'
-                elif self.day_work(self.day(item.start)) + item.end - item.start > self.prefs.max_daily:
+                elif not any(s <= item.start and item.end <= e for s, e in self.allowed(task)):
+                    reason = 'It is outside your available hours.' if not task.windows else 'It is outside its allowed times.'
+                elif task.is_work and self.day_work(self.day(item.start)) + item.end - item.start > self.prefs.max_daily:
                     reason = 'It would exceed your daily work limit.'
-                elif self.run_total(item.start, item.end) > self.prefs.focus:
+                elif task.is_work and self.run_total(item.start, item.end) > self.prefs.focus:
                     reason = 'It would exceed your focus limit without a break.'
             if reason:
                 self.removals.append(Removal(item, reason))
@@ -764,17 +868,18 @@ class _Planner:
             placed = Placed(item.task_id, 'work', item.start, item.end, 'saved', False, 'auto', 'kept', id=item.id,
                             reason='Unaffected; kept as saved', title=item.title)
             self.sessions.append(placed)
-            self.work.append(_Work(item.start, item.end, item.task_id, False, ref=placed))
-            self.work.sort(key=lambda w: (w.start, w.end))
+            self._track(item.start, item.end, item.task_id, False, ref=placed)
             kept_by_task[task.id] = kept_by_task.get(task.id, 0) + item.end - item.start
 
     def _snapshot(self):
-        return (list(self.work), list(self.sessions), list(self.removals), dict(self.pending),
-                {k: list(v.reasons) for k, v in self.allocations.items()})
+        return (list(self.work), list(self.flex), list(self.sessions), list(self.removals), dict(self.pending),
+                {k: list(v.reasons) for k, v in self.allocations.items()}, list(self.conflicts), dict(self.displaced_by))
 
     def _restore(self, snap):
-        work, sessions, removals, pending, reasons = snap
-        self.work, self.sessions, self.removals, self.pending = list(work), list(sessions), list(removals), dict(pending)
+        work, flex, sessions, removals, pending, reasons, conflicts, displaced = snap
+        self.work, self.flex, self.sessions = list(work), list(flex), list(sessions)
+        self.removals, self.pending, self.conflicts = list(removals), dict(pending), list(conflicts)
+        self.displaced_by = dict(displaced)
         for k, value in reasons.items():
             self.allocations[k].reasons = list(value)
 
@@ -789,43 +894,65 @@ class _Planner:
                     return False
         return True
 
+    def score(self) -> tuple:
+        """Lexicographic objective (higher is better). Per tier High, Medium, Low: the number of fully
+        scheduled tasks; then which tasks are full, earliest deadline first (so an earlier deadline is
+        never traded for a later one); then scheduled minutes (useful partial work)."""
+        out: list = []
+        for rank in (0, 1, 2):
+            tier = sorted((t for t in self.open_tasks if PRIORITY_RANK.get(t.priority, 3) == rank
+                           and self.need.get(t.id, 0) > 0), key=self.priority_key)
+            full = tuple(int(self.short(t.id) == 0) for t in tier)
+            out += [sum(full), full, sum(min(self.need[t.id], self.allocated(t.id)) for t in tier)]
+        return tuple(out)
+
     def _displace(self, order: list[EngineTask], need: dict[str, int]):
-        """Bounded local repair: move kept sessions of lower-priority tasks when that lets more urgent work fit.
-
-        A move is accepted only when the urgent task gains minutes, the displaced task loses no more
-        than that, and dependencies still hold; otherwise the state is restored exactly.
-        """
-        def weight(t: EngineTask):
-            return PRIORITY_RANK.get(t.priority, 3), t.due, t.id
-
+        """Bounded local repair (see the module docstring). Never touches fixed or retained items."""
         attempts = 0
         for task in order:
             per_task = 0
-            while (need[task.id] - self.allocated(task.id) > 0 and per_task < MAX_REPAIR_ATTEMPTS_PER_TASK
-                   and attempts < MAX_REPAIR_ATTEMPTS and task.due > self.now and task.id not in self.cyclic):
-                victims = sorted((s for s in self.sessions if s.change == 'kept' and s.task_id in self.task_by_id
-                                  and weight(self.task_by_id[s.task_id]) > weight(task) and s.start < task.due
-                                  and s.task_id not in task.depends_on),
-                                 key=lambda s: (tuple(-x if isinstance(x, int) else x for x in weight(self.task_by_id[s.task_id])[:2]),
-                                                -s.start))
+            if task.id in self.cyclic or self.allocations[task.id].over_allocated or task.due <= self.now:
+                continue
+            while self.short(task.id) > 0 and per_task < MAX_REPAIR_ATTEMPTS_PER_TASK and attempts < MAX_REPAIR_ATTEMPTS:
+                lo, hi = self._bounds(task)
+                tier = PRIORITY_RANK.get(task.priority, 3)
+                victims = sorted(
+                    (s for s in self.sessions
+                     if s.change in {'new', 'kept'} and s.type == 'work' and s.task_id != task.id
+                     and s.task_id in self.task_by_id
+                     and PRIORITY_RANK.get(self.task_by_id[s.task_id].priority, 3) >= tier
+                     and s.task_id not in task.depends_on and overlaps(s.start, s.end, lo, hi)
+                     and any(overlaps(s.start, s.end, a, b) for a, b in self.allowed(task))),
+                    key=lambda s: (-PRIORITY_RANK.get(self.task_by_id[s.task_id].priority, 3),
+                                   -self.task_by_id[s.task_id].due, -s.start, s.task_id or ''))
                 if not victims:
                     break
-                victim = victims[0]
                 attempts += 1
                 per_task += 1
-                before = need[task.id] - self.allocated(task.id)
-                victim_before = need[victim.task_id] - self.allocated(victim.task_id)
+                before_score, before_short = self.score(), self.short(task.id)
                 snap = self._snapshot()
-                self.remove_session(victim)
-                original = next(f for f in self.flexible if f.id == victim.id)
-                self.removals.append(Removal(original, f'Moved so higher-priority "{task.title}" fits before its deadline.'))
-                self._allocate_task(task, need)
-                gained = before - (need[task.id] - self.allocated(task.id))
-                self._allocate_task(self.task_by_id[victim.task_id], need)
-                lost = (need[victim.task_id] - self.allocated(victim.task_id)) - victim_before
-                if gained <= 0 or lost > gained or not self._dependencies_hold():
+                removed: list[Placed] = []
+                for victim in victims[:MAX_VICTIMS]:
+                    self.remove_session(victim)
+                    removed.append(victim)
+                    self._allocate_task(task, need)
+                    if self.short(task.id) < before_short:
+                        break
+                if self.short(task.id) >= before_short:
                     self._restore(snap)
                     break
+                for victim_id in dict.fromkeys(v.task_id for v in removed):
+                    self._allocate_task(self.task_by_id[victim_id], need)
+                if self.score() <= before_score or not self._dependencies_hold():
+                    self._restore(snap)
+                    break
+                for victim in removed:
+                    if PRIORITY_RANK.get(self.task_by_id[victim.task_id].priority, 3) > tier:
+                        self.displaced_by.setdefault(victim.task_id, task.title)
+                    if victim.change == 'kept':
+                        original = next(f for f in self.flexible if f.id == victim.id)
+                        self.removals.append(Removal(original, f'Moved so "{task.title}" ({task.priority} priority) fits '
+                                                     'before its deadline.'))
 
     def _detect_conflicts(self):
         fixed = [('event', b.id, b.title, b.start, b.end) for b in self.event_items]
@@ -838,8 +965,10 @@ class _Planner:
                 if b[3] >= a[4]:
                     break
                 kinds = {a[0], b[0]}
-                if kinds == {'event'} or kinds == {'event', 'lunch'}:
-                    continue  # overlapping calendar events, or an event over lunch, are not AutoPlan's to resolve
+                if kinds == {'event', 'lunch'}:
+                    continue  # an event over lunch is the user's choice
+                if kinds == {'event'} and not (str(a[1]).startswith('draft:') or str(b[1]).startswith('draft:')):
+                    continue  # overlapping saved calendar events are not AutoPlan's to resolve
                 if a[1] is None and b[1] is None and 'lunch' in kinds:
                     continue
                 if 'break' in kinds and (a[1] is None or b[1] is None) and 'event' in kinds:
@@ -850,9 +979,10 @@ class _Planner:
                     [{'kind': x[0], 'id': x[1], 'title': x[2], 'start': x[3], 'end': x[4]} for x in (a, b)]))
 
     def _materialise_breaks(self):
+        busy = self.busy()
         runs: list[list[int]] = []  # [start, end, total work]
         for s, e in sorted((w.start, w.end) for w in self.work):
-            if runs and not is_rest_gap(runs[-1][1], s, self.events, self.prefs.brk):
+            if runs and not is_rest_gap(runs[-1][1], s, busy, self.prefs.brk):
                 runs[-1][1] = e
                 runs[-1][2] += e - s
             else:
@@ -864,7 +994,7 @@ class _Planner:
                 continue
             if any(s >= a_end and e <= b_start and e - s >= self.prefs.brk for s, e in self.rest_items):
                 continue  # lunch or a protected break already provides the rest
-            free = subtract([(max(a_end, self.start), b_start)], [*self.events, *self.rest_items])
+            free = subtract([(max(a_end, self.start), b_start)], [*busy, *self.rest_items])
             stretch = next(((s, e) for s, e in free if e - s >= self.prefs.brk), None)
             if stretch is None:
                 continue
@@ -886,15 +1016,32 @@ class _Planner:
 def plan_schedule(tasks: list[EngineTask], availability: Availability, prefs: Prefs, events: list[Busy],
                   existing: list[Existing], now: int, horizon_days: int = 7, mode: str = 'generate',
                   requested_break: tuple[int, int] | None = None,
-                  not_before: dict[str, int] | None = None) -> EngineResult:
+                  not_before: dict[str, int] | None = None, displace: bool = True) -> EngineResult:
     if mode not in {'generate', 'repair'}:
         raise ValueError('mode must be generate or repair')
     if prefs.focus <= 0 or prefs.brk <= 0 or prefs.max_daily <= 0:
         raise ValueError('Focus, break and daily limits must be positive.')
     zone = ZoneInfo(availability.timeZone)
     planner = _Planner(tasks, availability, prefs, zone, events, existing, now, horizon_days, mode,
-                       requested_break, not_before)
+                       requested_break, not_before, displace)
     return planner.run()
+
+
+def resolve_windows(windows, first_day: date, last_day: date, zone: ZoneInfo) -> tuple[tuple[int, int], ...]:
+    """Recurring local windows ({weekdays, start, end}; empty weekdays = every day) as absolute intervals."""
+    out = []
+    day = first_day
+    while day <= last_day:
+        for w in windows:
+            weekdays = w['weekdays'] if isinstance(w, dict) else w.weekdays
+            start = w['start'] if isinstance(w, dict) else w.start
+            end = w['end'] if isinstance(w, dict) else w.end
+            if not weekdays or day.weekday() in weekdays:
+                s, e = local_to_abs(day, start, zone), local_to_abs(day, end, zone)
+                if e > s:
+                    out.append((s, e))
+        day += timedelta(days=1)
+    return tuple(merge(out))
 
 
 def fingerprint(payload: dict) -> str:

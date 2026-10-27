@@ -2,7 +2,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app import assistant, schedule_routes
+from app import assistant, plan_routes, schedule_routes
 from firebase_tokens import sign_in
 
 NY = ZoneInfo('America/New_York')
@@ -13,6 +13,7 @@ TODAY, TOMORROW = '2026-10-26', '2026-10-27'
 def freeze(monkeypatch, moment):
     monkeypatch.setattr(schedule_routes, 'utc_now', lambda: moment.astimezone(ZoneInfo('UTC')))
     monkeypatch.setattr(assistant, 'utc_now', lambda: moment.astimezone(ZoneInfo('UTC')))
+    monkeypatch.setattr(plan_routes, 'utc_now', lambda: moment.astimezone(ZoneInfo('UTC')))
 
 
 def setup_user(client, monkeypatch, now=NOW, uid='sched-user', start=9 * 60, end=12 * 60):

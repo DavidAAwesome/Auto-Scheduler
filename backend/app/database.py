@@ -71,6 +71,9 @@ def initialize_indexes(db):
     db.users.create_index('email', name='user_email')
     db.avatars.create_index('user_id')
     db.tasks.create_index([('user_id', 1), ('deadline', 1)])
+    # A reviewed draft (owner + batch id + draft id) is saved at most once, even from two previews.
+    db.tasks.create_index('draft_key', unique=True, sparse=True, name='unique_task_draft_key')
+    db.events.create_index('draft_key', unique=True, sparse=True, name='unique_event_draft_key')
     db.availability.create_index('user_id', unique=True)
     db.plans.create_index('user_id', unique=True)
     db.sessions.create_index([('user_id', 1), ('date', 1), ('start', 1)])
