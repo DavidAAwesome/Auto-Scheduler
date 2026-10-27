@@ -1,4 +1,5 @@
-import type { SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { AIProfile, PreferenceChange, SchedulePreferences, SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
 import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
@@ -16,6 +17,7 @@ export type ParsedRequest =
   | { command: AssistantCommand }
   | { command: "request_break"; minutes: number }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
+  | { command: "update_preferences"; change: PreferenceChange; summary: string }
   | { command: "clarify"; question: string };
 
 /** The subset of the workspace store the commands need; tests pass a store built on a fake transport. */
@@ -73,10 +75,96 @@ function moveTarget(text: string, zone: string, now: Date): { at: string; label:
   return null;
 }
 
+// ---------------------------------------------------------------- personalization
+
+/** Same limits as the backend (SchedulePreferences), so a confirmed change is never rejected on save. */
+export const PREFERENCE_LIMITS = { focusMinutes: [10, 240], breakMinutes: [5, 120], maxDailyWorkMinutes: [15, 1440] } as const;
+const NOTE_MAX = 150;
+/** Words that mark a lasting preference rather than a one-time request ("I need a break now"). */
+const PREF_CUE = /\b(i (prefer|like|work best|focus best|study best)|work best|focus best|set my|change my|make my|from now on|always|by default|usually|i can only|no more than|at most)\b/i;
+const REMEMBER = /^\s*(please\s+)?remember\s+(that\s+)?(.+?)\s*\.?\s*$/i;
+
+const minutesLabel = (m: number) => (m >= 60 && m % 60 === 0 ? `${m / 60} hour${m === 60 ? "" : "s"}` : `${m} min`);
+
+function preferenceNumbers(text: string): PreferenceChange {
+  const change: PreferenceChange = {};
+  const brk = text.match(/(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\s+breaks?\b/i) ?? text.match(/\bbreaks?\b[^\d]{0,20}(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\b/i);
+  if (brk) change.breakMinutes = Number(brk[1]);
+  const focus = text.match(/(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\s+(?:of\s+)?(?:focus|focused|work|study)?\s*(?:blocks?|sessions?|sprints?|chunks?|stretches?|focus)\b/i)
+    ?? text.match(/\b(?:focus|work|study)\s*(?:blocks?|sessions?|length)?\b[^\d]{0,20}(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\b/i);
+  if (focus && !/breaks?/i.test(focus[0])) change.focusMinutes = Number(focus[1]);
+  const daily = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b[^.]{0,25}\b(?:a|per|each)\s+day\b/i);
+  if (daily) change.maxDailyWorkMinutes = Math.round(Number(daily[1]) * 60);
+  if (/\b(short(er)?|brief(er)?|concise)\b.{0,20}\b(answers?|repl(y|ies)|responses?|messages?)\b|\bkeep (it|them|answers|replies) (short|brief)\b/i.test(text)) change.replyStyle = "concise";
+  else if (/\b(more detail(ed)?|detailed|longer)\b.{0,20}\b(answers?|repl(y|ies)|responses?|explanations?)\b|\bexplain more\b/i.test(text)) change.replyStyle = "detailed";
+  if (/\b(be|sound) (more )?professional\b/i.test(text)) change.tone = "professional";
+  else if (/\b(motivate|motivating|encourage|encouraging|push) me\b|\bbe (more )?(motivating|encouraging)\b/i.test(text)) change.tone = "motivating";
+  else if (/\bbe (more )?(friendly|casual)\b/i.test(text)) change.tone = "friendly";
+  return change;
+}
+
+/**
+ * Checks a proposed change against limits and current values. Out-of-range numbers are reported, never
+ * clamped, so the user only confirms numbers they asked for. Values that already match are dropped.
+ */
+export function checkPreferenceChange(change: PreferenceChange | null | undefined, prefs: SchedulePreferences, profile: AIProfile = DEFAULT_AI_PROFILE):
+  { change: PreferenceChange; summary: string } | { change: null; summary: string } {
+  if (!change) return { change: null, summary: "Which preference should I change? For example: “I work best in 25-minute blocks”." };
+  const cleaned: PreferenceChange = {};
+  const problems: string[] = [];
+  const labels = { focusMinutes: "Focus length", breakMinutes: "Break length", maxDailyWorkMinutes: "Daily task work" } as const;
+  for (const key of Object.keys(PREFERENCE_LIMITS) as (keyof typeof PREFERENCE_LIMITS)[]) {
+    const value = change[key];
+    if (value == null) continue;
+    const [low, high] = PREFERENCE_LIMITS[key];
+    if (!Number.isInteger(value) || value < low || value > high) problems.push(`${labels[key]} must be ${minutesLabel(low)} to ${minutesLabel(high)}.`);
+    else if (value !== prefs[key]) cleaned[key] = value;
+  }
+  if (change.replyStyle && change.replyStyle !== profile.replyStyle) cleaned.replyStyle = change.replyStyle;
+  if (change.tone && change.tone !== profile.tone) cleaned.tone = change.tone;
+  const note = (change.rememberNote ?? "").trim();
+  if (note) {
+    if (note.length > NOTE_MAX) problems.push(`That note is too long to remember; keep it under ${NOTE_MAX} characters.`);
+    else if (!profile.aboutMe.toLowerCase().includes(note.toLowerCase())) cleaned.rememberNote = note;
+  }
+  if (problems.length) return { change: null, summary: problems.join(" ") };
+  const parts: string[] = [];
+  if (cleaned.focusMinutes != null) parts.push(`focus blocks ${minutesLabel(prefs.focusMinutes)} → ${minutesLabel(cleaned.focusMinutes)}`);
+  if (cleaned.breakMinutes != null) parts.push(`breaks ${minutesLabel(prefs.breakMinutes)} → ${minutesLabel(cleaned.breakMinutes)}`);
+  if (cleaned.maxDailyWorkMinutes != null) parts.push(`task work per day ${minutesLabel(prefs.maxDailyWorkMinutes)} → ${minutesLabel(cleaned.maxDailyWorkMinutes)}`);
+  if (cleaned.replyStyle) parts.push(`reply style ${profile.replyStyle} → ${cleaned.replyStyle}`);
+  if (cleaned.tone) parts.push(`tone ${profile.tone} → ${cleaned.tone}`);
+  if (cleaned.rememberNote) parts.push(`remember “${cleaned.rememberNote}”`);
+  if (!parts.length) return { change: null, summary: "That already matches your current settings, so there is nothing to change." };
+  const pacing = cleaned.focusMinutes != null || cleaned.breakMinutes != null || cleaned.maxDailyWorkMinutes != null;
+  return {
+    change: cleaned,
+    summary: `I can update your preferences: ${parts.join("; ")}. Nothing changes until you press Save.${pacing ? " After saving, generate or repair your schedule to use the new pacing." : ""}`,
+  };
+}
+
+/** A lasting preference stated in plain words ("I work best in 25-minute blocks", "remember I have class Tuesdays"), or null. */
+export function parsePreference(text: string, state: Pick<WorkspaceState, "preferences" | "aiProfile">): ParsedRequest | null {
+  const remember = text.match(REMEMBER);
+  let change: PreferenceChange;
+  if (remember) change = { rememberNote: remember[3].replace(/^i\b/i, "I") };
+  else if (PREF_CUE.test(text)) {
+    change = preferenceNumbers(text);
+    if (!Object.keys(change).length) return null;
+  } else return null;
+  const checked = checkPreferenceChange(change, state.preferences, state.aiProfile ?? DEFAULT_AI_PROFILE);
+  return checked.change ? { command: "update_preferences", change: checked.change, summary: checked.summary } : { command: "clarify", question: checked.summary };
+}
+
 /** Deterministic interpretation for requests that must never depend on a model's guess. */
-export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability">, now = new Date()): ParsedRequest | null {
+export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile">>, now = new Date()): ParsedRequest | null {
   const zone = state.availability?.timeZone ?? "UTC";
   const open = state.tasks.filter(t => !t.done);
+  // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
+  if (state.preferences) {
+    const preference = parsePreference(text, { preferences: state.preferences, aiProfile: state.aiProfile ?? DEFAULT_AI_PROFILE });
+    if (preference) return preference;
+  }
   if (BREAK.test(text)) {
     const minutes = durationMinutes(text);
     if (minutes === null) return { command: "clarify", question: "How long a break do you need? For example: “I need a 15-minute break now.”" };
@@ -114,9 +202,15 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks">): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile">>): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
+    case "update_preferences": {
+      // The server already checked it; check again against what this browser shows before offering Save.
+      if (!state.preferences) return params.preferences ? { command: "update_preferences", change: params.preferences, summary: answer.reply } : { command: "clarify", question: answer.reply };
+      const checked = checkPreferenceChange(params.preferences, state.preferences, state.aiProfile ?? DEFAULT_AI_PROFILE);
+      return checked.change ? { command: "update_preferences", change: checked.change, summary: checked.summary } : { command: "clarify", question: checked.summary };
+    }
     case "none":
       return null;
     case "clarify":
@@ -138,8 +232,22 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
 }
 
 let counter = 0;
-function reply(text: string, actions: AssistantCommand[] = []): AssistantMessage {
-  return { id: `cmd-${++counter}`, role: "assistant", text, actions };
+function reply(text: string, actions: AssistantCommand[] = [], pendingChange?: PreferenceChange): AssistantMessage {
+  return { id: `cmd-${++counter}`, role: "assistant", text, actions, ...(pendingChange ? { pendingChange } : {}) };
+}
+
+/** Saves a preference change the user confirmed with the Save button, and reports the real outcome. */
+export async function confirmPreferenceChange(change: PreferenceChange, workspace: { applyPreferenceChange(change: PreferenceChange): Promise<unknown> }): Promise<AssistantMessage> {
+  try {
+    await workspace.applyPreferenceChange(change);
+    const pacing = change.focusMinutes != null || change.breakMinutes != null || change.maxDailyWorkMinutes != null;
+    return reply(pacing
+      ? "Saved. New schedules will use this pacing. Your current saved sessions did not move; repair your schedule to apply it."
+      : "Saved. I’ll answer that way from now on. You can change this any time in Settings → AI personalization.",
+      pacing ? ["replan"] : []);
+  } catch (error) {
+    return reply(`Not saved: ${errorText(error)} Nothing was changed.`);
+  }
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "Something went wrong.");
@@ -169,6 +277,8 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
   switch (req.command) {
     case "clarify":
       return reply(req.question);
+    case "update_preferences":
+      return reply(req.summary, [], req.change);
     case "generate_schedule":
       return preview(workspace, { kind: "generate", horizonDays: PLAN_DAYS });
     case "replan":

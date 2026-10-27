@@ -27,3 +27,6 @@
 .plan-results li > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .plan-status { font-size: 11px; background: var(--notice-bg); color: var(--notice-text); padding: 4px 9px; border-radius: 20px; text-transform: capitalize; }
 .plan-status.is-scheduled { background: var(--available-bg); color: var(--available-text); }
+
+.availability-form .ai-about { display: grid; gap: 6px; margin: 14px 0; font-weight: 600; }
+.availability-form .ai-about textarea { width: 100%; resize: vertical; font: inherit; font-weight: 400; }

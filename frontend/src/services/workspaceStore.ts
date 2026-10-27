@@ -1,9 +1,19 @@
-import { DEFAULT_PREFERENCES, type ApplyResult, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
+import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type AIProfile, type ApplyResult, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
 
-export type AssistantIntent = 'show_today' | 'show_plan' | 'busy_time' | 'generate_schedule' | 'explain_unscheduled' | 'request_break' | 'replan' | 'move_task' | 'clarify' | 'none';
-export interface AssistantReply { reply: string; intent: AssistantIntent; params: { breakMinutes: number | null; taskId: string | null; notBefore: string | null }; provider: 'openai' }
+export type AssistantIntent = 'show_today' | 'show_plan' | 'busy_time' | 'generate_schedule' | 'explain_unscheduled' | 'request_break' | 'replan' | 'move_task' | 'update_preferences' | 'clarify' | 'none';
+export interface AssistantReply { reply: string; intent: AssistantIntent; params: { breakMinutes: number | null; taskId: string | null; notBefore: string | null; preferences?: PreferenceChange | null }; provider: 'openai' }
+
+/** Accepts only a well-formed profile; anything else falls back to defaults so chat never breaks on it. */
+export function normalizeProfile(value: unknown): AIProfile {
+  const v = (value ?? {}) as Partial<AIProfile>;
+  return {
+    replyStyle: v.replyStyle === 'concise' || v.replyStyle === 'detailed' ? v.replyStyle : 'balanced',
+    tone: v.tone === 'professional' || v.tone === 'motivating' ? v.tone : 'friendly',
+    aboutMe: typeof v.aboutMe === 'string' ? v.aboutMe : '',
+  };
+}
 export type Requester = <T>(path: string, options?: RequestInit) => Promise<T>;
 export interface WorkspaceState {
   status: 'idle' | 'loading' | 'ready' | 'error';
@@ -13,6 +23,8 @@ export interface WorkspaceState {
   connections: CalendarConnection[];
   availability: Availability | null;
   preferences: SchedulePreferences;
+  /** How the AI assistant talks to this user (reply style, tone, about-me notes). */
+  aiProfile: AIProfile;
   /** Version of the saved schedule; Apply is rejected when a preview was made against an older one. */
   scheduleVersion: number;
   /** A proposal from the scheduling service. It is never saved until Apply succeeds. */
@@ -22,7 +34,7 @@ export interface WorkspaceState {
   error: string;
   saving: boolean;
 }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, scheduleVersion: 0, schedulePreview: null, previewStale: false, error: '', saving: false });
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, previewStale: false, error: '', saving: false });
 export type PreviewRequest = { kind: 'generate'; horizonDays?: number } | { kind: 'repair'; horizonDays?: number; moves?: { taskId: string; notBefore: string }[] } | { kind: 'break'; minutes: number };
 
 // Injectable transport lets tests exercise request failures and account-change races.
@@ -39,8 +51,10 @@ export function createWorkspaceStore(request: Requester) {
     const current = ++generation;
     publish({ ...state, status: 'loading', error: '' });
     try {
-      const [tasks, schedule, events, connections, availability, preferences] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<Availability>('/availability'), request<SchedulePreferences>('/schedule/preferences')]);
-      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, schedulePreview: null, previewStale: false, error: '', saving: false });
+      // The AI profile is optional: if it cannot load, the workspace still opens with default personalization.
+      const profile = request<AIProfile>('/assistant/profile').then(normalizeProfile, () => DEFAULT_AI_PROFILE);
+      const [tasks, schedule, events, connections, availability, preferences, aiProfile] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<Availability>('/availability'), request<SchedulePreferences>('/schedule/preferences'), profile]);
+      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, previewStale: false, error: '', saving: false });
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
     }
@@ -133,6 +147,16 @@ export function createWorkspaceStore(request: Requester) {
     },
     savePreferences(preferences: SchedulePreferences) {
       return mutate<SchedulePreferences>('/schedule/preferences', { method: 'PUT', body: JSON.stringify(preferences) }, saved => ({ preferences: saved, ...stale() }));
+    },
+    /** Reply style, tone and about-me notes. Wording only, so a pending schedule preview stays valid. */
+    saveAIProfile(profile: AIProfile) {
+      return mutate<AIProfile>('/assistant/profile', { method: 'PUT', body: JSON.stringify(profile) }, saved => ({ aiProfile: normalizeProfile(saved) }));
+    },
+    /** Saves a change the user confirmed in chat. The server re-checks every value before saving. */
+    applyPreferenceChange(change: PreferenceChange) {
+      const pacing = change.focusMinutes != null || change.breakMinutes != null || change.maxDailyWorkMinutes != null;
+      return mutate<{ preferences: SchedulePreferences; profile: AIProfile }>('/assistant/preferences/apply', { method: 'POST', body: JSON.stringify(change) },
+        saved => ({ preferences: saved.preferences, aiProfile: normalizeProfile(saved.profile), ...(pacing ? stale() : {}) }));
     },
     /** Marks a work session completed (its minutes become completed work), reopens it, or cancels it. */
     async setSessionStatus(id: string, status: Exclude<SessionStatus, 'proposed'>) {

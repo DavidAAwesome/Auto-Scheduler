@@ -3,7 +3,8 @@ import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
-import { parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
+import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
+import type { PreferenceChange } from "../types/models";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
 import Icon from "./Icon";
@@ -101,6 +102,22 @@ export default function ChatPanel() {
     else append({ id: `${id}-a`, role: "assistant", text: reply.reply });
   }
 
+  /** Save / Not now on a proposed preference change. The buttons disappear once either is pressed. */
+  async function resolveChange(messageId: string, change: PreferenceChange, save: boolean) {
+    setMessages(previous => previous.map(m => (m.id === messageId ? { ...m, pendingChange: undefined } : m)));
+    if (!save) {
+      append({ id: `${messageId}-skip`, role: "assistant", text: "Okay, nothing was changed." });
+      return;
+    }
+    setError("");
+    setWorking("update_preferences");
+    try {
+      append(await confirmPreferenceChange(change, workspaceService));
+    } finally {
+      setWorking(null);
+    }
+  }
+
   function submit(event: FormEvent) { event.preventDefault(); void ask(input); }
 
   if (!open)
@@ -123,6 +140,12 @@ export default function ChatPanel() {
         {messages.map(m => (
           <div key={m.id} className={`bubble-group ${m.role}`}>
             <p className={`bubble ${m.role}`}>{m.text}</p>
+            {m.pendingChange && m.id === messages[messages.length - 1]?.id && (
+              <div className="chat-actions" role="group" aria-label="Confirm preference change">
+                <button className="button small" disabled={busy} onClick={() => void resolveChange(m.id, m.pendingChange!, true)}>Save preference</button>
+                <button className="button small secondary" disabled={busy} onClick={() => void resolveChange(m.id, m.pendingChange!, false)}>Not now</button>
+              </div>
+            )}
             {m.id === actionMessageId && m.actions && (
               <div className="chat-actions" role="group" aria-label="Schedule actions">
                 {m.actions
@@ -145,13 +168,14 @@ export default function ChatPanel() {
         {(working === "generate_schedule" || working === "replan" || working === "move_task") && <p className="bubble assistant muted">Building a schedule preview from your tasks, events and availability…</p>}
         {working === "request_break" && <p className="bubble assistant muted">Finding room for a protected break…</p>}
         {working === "apply_schedule" && <p className="bubble assistant muted">Saving the proposed sessions…</p>}
+        {working === "update_preferences" && <p className="bubble assistant muted">Saving your preference…</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
       </div>
       <div className="chat-prompts">
         {PROMPTS.map(p => <button key={p} className="chip" disabled={busy} onClick={() => void ask(p)}>{p}</button>)}
       </div>
       <form className="chat-input" onSubmit={submit}>
-        <input value={input} maxLength={500} onChange={e => setInput(e.target.value)} placeholder="Ask about deadlines, busy time, or plan my week…" aria-label="Message the assistant" disabled={busy} />
+        <input value={input} maxLength={500} onChange={e => setInput(e.target.value)} placeholder="Ask, plan my week, or tell me how you like to work…" aria-label="Message the assistant" disabled={busy} />
         <button className="icon-button" disabled={!input.trim() || busy} aria-label="Send"><Icon name="send" size={17} /></button>
       </form>
       <p className="chat-foot">

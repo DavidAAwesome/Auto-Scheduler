@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import ScreenHeading from "../components/ScreenHeading";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import type { Availability, AvailableDay, SchedulePreferences } from "../types/models";
+import { ABOUT_ME_MAX, type AIProfile, type AssistantTone, type Availability, type AvailableDay, type ReplyStyle, type SchedulePreferences } from "../types/models";
 import {
   cloneDays,
   emptyWeekDays,
@@ -513,8 +513,69 @@ function PreferencesForm({ initial }: { initial: SchedulePreferences }) {
   );
 }
 
+const REPLY_STYLES: { value: ReplyStyle; label: string; hint: string }[] = [
+  { value: "concise", label: "Concise", hint: "1–3 short sentences" },
+  { value: "balanced", label: "Balanced", hint: "Short, with a list when it helps" },
+  { value: "detailed", label: "Detailed", hint: "Fuller explanations with reasons" },
+];
+const TONES: { value: AssistantTone; label: string }[] = [
+  { value: "friendly", label: "Friendly" },
+  { value: "professional", label: "Professional" },
+  { value: "motivating", label: "Motivating" },
+];
+
+/** How the AI assistant talks to you. Changes wording only; the scheduler never reads these. */
+function AIProfileForm({ initial }: { initial: AIProfile }) {
+  const { saving } = useWorkspace();
+  const [replyStyle, setReplyStyle] = useState<ReplyStyle>(initial.replyStyle);
+  const [tone, setTone] = useState<AssistantTone>(initial.tone);
+  const [aboutMe, setAboutMe] = useState(initial.aboutMe);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (aboutMe.length > ABOUT_ME_MAX) return setError(`Keep “About me” under ${ABOUT_ME_MAX} characters.`);
+    setError("");
+    try {
+      await workspaceService.saveAIProfile({ replyStyle, tone, aboutMe: aboutMe.trim() });
+      setMessage("Saved. The assistant uses this from your next message.");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <form className="card availability-form" onSubmit={save} aria-label="AI personalization">
+      <fieldset disabled={saving}>
+        <legend>AI personalization</legend>
+        <p className="muted small">How the assistant talks to you. You can also tell it in chat, e.g. “keep answers short” or “remember I have class on Tuesdays”; it asks before saving anything.</p>
+        <div className="availability-meta">
+          <label>Reply style
+            <select value={replyStyle} onChange={e => { setReplyStyle(e.target.value as ReplyStyle); setMessage(""); }}>
+              {REPLY_STYLES.map(o => <option key={o.value} value={o.value}>{o.label} — {o.hint}</option>)}
+            </select>
+          </label>
+          <label>Tone
+            <select value={tone} onChange={e => { setTone(e.target.value as AssistantTone); setMessage(""); }}>
+              {TONES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+        </div>
+        <label className="ai-about">About me <span className="muted small">({aboutMe.length}/{ABOUT_ME_MAX})</span>
+          <textarea rows={3} maxLength={ABOUT_ME_MAX} value={aboutMe} placeholder="e.g. Grad student. I focus best at night. Classes Tue/Thu afternoons."
+            onChange={e => { setAboutMe(e.target.value); setMessage(""); }} />
+        </label>
+        <button className="button" type="submit">{saving ? "Saving…" : "Save AI personalization"}</button>
+      </fieldset>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <p className="task-status" role="status">{message}</p>
+    </form>
+  );
+}
+
 export default function Settings() {
-  const { availability, preferences } = useWorkspace();
+  const { availability, preferences, aiProfile } = useWorkspace();
   return (
     <>
       <ScreenHeading
@@ -529,6 +590,7 @@ export default function Settings() {
         />
       )}
       <PreferencesForm key={JSON.stringify(preferences)} initial={preferences} />
+      <AIProfileForm key={JSON.stringify(aiProfile)} initial={aiProfile} />
     </>
   );
 }

@@ -1,4 +1,4 @@
-import type { CalendarConnection, CalendarEvent, Availability, SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { CalendarConnection, CalendarEvent, Availability, PreferenceChange, SchedulePreview, Task, WorkSession } from "../types/models.ts";
 import type { AssistantCommand } from "./assistantCommands.ts";
 import { formatDate } from "../utils/dates.ts";
 import { dateInZone } from "../utils/calendar.ts";
@@ -10,6 +10,8 @@ export type AssistantMessage = {
   text: string;
   /** Buttons under the message; each runs a real command against the workspace. */
   actions?: AssistantCommand[];
+  /** A preference change waiting for the user to press Save or Not now. */
+  pendingChange?: PreferenceChange;
 };
 
 export type AssistantContext = {

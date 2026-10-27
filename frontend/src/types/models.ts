@@ -120,6 +120,23 @@ export interface SchedulePreferences {
 }
 export const DEFAULT_PREFERENCES: SchedulePreferences = { focusMinutes: 50, breakMinutes: 10, maxDailyWorkMinutes: 240, lunch: null };
 
+/** How the AI assistant talks to this user. Changes wording only, never where work is placed. */
+export type ReplyStyle = "concise" | "balanced" | "detailed";
+export type AssistantTone = "friendly" | "professional" | "motivating";
+export interface AIProfile { replyStyle: ReplyStyle; tone: AssistantTone; aboutMe: string }
+export const DEFAULT_AI_PROFILE: AIProfile = { replyStyle: "balanced", tone: "friendly", aboutMe: "" };
+export const ABOUT_ME_MAX = 400;
+
+/** A preference change the assistant proposed in chat. Nothing is saved until the user presses Save. */
+export interface PreferenceChange {
+  focusMinutes?: number | null;
+  breakMinutes?: number | null;
+  maxDailyWorkMinutes?: number | null;
+  replyStyle?: ReplyStyle | null;
+  tone?: AssistantTone | null;
+  rememberNote?: string | null;
+}
+
 export interface SavedSchedule { scheduleVersion: number; timeZone: string; sessions: ScheduleSession[] }
 
 export interface AllocationReason { code: string; message: string }

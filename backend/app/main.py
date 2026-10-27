@@ -13,6 +13,7 @@ from app.workspace import router as workspace_router
 from app.events import router as events_router
 from app.calendars import router as calendars_router
 from app.assistant import router as assistant_router
+from app.personalization import router as personalization_router
 from app.schedule_routes import router as schedule_router
 
 
@@ -70,6 +71,7 @@ def create_app(database=None):
     app.include_router(events_router)
     app.include_router(calendars_router)
     app.include_router(assistant_router)
+    app.include_router(personalization_router)
     app.include_router(schedule_router)
 
     @app.get('/')
