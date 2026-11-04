@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import {
-  createUserWithEmailAndPassword, deleteUser, onAuthStateChanged, sendPasswordResetEmail,
+  createUserWithEmailAndPassword, deleteUser, onAuthStateChanged, sendEmailVerification, sendPasswordResetEmail,
   signInWithEmailAndPassword, signInWithPopup, signOut, updateProfile, type User as FirebaseUser,
 } from 'firebase/auth';
 import { auth, firebaseConfigError, googleProvider } from '../firebase';
@@ -8,7 +8,11 @@ import { ApiError, apiRequest, apiUrl, setTokenProvider } from './api';
 import { prepareAvatar } from './avatarUpload';
 import { workspaceService } from './workspace';
 /** photoURL is what to show (uploaded avatar, else the Google photo); hasCustomAvatar is whether there's an upload to remove. */
-export interface User { id: string; name: string; email: string; photoURL: string | null; hasCustomAvatar: boolean; provider: 'google' | 'password' }
+export interface User {
+  id: string; name: string; email: string; photoURL: string | null; hasCustomAvatar: boolean; provider: 'google' | 'password';
+  /** From Firebase: whether the address is confirmed, and when the account was created (ISO), if known. */
+  emailVerified: boolean; createdAt: string | null;
+}
 type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null };
 type Session = { status: 'loading' | 'authenticated' | 'anonymous' | 'error'; user: User | null; error: string };
 let session: Session = firebaseConfigError
@@ -30,7 +34,14 @@ function toUser(profile: ServerProfile, firebaseUser: FirebaseUser): User {
     photoURL: profile.avatarUrl ? apiUrl(profile.avatarUrl) : firebaseUser.photoURL,
     hasCustomAvatar: Boolean(profile.avatarUrl),
     provider: firebaseUser.providerData.some(p => p.providerId === 'google.com') ? 'google' : 'password',
+    emailVerified: firebaseUser.emailVerified,
+    createdAt: creationTime(firebaseUser),
   };
+}
+function creationTime(firebaseUser: FirebaseUser) {
+  const value = firebaseUser.metadata?.creationTime;
+  const parsed = value ? new Date(value) : null;
+  return parsed && !Number.isNaN(parsed.valueOf()) ? parsed.toISOString() : null;
 }
 setTokenProvider(async () => auth?.currentUser ? auth.currentUser.getIdToken() : null);
 
@@ -46,7 +57,7 @@ async function syncWithServer(firebaseUser: FirebaseUser | null) {
   } catch (error) {
     if (current !== revision) return;
     const message = error instanceof ApiError && error.status === 401
-      ? 'The AutoPlan server rejected your sign-in. Check that FIREBASE_PROJECT_ID in backend/.env matches the frontend.'
+      ? 'AutoPlan couldn’t confirm your sign-in. Please try again shortly.'
       : (error as Error).message;
     publish({ status: 'error', user: null, error: message });
   }
@@ -66,7 +77,7 @@ function friendlyError(error: unknown) {
     'auth/cancelled-popup-request': 'Google sign-in was closed before finishing.',
     'auth/popup-blocked': 'Your browser blocked the Google sign-in window. Allow pop-ups and try again.',
     'auth/operation-not-allowed': 'This sign-in method is not enabled in Firebase yet.',
-    'auth/requires-recent-login': 'For security, sign out, sign back in, and then delete your account.',
+    'auth/requires-recent-login': 'For security, sign out, sign back in, and then try again.',
     'auth/network-request-failed': 'Cannot reach Firebase. Check your internet connection.',
   };
   return new Error(messages[code] ?? (error instanceof ApiError ? error.message : 'Something went wrong. Please try again.'));
@@ -105,6 +116,41 @@ export const authSession = {
   },
   async resetPassword(email: string) {
     try { await sendPasswordResetEmail(requireAuth(), email); } catch (e) { throw friendlyError(e); }
+  },
+  /** Firebase owns the display name; the API copies it from the refreshed ID token, like at sign-up. */
+  async updateName(name: string) {
+    const firebaseUser = requireAuth().currentUser;
+    if (!firebaseUser) throw new Error('Please sign in again.');
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Enter a name.');
+    if (trimmed.length > 80) throw new Error('Use 80 characters or fewer.');
+    try {
+      await updateProfile(firebaseUser, { displayName: trimmed });
+      await firebaseUser.getIdToken(true);
+    } catch (e) { throw friendlyError(e); }
+    let profile: ServerProfile;
+    try { profile = await apiRequest<ServerProfile>('/auth/me'); } catch (e) { throw friendlyError(e); }
+    publish({ status: 'authenticated', user: toUser(profile, firebaseUser), error: '' });
+  },
+  /** Sends Firebase's reset link to the signed-in address (the same flow as "Forgot password" on sign-in). */
+  async sendPasswordReset() {
+    const email = requireAuth().currentUser?.email;
+    if (!email) throw new Error('Please sign in again.');
+    try { await sendPasswordResetEmail(requireAuth(), email); } catch (e) { throw friendlyError(e); }
+    return email;
+  },
+  async sendVerificationEmail() {
+    const firebaseUser = requireAuth().currentUser;
+    if (!firebaseUser) throw new Error('Please sign in again.');
+    try { await sendEmailVerification(firebaseUser); } catch (e) { throw friendlyError(e); }
+  },
+  /** Re-reads Firebase's copy of the account, e.g. after the user clicks a verification link elsewhere. */
+  async refreshAccount() {
+    const firebaseUser = auth?.currentUser;
+    if (!firebaseUser || session.status !== 'authenticated' || !session.user) return;
+    try { await firebaseUser.reload(); } catch { return; }
+    if (session.status === 'authenticated' && session.user)
+      publish({ ...session, user: { ...session.user, emailVerified: firebaseUser.emailVerified, createdAt: creationTime(firebaseUser) } });
   },
   async logout() {
     await signOut(requireAuth());

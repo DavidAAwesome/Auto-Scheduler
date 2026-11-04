@@ -14,6 +14,7 @@ import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 import { calendarSessions, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
 import DraftReview from "./DraftReview";
+import { accountTimeZone } from "../utils/timeZones";
 
 const HOUR_HEIGHT = 48;
 const MONTH_ITEM_LIMIT = 3;
@@ -189,7 +190,7 @@ function PreviewBlock({ session, place }: { session: ScheduleSession; place: Pla
 function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
   const { tasks, sessions, events, availability, schedulePreview } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
-  const zone = availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(availability);
   const [now, setNow] = useState(() => minutesInZone(zone));
   const byDate = tasksByDate(tasks);
   const taskById = new Map(tasks.map(t => [t.id, t]));
@@ -302,7 +303,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
     && (taskById.has(i.session.taskId ?? "") || (i.kind === "proposed" && (i.session.taskId ?? "").startsWith(DRAFT_PREFIX))));
   const dates = visibleDates("month", anchor);
   const month = anchor.slice(0, 7);
-  const observances = useObservances(dates, availability?.timeZone ?? "UTC");
+  const observances = useObservances(dates, accountTimeZone(availability));
   return (
     <div className="month-grid">
       {dates.slice(0, 7).map(date => <div key={date} className="month-dow">{shortWeekday(date)}</div>)}
@@ -358,7 +359,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
 
 export default function CalendarPane({ today, ...handlers }: CalendarHandlers & { today: string }) {
   const view = useCalendarView();
-  const { connections, availability, schedulePreview, previewStale, sessions, events, saving, error } = useWorkspace();
+  const { connections, schedulePreview, previewStale, sessions, events, saving, error } = useWorkspace();
   const [scheduleError, setScheduleError] = useState("");
   const lastPreview = useRef<string | null>(null);
   const dates = visibleDates(view.mode, view.anchor);
@@ -366,7 +367,6 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
   const setMode = (mode: CalendarMode) => calendarViewStore.set({ mode, anchor: showsToday ? today : view.anchor });
   const step = (direction: 1 | -1) => calendarViewStore.set({ ...view, anchor: shiftAnchor(view.mode, view.anchor, direction) });
   const focusDate = view.mode === "day" ? view.anchor : today;
-  const zone = availability?.timeZone ?? "UTC";
   const unscheduled = schedulePreview?.tasks.filter(t => t.unallocatedMinutes > 0) ?? [];
   const added = schedulePreview?.sessions.filter(s => s.change === "new") ?? [];
   const moved = schedulePreview?.removed.filter(r => r.session.type === "work") ?? [];
@@ -420,7 +420,6 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           <button className="icon-button ghost small" aria-label="Previous" onClick={() => step(-1)}><Icon name="chevronLeft" size={18} /></button>
           <button className="icon-button ghost small" aria-label="Next" onClick={() => step(1)}><Icon name="chevronRight" size={18} /></button>
           {view.mode === "day" && <span className="range-label">{longDate(view.anchor)}</span>}
-          <span className="range-label muted small">{zone}</span>
         </div>
         <div className="calendar-actions">
           <button className="button small" disabled={saving} onClick={() => void generateSchedule()} aria-label="Generate schedule">
@@ -453,7 +452,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
       {schedulePreview && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
           <div className="schedule-preview-head">
-            <div><strong>Proposed, not saved</strong> <span className="small">{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)} ({schedulePreview.timeZone})</span></div>
+            <div><span className="preview-badge">Preview · not saved</span> <strong>{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)}</strong></div>
             <div className="schedule-preview-actions">
               <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : unscheduled.length ? "Apply partial plan" : "Apply schedule"}</button>
               <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
@@ -518,7 +517,6 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
         <span><i className="swatch available" /> Available hours</span>
         {connections.some(c => c.provider === "google") && <span><i className="swatch event source-google" /> From Google</span>}
         {connections.some(c => c.provider === "outlook") && <span><i className="swatch event source-outlook" /> From Outlook</span>}
-        <span className="muted">Click an empty time slot to plan work or add an event.</span>
       </div>
     </section>
   );

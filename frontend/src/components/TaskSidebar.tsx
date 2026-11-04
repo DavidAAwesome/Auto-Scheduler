@@ -10,6 +10,7 @@ import { selectTasks, type TaskFilter } from "../services/taskRules";
 import { allDayOn, blocksTime, eventIcon } from "../utils/events";
 import { observancesBetween } from "../utils/holidays";
 import { useShowHolidays } from "../services/uiState";
+import { accountTimeZone } from "../utils/timeZones";
 import { todayAgenda } from "../utils/schedulePreview";
 import Icon from "./Icon";
 import EventList from "./EventList";
@@ -67,7 +68,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   const hours = availability ? resolveDay(availability, today) : null;
   // Show-only items for today: holidays/clock changes AutoPlan knows, and all-day events (none block time).
   const showHolidays = useShowHolidays();
-  const marks = showHolidays ? observancesBetween(today, today, availability?.timeZone ?? "UTC") : [];
+  const marks = showHolidays ? observancesBetween(today, today, accountTimeZone(availability)) : [];
   const allDayToday = allDayOn(events, today);
   const row = (task: Task) => <TaskRow key={task.id} task={task} today={today} planned={plannedMinutes(task.id, sessions)} onOpen={onOpen} onError={setError} />;
   return (

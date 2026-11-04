@@ -1,24 +1,116 @@
-.availability-form { max-width: 920px; }
-.availability-form fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0; }
-.availability-week-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
-.availability-week-bar button { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 8px 12px; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
-.availability-week-bar button.is-active { background: var(--lavender); color: var(--primary); border-color: transparent; }
-.availability-week-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
-.availability-week-add label { display: grid; gap: 6px; font-size: 13px; }
-.availability-day { display: grid; grid-template-columns: minmax(120px, 160px) 1fr; gap: 14px; align-items: start; padding: 16px 0; border-bottom: 1px solid var(--border); }
-.availability-periods { display: grid; gap: 10px; }
-.availability-period { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
-.availability-period label, .timezone-field, .availability-week-add label { display: grid; gap: 6px; font-size: 13px; }
-.day-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; padding-top: 8px; }
-.availability-form input[type='checkbox'] { accent-color: var(--primary); }
-.availability-form input[type='text'], .availability-form input[type='date'], .availability-form select, .timezone-field input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
-.availability-form .settings-row { margin: 18px 0; }
-.availability-form input:disabled, .availability-form select:disabled { opacity: .45; }
-@media (max-width: 640px) {
-  .availability-day { grid-template-columns: 1fr; }
-  .availability-period { grid-template-columns: 1fr 1fr; }
-  .availability-period .button { grid-column: 1 / -1; }
+/* ---------- Settings: shared form controls ---------- */
+.settings-page { display: grid; gap: 16px; }
+.settings-page .screen-heading { margin-bottom: 4px; }
+.settings-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; box-shadow: var(--card-shadow); display: grid; gap: 16px; min-width: 0; }
+.settings-card-head { display: grid; gap: 2px; }
+.settings-card-head h2 { font-size: 16px; }
+.settings-grid { display: grid; gap: 16px; }
+.settings-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.field { display: grid; gap: 6px; min-width: 0; align-content: start; }
+.field > label, .switch-text label { font-size: 13px; font-weight: 600; color: var(--text); }
+.field-hint { font-size: 12px; line-height: 1.45; color: var(--muted); }
+.zone-hint { margin-top: -8px; }
+
+.settings-card select,
+.settings-card input[type='number'],
+.settings-card input[type='date'],
+.settings-card textarea {
+  width: 100%; min-width: 0; min-height: 40px; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 14px; font-variant-numeric: tabular-nums;
+  transition: border-color .15s, box-shadow .15s;
 }
+.settings-card select {
+  appearance: none; -webkit-appearance: none; padding-right: 34px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23777784' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+.settings-card select:hover:not(:disabled), .settings-card input:hover:not(:disabled), .settings-card textarea:hover:not(:disabled) { border-color: color-mix(in srgb, var(--primary) 35%, var(--border-strong)); }
+.settings-card select:focus-visible, .settings-card input[type='number']:focus-visible, .settings-card input[type='date']:focus-visible, .settings-card textarea:focus-visible {
+  outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.settings-card select:disabled, .settings-card input:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Number with its unit inside the field. */
+.input-unit { position: relative; display: flex; align-items: center; }
+.input-unit input[type='number'] { padding-right: 76px; -moz-appearance: textfield; appearance: textfield; }
+.input-unit input::-webkit-outer-spin-button, .input-unit input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.input-unit span { position: absolute; right: 12px; font-size: 13px; color: var(--muted); pointer-events: none; }
+
+/* Textarea with a quiet character counter in its corner. */
+.textarea-wrap { position: relative; }
+.settings-card textarea { resize: vertical; min-height: 96px; line-height: 1.5; padding-bottom: 26px; border-radius: 12px; }
+.char-count { position: absolute; right: 22px; bottom: 8px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; pointer-events: none; }
+.char-count.is-near { color: var(--cat-work); }
+
+/* Switch: a real checkbox (role="switch") drawn as a track and thumb. */
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 0; }
+.switch-text { display: grid; gap: 2px; min-width: 0; }
+.switch-text label { cursor: pointer; }
+input.switch {
+  appearance: none; -webkit-appearance: none; position: relative; flex-shrink: 0; width: 40px; height: 24px; margin: 0;
+  border-radius: 999px; background: var(--border-strong); cursor: pointer; transition: background .18s;
+}
+input.switch::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px #29283833; transition: transform .18s;
+}
+input.switch:checked { background: var(--primary); }
+input.switch:checked::before { transform: translateX(16px); }
+:root[data-theme="dark"] input.switch:checked::before { background: var(--on-primary); }
+input.switch:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 55%, transparent); outline-offset: 2px; }
+input.switch:disabled { opacity: .5; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { input.switch, input.switch::before { transition: none; } }
+
+/* Save row: status on the left, one primary button on the right. */
+.save-bar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.save-bar-message { margin-right: auto; min-width: 0; }
+.save-bar-message .form-error { margin: 0; }
+.save-bar .button { min-width: 150px; }
+.button.is-saved { background: var(--available-bg); color: var(--available-text); opacity: 1; }
+.save-bar .button .spinner { width: 13px; height: 13px; }
+
+/* ---------- Availability ---------- */
+.week-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.week-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.week-chips button { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.week-chips button:hover { color: var(--text); background: var(--hover); }
+.week-chips button.is-active { background: var(--lavender); color: var(--primary); border-color: transparent; }
+.week-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings-card .week-add input[type='date'] { width: auto; min-height: 32px; padding: 5px 10px; font-size: 13px; border-radius: 8px; }
+
+.day-list { border: 1px solid var(--border); border-radius: 12px; padding: 0; margin: 0; min-width: 0; }
+.day-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; align-items: start; padding: 10px 14px; }
+.day-row + .day-row { border-top: 1px solid var(--border); }
+.day-toggle { display: flex; align-items: center; gap: 10px; min-height: 36px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.day-row.is-off .day-toggle span { color: var(--muted); }
+.day-off { display: flex; align-items: center; min-height: 36px; font-size: 13px; color: var(--muted); }
+.day-periods { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.period { display: flex; align-items: center; gap: 6px; }
+.settings-card .period select { width: 118px; min-height: 36px; padding: 6px 30px 6px 10px; font-size: 13px; background-position: right 10px center; }
+.period-dash { color: var(--muted); }
+.add-period { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--primary); font-size: 12.5px; font-weight: 700; }
+.add-period:hover { background: var(--secondary-bg); }
+
+@media (max-width: 760px) {
+  .settings-grid.three { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .settings-card { padding: 16px; }
+  .settings-grid.two { grid-template-columns: 1fr; }
+  .day-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+  .day-periods { grid-column: 1 / -1; padding-left: 50px; }
+  .save-bar { flex-wrap: wrap; gap: 8px; }
+  .save-bar-message { flex-basis: 100%; margin: 0; }
+  .save-bar .button { flex: 1; }
+}
+@media (max-width: 400px) {
+  .day-periods { padding-left: 0; }
+  .settings-card .period select { width: 104px; }
+}
+
+/* ---------- Plan summaries (session form) ---------- */
 .plan-summary { margin-bottom: 20px; }
 .plan-summary p { line-height: 1.7; }
 .plan-notice { padding: 12px 16px; background: var(--notice-bg); color: var(--notice-text); border-radius: 10px; font-size: 13px; }
@@ -27,6 +119,3 @@
 .plan-results li > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .plan-status { font-size: 11px; background: var(--notice-bg); color: var(--notice-text); padding: 4px 9px; border-radius: 20px; text-transform: capitalize; }
 .plan-status.is-scheduled { background: var(--available-bg); color: var(--available-text); }
-
-.availability-form .ai-about { display: grid; gap: 6px; margin: 14px 0; font-weight: 600; }
-.availability-form .ai-about textarea { width: 100%; resize: vertical; font: inherit; font-weight: 400; }

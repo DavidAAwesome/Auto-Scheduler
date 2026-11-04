@@ -14,7 +14,8 @@ const firebaseConfig = {
 export const firebaseConfigError =
   firebaseConfig.apiKey && firebaseConfig.projectId
     ? ""
-    : "Firebase is not configured. Copy the VITE_FIREBASE_* values into frontend/.env and restart the dev server.";
+    : "Sign-in isn’t available right now. Please try again later.";
+if (firebaseConfigError) console.error("Firebase is not configured. Copy the VITE_FIREBASE_* values into frontend/.env and restart the dev server.");
 
 const app: FirebaseApp | null = firebaseConfigError
   ? null

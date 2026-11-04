@@ -108,7 +108,9 @@ def test_invalid_availability_keeps_previous_save(environment, case):
     client, _ = environment
     register(client)
     original = client.get('/availability').json()
+    assert original['saved'] is False
     assert client.put('/availability',json=original).status_code == 200
+    original['saved'] = True
     data = client.get('/availability').json()
     if case == 'reversed':
         period = data['days'][0]['periods'][0]
