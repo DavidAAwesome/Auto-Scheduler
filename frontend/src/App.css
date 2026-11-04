@@ -634,3 +634,123 @@ main:focus { outline: none; }
 .draft-link { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
 .draft-weekdays.uncertain { outline: 1px dashed var(--cat-work); border-radius: 8px; padding: 2px; }
 .draft-actions { position: static; }
+
+/* ---------- Sidebar: all events (mirrors the task list) ---------- */
+.all-events { padding-top: 14px; border-top: 1px solid var(--border); }
+.all-events h2 { font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.event-row { border-radius: 10px; }
+.event-row:hover { background: var(--hover); }
+.event-row-main { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 8px; border: 0; background: none; text-align: left; color: var(--text); border-radius: 10px; }
+.event-row small { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-row-icon { background: var(--event-soft); color: var(--event-strong); }
+.event-row-main.source-google .event-row-icon { box-shadow: inset 3px 0 0 var(--google); }
+.event-row-main.source-outlook .event-row-icon { box-shadow: inset 3px 0 0 var(--outlook); }
+.event-row.past .task-row-title { color: var(--muted); }
+.event-row.past .event-row-icon { opacity: 0.6; }
+.event-row-mark { color: var(--muted); display: grid; place-items: center; }
+.source-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.source-dot.google { background: var(--google); }
+.source-dot.outlook { background: var(--outlook); }
+.event-day + .event-day { margin-top: 4px; }
+.event-day-head { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin: 10px 4px 2px; }
+.show-more { margin: 6px 4px 0; border: 0; background: none; padding: 4px 0; color: var(--primary); font-size: 12.5px; font-weight: 700; }
+.show-more:hover { text-decoration: underline; }
+
+/* ---------- Chat composer: grows with the message, one rounded box with its controls ---------- */
+.composer {
+  margin: 0 12px 6px; display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 6px 12px; cursor: text;
+  border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface-2);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.composer:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent); background: var(--surface); }
+.composer-text {
+  width: 100%; min-height: 22px; max-height: 168px; resize: none; overflow-y: hidden; padding: 2px 0;
+  border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.composer-text:focus-visible { outline: none; }
+.composer-text::placeholder { color: var(--muted); }
+.composer-bar { display: flex; align-items: center; gap: 6px; }
+.composer-hint { flex: 1; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-hint kbd { font: inherit; font-weight: 700; padding: 0 4px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); }
+.composer-count { font-size: 11px; font-weight: 700; color: var(--notice-text); }
+.composer-send {
+  display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border: 0; border-radius: 10px;
+  background: var(--primary); color: var(--on-primary); transition: background 0.15s, transform 0.1s;
+}
+.composer-send:hover:not(:disabled) { background: var(--primary-dark); }
+.composer-send:active:not(:disabled) { transform: scale(0.94); }
+.composer-send:disabled { background: var(--hover); color: var(--muted); opacity: 1; cursor: default; }
+.composer .chat-attachment { margin: 0 0 4px; }
+@media (max-width: 760px) { .composer-text { font-size: 16px; } /* stops iOS zooming into the field */ }
+
+/* ---------- Show-only items: holidays, all-day and Free events (visible, never block time) ---------- */
+.observance-chip, .allday-chip {
+  display: flex; align-items: center; gap: 5px; width: 100%; min-width: 0; padding: 3px 7px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 600; text-align: left; border: 1px solid transparent;
+}
+.observance-chip span, .allday-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.observance-chip { background: var(--surface-2); color: var(--muted); border-color: var(--border-strong); cursor: default; }
+.observance-chip.holiday { background: var(--tone-purple-bg); color: var(--tone-purple); border-color: transparent; }
+.observance-chip.dst { background: var(--notice-bg); color: var(--notice-text); border-color: transparent; }
+.allday-chip { background: var(--event-soft); color: var(--event-strong); cursor: pointer; }
+.allday-chip:hover { border-color: var(--event); }
+.allday-chip.source-google { box-shadow: inset 3px 0 0 var(--google); }
+.allday-chip.source-outlook { box-shadow: inset 3px 0 0 var(--outlook); }
+
+.free-band {
+  position: absolute; left: 2px; right: 2px; z-index: 0; border-radius: 7px; pointer-events: none;
+  border: 1px dashed color-mix(in srgb, var(--event) 55%, transparent);
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--event) 9%, transparent) 0 6px, transparent 6px 12px);
+}
+.free-band.source-google { border-left: 3px solid var(--google); }
+.free-band.source-outlook { border-left: 3px solid var(--outlook); }
+.free-band-label {
+  pointer-events: auto; position: sticky; top: 2px; display: flex; align-items: center; gap: 4px; max-width: 100%;
+  margin: 3px; padding: 2px 6px; border: 0; border-radius: 5px; background: var(--surface); color: var(--event-strong);
+  font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 1px 2px #0000001a;
+}
+.free-band-label small { font-weight: 600; color: var(--muted); }
+.event-line.free { background: var(--event-soft); color: var(--event-strong); }
+
+.today-marks { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.today-marks li.observance-chip { width: auto; }
+
+.calendar-dot.holidays { background: conic-gradient(var(--tone-purple) 0 50%, var(--notice-text) 0); }
+.holiday-preview { list-style: none; margin: 12px 0 0 32px; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.holiday-preview span { display: inline-block; min-width: 92px; font-weight: 700; color: var(--muted); }
+.holiday-preview small { color: var(--muted); }
+
+/* Accessible on/off switch (a real checkbox underneath). */
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--border-strong); transition: background 0.15s; pointer-events: none; }
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #00000033; transition: transform 0.15s; }
+.switch input:checked + span { background: var(--primary); }
+.switch input:checked + span::after { transform: translateX(18px); }
+.switch input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: 2px; }
+.free-band-label { top: calc(var(--head-h, 0px) + 2px); }
+.allday-chip small { margin-left: auto; padding-left: 4px; font-size: 10px; font-weight: 700; color: var(--muted); flex-shrink: 0; }
+
+/* ---------- Review area above the calendar: scrolls on its own, buttons always reachable ---------- */
+.calendar-review {
+  flex: 0 1 auto; min-height: 0; max-height: 55%; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 10px; scrollbar-gutter: stable;
+}
+.calendar-review:empty { display: none; }
+.calendar-review > * { flex-shrink: 0; margin: 0; }
+/* The calendar always keeps room under the review area. */
+.calendar-pane > .time-grid, .calendar-pane > .month-grid { min-height: 240px; }
+.schedule-preview-bar { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 6px; padding: 0 12px 10px; }
+.schedule-preview-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  margin: 0 -12px; padding: 10px 12px 8px; background: var(--notice-bg); border-radius: 10px 10px 0 0;
+}
+.schedule-preview-details { min-width: 0; }
+/* Draft review: its own list no longer scrolls separately; the action row stays pinned while the area scrolls. */
+.calendar-review .draft-list { max-height: none; overflow: visible; }
+.calendar-review .draft-actions {
+  position: sticky; bottom: 0; z-index: 2; margin: 0 -14px -10px; padding: 10px 14px;
+  background: var(--surface); border-top: 1px solid var(--border); border-radius: 0 0 14px 14px;
+}
+@media (max-width: 760px) { .calendar-review { max-height: none; overflow: visible; } }

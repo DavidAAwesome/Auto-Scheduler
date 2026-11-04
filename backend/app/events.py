@@ -91,6 +91,9 @@ class EventOutput(EventInput):
     source: Literal['manual', 'google', 'outlook'] = 'manual'
     calendarName: str | None = None  # imported events: which external calendar it came from
     link: str | None = None  # imported events: open the original in Google Calendar / Outlook
+    # Show-only events (marked "Free" in Google/Outlook, or all-day) appear on the calendar but never block time.
+    busy: bool = True
+    allDay: bool = False
 
 
 class SkipInput(BaseModel):
@@ -106,7 +109,13 @@ class SkipInput(BaseModel):
 def event_output(doc):
     return EventOutput(**{field: doc.get(field) for field in EventInput.model_fields}, id=str(doc['_id']),
                        skipDates=doc.get('skipDates', []), source=doc.get('source', 'manual'),
-                       calendarName=doc.get('calendarName'), link=doc.get('link'))
+                       calendarName=doc.get('calendarName'), link=doc.get('link'),
+                       busy=doc.get('busy', True), allDay=doc.get('allDay', False))
+
+
+def blocks_time(doc):
+    """Busy, timed events block work. Free and all-day events are shown but leave the time open."""
+    return doc.get('busy', True) and not doc.get('allDay', False)
 
 
 def occurs_on(doc, day):
@@ -123,7 +132,8 @@ def event_clash(db, user_id, day, start, end):
     """The user's event occurring on `day` that overlaps [start, end), if any."""
     candidates = db.events.find({'user_id': user_id, 'date': {'$lte': day},
                                  '$or': [{'date': day}, {'repeat.until': {'$gte': day}}],
-                                 'start': {'$lt': end}, 'end': {'$gt': start}})
+                                 'start': {'$lt': end}, 'end': {'$gt': start},
+                                 'busy': {'$ne': False}, 'allDay': {'$ne': True}})
     return next((doc for doc in candidates if occurs_on(doc, day)), None)
 
 

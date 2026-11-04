@@ -78,6 +78,10 @@ export interface CalendarEvent {
   /** Imported events: the external calendar's name and a link to the original. */
   calendarName?: string | null;
   link?: string | null;
+  /** false = marked "Free" in Google/Outlook: shown, but never blocks time. Missing means busy. */
+  busy?: boolean;
+  /** All-day items (one per day, 0-1440) are shown in the calendar's all-day row and never block time. */
+  allDay?: boolean;
 }
 export type CalendarProvider = "google" | "outlook";
 /** An external calendar the user connected; its events are imported as read-only CalendarEvents. */
@@ -100,6 +104,8 @@ export interface ImportedEvent {
   location: string | null;
   calendarName: string | null;
   link: string | null;
+  busy: boolean;
+  allDay: boolean;
 }
 export type CalendarEventInput = Pick<CalendarEvent, "title" | "kind" | "date" | "start" | "end" | "location" | "repeat">;
 /** One occurrence of an event on a specific date (repeating events have many). */

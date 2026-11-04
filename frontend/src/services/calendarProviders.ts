@@ -1,7 +1,7 @@
 /** Read-only access to the user's own Google Calendar / Outlook calendar, entirely in the browser.
  * Tokens stay in memory (never sent to the AutoPlan API); only the converted events are uploaded. */
 import type { CalendarProvider, ImportedEvent } from '../types/models';
-import { fromGoogle, fromOutlook, type GoogleEvent, type OutlookEvent } from '../utils/externalCalendar';
+import { fromGoogle, fromOutlook, insideRange, type GoogleEvent, type OutlookEvent } from '../utils/externalCalendar';
 import { zonedInstant } from '../utils/planning';
 
 export const PROVIDERS: Record<CalendarProvider, { name: string; envKey: string; consoleHint: string }> = {
@@ -150,7 +150,9 @@ async function fetchOutlook(rangeStart: string, rangeEnd: string, zone: string):
 export async function fetchExternalCalendar(provider: CalendarProvider, rangeStart: string, rangeEnd: string, zone: string) {
   const problem = providerConfigError(provider);
   if (problem) throw new Error(problem);
-  return provider === 'google' ? fetchGoogle(rangeStart, rangeEnd, zone) : fetchOutlook(rangeStart, rangeEnd, zone);
+  const fetched = provider === 'google' ? await fetchGoogle(rangeStart, rangeEnd, zone) : await fetchOutlook(rangeStart, rangeEnd, zone);
+  // Multi-day events can start before the range or end after it; only the days inside it are synced.
+  return { ...fetched, events: insideRange(fetched.events, rangeStart, rangeEnd) };
 }
 
 /** Forget in-memory tokens / cached Microsoft sign-in (used on disconnect). */

@@ -7,9 +7,12 @@ import { resolveDay } from "../utils/availability";
 import { formatDate } from "../utils/dates";
 import { plannedMinutes } from "../utils/planning";
 import { selectTasks, type TaskFilter } from "../services/taskRules";
-import { eventIcon } from "../utils/events";
+import { allDayOn, blocksTime, eventIcon } from "../utils/events";
+import { observancesBetween } from "../utils/holidays";
+import { useShowHolidays } from "../services/uiState";
 import { todayAgenda } from "../utils/schedulePreview";
 import Icon from "./Icon";
+import EventList from "./EventList";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 
 function TaskRow({ task, today, planned, onOpen, onError }: { task: Task; today: string; planned: number; onOpen: (task: Task, rect: DOMRect) => void; onError: (message: string) => void }) {
@@ -62,12 +65,28 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   // Search/filter from the old Planner page. "Open" keeps completed tasks tucked under their own toggle.
   const shown = selectTasks(sorted, search.trim(), filter);
   const hours = availability ? resolveDay(availability, today) : null;
+  // Show-only items for today: holidays/clock changes AutoPlan knows, and all-day events (none block time).
+  const showHolidays = useShowHolidays();
+  const marks = showHolidays ? observancesBetween(today, today, availability?.timeZone ?? "UTC") : [];
+  const allDayToday = allDayOn(events, today);
   const row = (task: Task) => <TaskRow key={task.id} task={task} today={today} planned={plannedMinutes(task.id, sessions)} onOpen={onOpen} onError={setError} />;
   return (
     <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving}>
       <section className="today-card">
         <h2>Today’s Tasks</h2>
         <p className="today-date">{longDate(today)}</p>
+        {(marks.length > 0 || allDayToday.length > 0) && (
+          <ul className="today-marks" aria-label="All day today">
+            {marks.map(m => <li key={m.title} className={`observance-chip ${m.kind}`} title={m.note}><Icon name={m.kind === "dst" ? "clock" : "calendar"} size={12} /> <span>{m.title}</span></li>)}
+            {allDayToday.map(e => (
+              <li key={e.id}>
+                <button className={`allday-chip source-${e.source}`} onClick={ev => onOpenEvent(e, today, ev.currentTarget.getBoundingClientRect())}>
+                  <Icon name={eventIcon[e.kind]} size={12} /> <span>{e.title}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <p className={`today-hours ${hours?.enabled ? "" : "off"}`}>
           <Icon name="clock" size={14} />
           {hours?.enabled ? `Available ${hours.periods.map(p => `${clock12(p.start)} – ${clock12(p.end)}`).join(", ")}` : <>No available hours · <a href="#/settings">set hours</a></>}
@@ -82,7 +101,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                     <button className={`today-event kind-${event.kind.toLowerCase()} source-${event.source}`} onClick={e => onOpenEvent(event, today, e.currentTarget.getBoundingClientRect())}>
                       <span className="today-session-time">{clock12(event.start)}</span>
                       <span className="today-session-title"><Icon name={eventIcon[event.kind]} size={13} /> {event.title}</span>
-                      <small>{event.location ?? duration(event.end - event.start)}</small>
+                      <small>{blocksTime(event) ? event.location ?? duration(event.end - event.start) : "Free"}</small>
                     </button>
                   </li>
                 );
@@ -167,6 +186,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
           </details>
         )}
       </section>
+      <EventList today={today} onOpen={onOpenEvent} />
     </aside>
   );
 }

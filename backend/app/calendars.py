@@ -30,6 +30,8 @@ class ImportedEvent(BaseModel):
     location: str | None = Field(default=None, max_length=300)
     calendarName: str | None = Field(default=None, max_length=200)
     link: str | None = Field(default=None, max_length=2048)
+    busy: bool = True  # False when the event is marked "Free": shown, but doesn't block time
+    allDay: bool = False  # all-day items (one per day, 0-1440) are shown, never block time
 
     @field_validator('title')
     @classmethod
@@ -57,6 +59,8 @@ class ImportedEvent(BaseModel):
     def valid_range(self):
         if self.end <= self.start:
             raise ValueError('An imported event must end after it starts.')
+        if self.allDay and (self.start, self.end) != (0, 1440):
+            raise ValueError('All-day events cover the whole day (0-1440).')
         return self
 
 

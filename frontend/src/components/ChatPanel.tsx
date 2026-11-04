@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
@@ -13,6 +13,8 @@ import { draftsReply, firstOpenQuestion, IMAGE_TYPES, looksLikePlanEntry, readIm
 import type { ImageAttachment } from "../services/workspaceStore";
 import Icon from "./Icon";
 
+/** The composer grows with its text up to this height (about 8 lines), then scrolls. */
+const COMPOSER_MAX_HEIGHT = 168;
 const PROMPTS = ["Show my plan", "Plan my week", "Busy time", "Today’s tasks"];
 const ACTION_LABEL: Partial<Record<AssistantCommand, string>> = {
   generate_schedule: "Generate Schedule",
@@ -60,6 +62,7 @@ export default function ChatPanel() {
   const [image, setImage] = useState<(ImageAttachment & { url: string }) | null>(null);
   const [reading, setReading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState("");
   const [thinking, setThinking] = useState(false);
   /** The command currently awaiting a real response from the workspace, if any. */
@@ -293,7 +296,7 @@ export default function ChatPanel() {
     }
   }
 
-  function submit(event: FormEvent) { event.preventDefault(); void ask(input); }
+  function submit(event: FormEvent) { event.preventDefault(); void ask(input); composer.current?.focus(); }
 
   /** Enter sends; Shift+Enter starts a new line, so several tasks can go in one message. */
   function onKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -302,6 +305,15 @@ export default function ChatPanel() {
       void ask(input);
     }
   }
+
+  // Fit the composer to its content, wrapped lines included, so long messages stay readable.
+  useLayoutEffect(() => {
+    const box = composer.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+    box.style.overflowY = box.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  }, [input, open]);
 
   async function attach(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -381,19 +393,25 @@ export default function ChatPanel() {
       <div className="chat-prompts">
         {PROMPTS.map(p => <button key={p} className="chip" disabled={busy} onClick={() => void ask(p)}>{p}</button>)}
       </div>
-      {image && (
-        <div className="chat-attachment">
-          <img src={image.url} alt="" />
-          <span>{image.name}</span>
-          <button type="button" className="icon-button ghost small" aria-label="Remove image" onClick={() => { URL.revokeObjectURL(image.url); setImage(null); }}><Icon name="close" size={14} /></button>
-        </div>
-      )}
-      <form className="chat-input" onSubmit={submit}>
+      <form className="composer" onSubmit={submit} onClick={e => { if (e.target === e.currentTarget) composer.current?.focus(); }}>
+        {image && (
+          <div className="chat-attachment">
+            <img src={image.url} alt="" />
+            <span>{image.name}</span>
+            <button type="button" className="icon-button ghost small" aria-label="Remove image" onClick={() => { URL.revokeObjectURL(image.url); setImage(null); }}><Icon name="close" size={14} /></button>
+          </div>
+        )}
         <input ref={fileInput} type="file" accept={IMAGE_TYPES.join(",")} hidden onChange={e => void attach(e)} />
-        <button type="button" className="icon-button ghost" disabled={busy} aria-label="Attach an image, such as a timetable" title="Attach an image (JPG, PNG or WebP, up to 5 MB)" onClick={() => fileInput.current?.click()}><Icon name="image" size={17} /></button>
-        <textarea value={input} maxLength={8000} rows={Math.min(6, Math.max(1, input.split("\n").length))} onChange={e => setInput(e.target.value)} onKeyDown={onKey}
-          placeholder={planDrafts ? "Answer the question, or add more…" : "Ask, plan my week, or list tasks (one per line)…"} aria-label="Message the assistant" disabled={busy} />
-        <button className="icon-button" disabled={(!input.trim() && !image) || busy} aria-label="Send"><Icon name="send" size={17} /></button>
+        {/* Stays editable while the assistant works, so the next message can be written; only Send waits. */}
+        <textarea ref={composer} className="composer-text" value={input} maxLength={8000} rows={1} onChange={e => setInput(e.target.value)} onKeyDown={onKey}
+          placeholder={planDrafts ? "Answer the question, or add more…" : "Ask, plan my week, or list tasks (one per line)…"} aria-label="Message the assistant"
+          aria-describedby="composer-hint" />
+        <div className="composer-bar">
+          <button type="button" className="icon-button ghost small" disabled={busy} aria-label="Attach an image, such as a timetable" title="Attach an image (JPG, PNG or WebP, up to 5 MB)" onClick={() => fileInput.current?.click()}><Icon name="image" size={17} /></button>
+          <span id="composer-hint" className="composer-hint">{busy ? "Working… you can keep typing" : "Shift + Enter for a new line"}</span>
+          {input.length > 7000 && <span className="composer-count">{8000 - input.length}</span>}
+          <button className="composer-send" disabled={(!input.trim() && !image) || busy} aria-label={busy ? "Wait for the assistant to finish" : "Send"} title="Send (Enter)"><Icon name="send" size={16} /></button>
+        </div>
       </form>
       <p className="chat-foot">
         {usingOpenAI

@@ -1,7 +1,7 @@
 import type { CalendarEvent, ProposedEvent, SchedulePreview, ScheduleSession, Task, TaskAllocation } from '../types/models.ts';
 import { addDays } from './dates.ts';
 import { clock12, longDate } from './calendar.ts';
-import { occurrencesOn } from './events.ts';
+import { busyOccurrencesOn, occurrencesOn } from './events.ts';
 
 export const timeRange = (start: number, end: number) => `${clock12(start)}–${clock12(end % 1440)}`;
 const minutesLabel = (minutes: number) => (minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}` : `${minutes} min`);
@@ -157,7 +157,7 @@ export function busyItemsByDate(events: CalendarEvent[], sessions: ScheduleSessi
   for (let offset = 0; offset < days; offset++) {
     const date = addDays(startDate, offset);
     const items: BusyItem[] = [
-      ...occurrencesOn(events, date).map(({ event }) => ({
+      ...busyOccurrencesOn(events, date).map(({ event }) => ({
         kind: 'event' as const,
         title: event.title,
         start: event.start,

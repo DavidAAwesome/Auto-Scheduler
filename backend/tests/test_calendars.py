@@ -109,3 +109,37 @@ def test_calendar_data_is_private_and_removed_with_account(environment):
     sign_in(client)
     assert client.delete('/auth/account').status_code == 204
     assert db.events.count_documents({}) == 0 and db.calendar_connections.count_documents({}) == 0
+
+
+# A free, multi-day ticket event (e.g. created from a Gmail confirmation) and an all-day holiday.
+WOLFJAM = [
+    {'externalId': 'g-free', 'title': 'Wolfjam 2026', 'date': '2026-11-06', 'start': 600, 'end': 1440, 'busy': False},
+    {'externalId': 'g-free', 'title': 'Wolfjam 2026', 'date': '2026-11-07', 'start': 0, 'end': 1440, 'busy': False},
+]
+HOLIDAY = {'externalId': 'g-allday', 'title': 'Veterans Day', 'date': '2026-11-11', 'start': 0, 'end': 1440, 'allDay': True, 'busy': False}
+
+
+def test_free_and_all_day_events_are_shown_but_never_block_time(environment):
+    client, db = environment
+    user = sign_in(client)
+    task = client.post('/tasks', json={**TASK, 'deadline': '2026-11-20'}).json()
+    assert sync(client, events=[*WOLFJAM, HOLIDAY, {**DENTIST, 'date': '2026-11-06', 'start': 900, 'end': 960}]).json()['eventCount'] == 4
+    listed = {(e['title'], e['date']): e for e in client.get('/events').json()}
+    assert listed[('Wolfjam 2026', '2026-11-06')]['busy'] is False and listed[('Wolfjam 2026', '2026-11-06')]['allDay'] is False
+    assert listed[('Veterans Day', '2026-11-11')]['allDay'] is True
+    assert listed[('Dentist', '2026-11-06')]['busy'] is True  # busy is the default
+    # Planning work during a free or all-day event is fine; a busy event still blocks.
+    for date, start, end in [('2026-11-06', 660, 720), ('2026-11-07', 600, 660), ('2026-11-11', 600, 660)]:
+        assert client.post('/sessions', json={'taskId': task['id'], 'date': date, 'start': start, 'end': end}).status_code == 201, date
+    assert client.post('/sessions', json={'taskId': task['id'], 'date': '2026-11-06', 'start': 930, 'end': 990}).status_code == 409
+    # The scheduler's busy time leaves show-only events out.
+    from app.scheduling_service import expand_events
+    titles = {item['title'] for item in expand_events(db, user['id'], '2026-11-01', '2026-11-30')}
+    assert titles == {'Dentist'}
+
+
+@pytest.mark.parametrize('bad', [{**HOLIDAY, 'start': 60}, {**HOLIDAY, 'end': 1380}])
+def test_all_day_events_must_cover_the_whole_day(environment, bad):
+    client, _ = environment
+    sign_in(client)
+    assert sync(client, events=[bad]).status_code == 422

@@ -39,3 +39,7 @@ const savedChat = read('autoplan.chatOpen');
 const wide = typeof innerWidth === 'undefined' || innerWidth > 1180;
 export const chatPanelStore = createStore<boolean>(savedChat === null ? wide : savedChat === 'true', open => write('autoplan.chatOpen', String(open)));
 export function useChatPanelOpen() { return useSyncExternalStore(chatPanelStore.subscribe, chatPanelStore.get); }
+
+/** Show built-in holidays, observances and daylight-saving changes on the calendar (on by default). */
+export const holidaysStore = createStore<boolean>(read('autoplan.holidays') !== 'false', on => write('autoplan.holidays', String(on)));
+export function useShowHolidays() { return useSyncExternalStore(holidaysStore.subscribe, holidaysStore.get); }

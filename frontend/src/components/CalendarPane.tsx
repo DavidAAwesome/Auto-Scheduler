@@ -2,13 +2,14 @@ import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from
 import { DEFAULT_DUE_TIME, DRAFT_PREFIX, type CalendarEvent, type ProposedEvent, type ScheduleConflict, type ScheduleSession, type Task, type WorkSession } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import { calendarViewStore, useCalendarView } from "../services/uiState";
+import { calendarViewStore, useCalendarView, useShowHolidays } from "../services/uiState";
+import { observancesBetween, type Observance } from "../utils/holidays";
 import {
   clock12, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
 } from "../utils/calendar";
 import { resolveDay } from "../utils/availability";
 import { endsAfterDue } from "../utils/planning";
-import { eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
+import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 import { calendarSessions, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
@@ -116,6 +117,51 @@ function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date
   );
 }
 
+const SOURCE_LABEL = { manual: "", google: " · from Google Calendar", outlook: " · from Outlook" } as const;
+
+/** Holidays, observances and clock changes AutoPlan works out itself (US holidays; DST for your zone), by date. */
+function useObservances(dates: string[], zone: string) {
+  const show = useShowHolidays();
+  const byDate = new Map<string, Observance[]>();
+  if (!show || !dates.length) return byDate;
+  for (const item of observancesBetween(dates[0], dates[dates.length - 1], zone)) byDate.set(item.date, [...(byDate.get(item.date) ?? []), item]);
+  return byDate;
+}
+
+/** A holiday, observance or clock change: shown for awareness, never blocks time. */
+function ObservanceChip({ item }: { item: Observance }) {
+  return (
+    <span className={`observance-chip ${item.kind}`} title={`${item.title}${item.note ? ` · ${item.note}` : ""} · added by AutoPlan, doesn't block time`}>
+      <Icon name={item.kind === "dst" ? "clock" : "calendar"} size={12} />
+      <span>{item.title}</span>
+    </span>
+  );
+}
+
+/** An all-day item (e.g. imported birthday or trip day): shown in the all-day row, never blocks time. */
+function AllDayChip({ event, date, onOpen }: { event: CalendarEvent; date: string; onOpen: CalendarHandlers["onOpenEvent"] }) {
+  return (
+    <button className={`allday-chip source-${event.source}`} onClick={e => onOpen(event, date, e.currentTarget.getBoundingClientRect())}
+      title={`${event.title} · ${event.allDay ? "all day" : "all day, marked Free"}${SOURCE_LABEL[event.source]} · doesn't block time`}>
+      <Icon name={eventIcon[event.kind]} size={12} />
+      <span>{event.title}</span>
+      {!event.allDay && <small>Free</small>}
+    </button>
+  );
+}
+
+/** A timed event marked "Free": a light band behind everything else, so busy items and planned work sit on top. */
+function FreeBand({ event, date, onOpen }: { event: CalendarEvent; date: string; onOpen: CalendarHandlers["onOpenEvent"] }) {
+  return (
+    <div className={`free-band source-${event.source}`} style={{ top: (event.start / 60) * HOUR_HEIGHT, height: ((event.end - event.start) / 60) * HOUR_HEIGHT }}>
+      <button className="free-band-label" onClick={e => { e.stopPropagation(); onOpen(event, date, e.currentTarget.getBoundingClientRect()); }}
+        title={`${event.title} · ${range(event.start, event.end)} · marked Free${SOURCE_LABEL[event.source]}: doesn't block time`}>
+        <Icon name={eventIcon[event.kind]} size={12} /> {event.title} <small>Free</small>
+      </button>
+    </div>
+  );
+}
+
 /** A fixed event that exists only as a draft: drawn dashed until Apply saves it. */
 function ProposedEventBlock({ event, place }: { event: ProposedEvent; place: Placed }) {
   return (
@@ -147,6 +193,18 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
   const [now, setNow] = useState(() => minutesInZone(zone));
   const byDate = tasksByDate(tasks);
   const taskById = new Map(tasks.map(t => [t.id, t]));
+  const observances = useObservances(dates, zone);
+  // Free-event labels stick just below the sticky header, so they stay readable while scrolling.
+  const head = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const node = head.current, grid = scroller.current;
+    if (!node || !grid) return;
+    const update = () => grid.style.setProperty("--head-h", `${node.offsetHeight}px`);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   // The same list Today's Tasks and chat read: saved sessions, or the preview's proposed schedule on top of them.
   const shown = calendarSessions(sessions, schedulePreview);
   useEffect(() => {
@@ -167,7 +225,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
   const columns = { "--cols": dates.length } as CSSProperties;
   return (
     <div className="time-grid" ref={scroller} style={columns}>
-      <div className="grid-head">
+      <div className="grid-head" ref={head}>
         <div className="corner" />
         {dates.map(date => (
           <div key={date} className={`day-head ${date === today ? "is-today" : ""}`}>
@@ -176,9 +234,12 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
             <button className="day-add" aria-label={`Add task due ${longDate(date)}`} title="Add a task due this day" onClick={() => onAdd(date)}><Icon name="plus" size={14} /></button>
           </div>
         ))}
-        <div className="due-label">Due</div>
+        {/* All-day row: holidays and clock changes, all-day events, then tasks due that day. None of these block time. */}
+        <div className="due-label" title="Holidays, all-day events and task due dates">All day</div>
         {dates.map(date => (
           <div key={date} className="due-cell">
+            {(observances.get(date) ?? []).map(item => <ObservanceChip key={`${item.kind}-${item.title}`} item={item} />)}
+            {allDayOn(events, date).map(event => <AllDayChip key={event.id} event={event} date={date} onOpen={onOpenEvent} />)}
             {(byDate.get(date) ?? []).map(task => <TaskChip key={task.id} task={task} onOpen={onOpen} />)}
           </div>
         ))}
@@ -189,7 +250,9 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
         </div>
         {dates.map(date => {
           const hours = availability ? resolveDay(availability, date) : null;
-          const occurrences = occurrencesOn(events, date);
+          const timed = occurrencesOn(events, date);
+          const occurrences = timed.filter(o => blocksTime(o.event));
+          const free = timed.filter(o => !blocksTime(o.event));
           // Proposed work for a draft has no saved task yet; it is drawn from the preview alone.
           const onDay = shown.filter(i => i.session.date === date && (i.session.type === "break" || taskById.has(i.session.taskId ?? "")
             || (i.kind === "proposed" && (i.session.taskId ?? "").startsWith(DRAFT_PREFIX))));
@@ -205,6 +268,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
                   <span>Available {range(period.start, period.end)}</span>
                 </div>
               ))}
+              {free.map(({ event }) => <FreeBand key={`free-${event.id}`} event={event} date={date} onOpen={onOpenEvent} />)}
               {(byDate.get(date) ?? []).filter(t => !t.done && t.dueTime !== DEFAULT_DUE_TIME).map(task => (
                 <div key={task.id} className={`due-marker cat-${task.category.toLowerCase()}`} style={{ top: (task.dueTime / 60) * HOUR_HEIGHT }}>
                   <span>{task.title} due</span>
@@ -231,25 +295,31 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
 }
 
 function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarHandlers, "onOpen" | "onOpenEvent" | "onAdd"> & { anchor: string; today: string }) {
-  const { tasks, sessions, events, schedulePreview } = useWorkspace();
+  const { tasks, sessions, events, schedulePreview, availability } = useWorkspace();
   const byDate = tasksByDate(tasks);
   const taskById = new Map(tasks.map(t => [t.id, t]));
   const shown = calendarSessions(sessions, schedulePreview).filter(i => i.kind !== "removed" && i.session.type === "work"
     && (taskById.has(i.session.taskId ?? "") || (i.kind === "proposed" && (i.session.taskId ?? "").startsWith(DRAFT_PREFIX))));
   const dates = visibleDates("month", anchor);
   const month = anchor.slice(0, 7);
+  const observances = useObservances(dates, availability?.timeZone ?? "UTC");
   return (
     <div className="month-grid">
       {dates.slice(0, 7).map(date => <div key={date} className="month-dow">{shortWeekday(date)}</div>)}
       {dates.map(date => {
         const occurrences = occurrencesOn(events, date);
         const newEvents = proposedEventsOn(schedulePreview, date);
+        const marks = observances.get(date) ?? [];
+        const allDay = allDayOn(events, date);
         const due = byDate.get(date) ?? [];
         const work = shown.filter(i => i.session.date === date);
         const shownEvents = occurrences.slice(0, MONTH_ITEM_LIMIT);
         const shownDue = due.slice(0, MONTH_ITEM_LIMIT - shownEvents.length);
         const shownWork = work.slice(0, MONTH_ITEM_LIMIT - shownEvents.length - shownDue.length);
-        const hidden = occurrences.length + due.length + work.length - shownEvents.length - shownDue.length - shownWork.length;
+        // Holidays and all-day items sit above timed items; at most two, the rest count toward "+N more".
+        const topItems = [...marks.map(m => ({ kind: "mark" as const, mark: m })), ...allDay.map(e => ({ kind: "allDay" as const, event: e }))];
+        const shownTop = topItems.slice(0, 2);
+        const hidden = occurrences.length + due.length + work.length - shownEvents.length - shownDue.length - shownWork.length + topItems.length - shownTop.length;
         const draftLines = newEvents.map(e => <span key={`pe-${e.draftId}`} className={`event-line kind-${e.kind.toLowerCase()} proposed`} title="Proposed, not saved"><Icon name={eventIcon[e.kind]} size={12} /> ✦ {clock12(e.start)} {e.title}</span>);
         return (
           <div key={date} className={`month-cell ${date.slice(0, 7) === month ? "" : "other-month"} ${date === today ? "is-today" : ""}`}>
@@ -257,9 +327,12 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
               <button className="day-num" aria-label={`Open ${longDate(date)}`} onClick={() => calendarViewStore.set({ mode: "day", anchor: date })}>{Number(date.slice(8))}</button>
               <button className="day-add" aria-label={`Add task due ${longDate(date)}`} onClick={() => onAdd(date)}><Icon name="plus" size={14} /></button>
             </div>
+            {shownTop.map(item => item.kind === "mark"
+              ? <ObservanceChip key={`m-${item.mark.title}`} item={item.mark} />
+              : <AllDayChip key={`a-${item.event.id}`} event={item.event} date={date} onOpen={onOpenEvent} />)}
             {shownEvents.map(({ event }) => (
-              <button key={event.id} className={`event-line kind-${event.kind.toLowerCase()} source-${event.source}`} onClick={e => onOpenEvent(event, date, e.currentTarget.getBoundingClientRect())}>
-                <Icon name={eventIcon[event.kind]} size={12} /> {clock12(event.start)} {event.title}
+              <button key={event.id} className={`event-line kind-${event.kind.toLowerCase()} source-${event.source} ${blocksTime(event) ? "" : "free"}`} onClick={e => onOpenEvent(event, date, e.currentTarget.getBoundingClientRect())}>
+                <Icon name={eventIcon[event.kind]} size={12} /> {event.start === 0 && !blocksTime(event) ? `until ${clock12(event.end)}` : clock12(event.start)} {event.title}
               </button>
             ))}
             {draftLines}
@@ -300,7 +373,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
   const nowIso = new Date().toISOString();
   // Saved flexible work that a newer event now overlaps: offer a local repair instead of moving it silently.
   const clashing = schedulePreview ? [] : sessions.filter(s => s.type === "work" && s.status === "saved" && s.source === "auto" && !s.locked
-    && s.endAt > nowIso && occurrencesOn(events, s.date).some(o => o.event.start < s.end && o.event.end > s.start));
+    && s.endAt > nowIso && busyOccurrencesOn(events, s.date).some(o => o.event.start < s.end && o.event.end > s.start));
 
   // Show every new preview: jump to its first proposed session when that day is not on screen.
   useEffect(() => {
@@ -365,6 +438,9 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
         </div>
       </div>
+      {/* Review area: drafts, conflicts and the schedule preview scroll here, so the calendar keeps its space and
+          the Apply buttons are never pushed out of reach. */}
+      <div className="calendar-review">
       <DraftReview />
       {clashing.length > 0 && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule conflicts">
@@ -376,10 +452,16 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
       )}
       {schedulePreview && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
-          <div>
-            <strong>Proposed, not saved</strong> {longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)} ({schedulePreview.timeZone})
-            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && <>{" · "}{schedulePreview.proposedEvents!.length} new event occurrence{schedulePreview.proposedEvents!.length === 1 ? "" : "s"}</>}
-            {" · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {added.filter(s => s.type === "break").length} break{added.filter(s => s.type === "break").length === 1 ? "" : "s"}
+          <div className="schedule-preview-head">
+            <div><strong>Proposed, not saved</strong> <span className="small">{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)} ({schedulePreview.timeZone})</span></div>
+            <div className="schedule-preview-actions">
+              <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : unscheduled.length ? "Apply partial plan" : "Apply schedule"}</button>
+              <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
+            </div>
+          </div>
+          <div className="schedule-preview-details">
+            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && <>{schedulePreview.proposedEvents!.length} new event occurrence{schedulePreview.proposedEvents!.length === 1 ? "" : "s"}</>}
+            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && " · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {added.filter(s => s.type === "break").length} break{added.filter(s => s.type === "break").length === 1 ? "" : "s"}
             {moved.length > 0 && <>{" · "}{moved.length} saved session{moved.length === 1 ? "" : "s"} move</>}
             {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
               <div className="preview-days" aria-label="Scheduled days">
@@ -419,13 +501,10 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
               </ul>
             )}
           </div>
-          <div className="schedule-preview-actions">
-            <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : unscheduled.length ? "Apply partial plan" : "Apply schedule"}</button>
-            <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
-          </div>
         </div>
       )}
       {(scheduleError || error) && <p role="alert" className="form-error">{scheduleError || error}</p>}
+      </div>
       {view.mode === "month"
         ? <MonthGrid anchor={view.anchor} today={today} onOpen={handlers.onOpen} onOpenEvent={handlers.onOpenEvent} onAdd={handlers.onAdd} />
         : <TimeGrid dates={dates} today={today} {...handlers} />}

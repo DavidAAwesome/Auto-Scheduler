@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
 
-from app.events import event_output, occurs_on
+from app.events import blocks_time, event_output, occurs_on
 from app.plan_drafts import DRAFT_PREFIX, PlanDraft, draft_event, draft_event_doc, draft_task
 from app.schedule_model import (
     AllocationReason, ConflictChoice, ConflictItem, DaySummary, ProposedEvent, SavedSchedule, ScheduleConflict,
@@ -52,8 +52,10 @@ def save_preferences(db, user, prefs: SchedulePreferences) -> SchedulePreference
 # ---------------------------------------------------------------- context
 
 def expand_events(db, user_id: str, start_date: str, end_date: str, session=None) -> list[dict]:
-    """The user's events (repeats expanded) that happen between two local dates, inclusive."""
-    return expand_event_docs(list(db.events.find({'user_id': user_id}, session=session)), start_date, end_date)
+    """The user's busy events (repeats expanded) between two local dates, inclusive. Show-only events
+    (marked Free, or all-day) are left out, so the scheduler can use that time."""
+    docs = [doc for doc in db.events.find({'user_id': user_id}, session=session) if blocks_time(doc)]
+    return expand_event_docs(docs, start_date, end_date)
 
 
 def expand_event_docs(events: list[dict], start_date: str, end_date: str) -> list[dict]:

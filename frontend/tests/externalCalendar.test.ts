@@ -16,29 +16,45 @@ test('external events convert to local day blocks, split at midnight, on a 5-min
   assert.deepEqual(localSegments(new Date('2026-10-21T13:00:00Z'), new Date('2026-10-21T13:00:00Z'), NY), []);
 });
 
-test('Google: timed busy events import; all-day, free, cancelled and declined ones are skipped', () => {
+test('Google: busy events block; Free and all-day events come in show-only; cancelled and declined are skipped', () => {
   const base = { id: 'g1', summary: 'Standup', start: { dateTime: '2026-10-21T09:00:00-04:00' }, end: { dateTime: '2026-10-21T09:30:00-04:00' },
     htmlLink: 'https://calendar.google.com/event?eid=1', location: ' Zoom ' };
   assert.deepEqual(fromGoogle(base, 'Work', NY), [{ externalId: 'g1', title: 'Standup', kind: 'Other', date: '2026-10-21', start: 540, end: 570,
-    location: 'Zoom', calendarName: 'Work', link: 'https://calendar.google.com/event?eid=1' }]);
+    location: 'Zoom', calendarName: 'Work', link: 'https://calendar.google.com/event?eid=1', busy: true, allDay: false }]);
   assert.equal(fromGoogle({ ...base, attendees: [{ self: true }, {}] }, 'Work', NY)[0].kind, 'Meeting');
-  assert.deepEqual(fromGoogle({ ...base, start: { date: '2026-10-21' }, end: { date: '2026-10-22' } }, 'Work', NY), []);
-  assert.deepEqual(fromGoogle({ ...base, transparency: 'transparent' }, 'Work', NY), []);
+  assert.deepEqual(fromGoogle({ ...base, transparency: 'transparent' }, 'Work', NY).map(e => [e.busy, e.allDay]), [[false, false]]);
+  // All-day: Google's end date is exclusive, so a Nov 11 holiday is one day.
+  assert.deepEqual(fromGoogle({ ...base, start: { date: '2026-11-11' }, end: { date: '2026-11-12' } }, 'Work', NY).map(e => [e.date, e.start, e.end, e.busy, e.allDay]),
+    [['2026-11-11', 0, 1440, false, true]]);
   assert.deepEqual(fromGoogle({ ...base, status: 'cancelled' }, 'Work', NY), []);
   assert.deepEqual(fromGoogle({ ...base, attendees: [{ self: true, responseStatus: 'declined' }] }, 'Work', NY), []);
   assert.equal(fromGoogle({ ...base, summary: undefined, htmlLink: 'http://x' }, 'Work', NY)[0].title, '(No title)');
   assert.equal(fromGoogle({ ...base, htmlLink: 'http://x' }, 'Work', NY)[0].link, null);
 });
 
-test('Outlook: Graph UTC times (no Z) convert correctly; all-day, free and declined are skipped', () => {
+test('a free multi-day event from Gmail (Wolfjam) shows on each day it spans, without blocking time', () => {
+  const wolfjam = { id: 'w', summary: 'Wolfjam 2026', transparency: 'transparent', location: 'UAlbany ETEC Building',
+    start: { dateTime: '2026-11-06T10:00:00-05:00' }, end: { dateTime: '2026-11-08T16:00:00-05:00' } };
+  assert.deepEqual(fromGoogle(wolfjam, 'Calendar', NY).map(e => [e.date, e.start, e.end, e.busy]),
+    [['2026-11-06', 600, 1440, false], ['2026-11-07', 0, 1440, false], ['2026-11-08', 0, 960, false]]);
+});
+
+test('Outlook: Graph UTC times (no Z) convert; Free and all-day come in show-only; cancelled and declined are skipped', () => {
   const base = { id: 'o1', subject: 'Advisor meeting', start: { dateTime: '2026-10-23T15:00:00.0000000' }, end: { dateTime: '2026-10-23T15:45:00.0000000' },
     location: { displayName: 'Room 12' }, attendees: [{}], webLink: 'https://outlook.office365.com/owa/?itemid=1' };
   assert.deepEqual(fromOutlook(base, NY), [{ externalId: 'o1', title: 'Advisor meeting', kind: 'Meeting', date: '2026-10-23', start: 660, end: 705,
-    location: 'Room 12', calendarName: 'Outlook', link: 'https://outlook.office365.com/owa/?itemid=1' }]);
-  assert.deepEqual(fromOutlook({ ...base, isAllDay: true }, NY), []);
-  assert.deepEqual(fromOutlook({ ...base, showAs: 'free' }, NY), []);
+    location: 'Room 12', calendarName: 'Outlook', link: 'https://outlook.office365.com/owa/?itemid=1', busy: true, allDay: false }]);
+  assert.deepEqual(fromOutlook({ ...base, showAs: 'free' }, NY).map(e => e.busy), [false]);
+  const allDay = { ...base, isAllDay: true, start: { dateTime: '2026-11-26T00:00:00.0000000' }, end: { dateTime: '2026-11-28T00:00:00.0000000' } };
+  assert.deepEqual(fromOutlook(allDay, NY).map(e => [e.date, e.allDay, e.busy]), [['2026-11-26', true, false], ['2026-11-27', true, false]]);
   assert.deepEqual(fromOutlook({ ...base, isCancelled: true }, NY), []);
   assert.deepEqual(fromOutlook({ ...base, responseStatus: { response: 'declined' } }, NY), []);
+});
+
+test('only days inside the sync range are uploaded', async () => {
+  const { insideRange } = await import('../src/utils/externalCalendar.ts');
+  const days = fromGoogle({ id: 'a', summary: 'Trip', start: { date: '2026-10-14' }, end: { date: '2026-10-19' } }, 'Cal', NY);
+  assert.deepEqual(insideRange(days, '2026-10-16', '2026-12-18').map(e => e.date), ['2026-10-16', '2026-10-17', '2026-10-18']);
 });
 
 test('sync covers one week back and eight weeks ahead', () => {
