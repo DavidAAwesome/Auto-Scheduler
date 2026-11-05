@@ -827,7 +827,7 @@ class _Planner:
                 self.explanations.append(f'{task.title}: {alloc.unallocated} min unallocated '
                                          f'({", ".join(r.code for r in alloc.reasons) or "unknown"}).')
         self.sessions.sort(key=lambda s: (s.start, s.end, 0 if s.type == 'work' else 1, s.task_id or ''))
-        return EngineResult(self.start, self.window_end, self.sessions, self.removals,
+        return EngineResult(self.now, self.window_end, self.sessions, self.removals,
                             [self.allocations[t.id] for t in self.open_tasks], self.conflicts,
                             [t.id for t in order], self.explanations)
 

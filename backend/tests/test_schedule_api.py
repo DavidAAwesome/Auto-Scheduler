@@ -375,3 +375,12 @@ def test_interpret_builds_preview_through_the_same_service(environment, monkeypa
     chat = client.post('/schedule/interpret', json={'message': 'plan my week'}).json()['preview']
     strip = lambda p: [(s['startAt'], s['endAt'], s['type'], s['title']) for s in p['sessions']]
     assert strip(chat) == strip(button)
+
+
+def test_break_can_start_between_five_minute_marks(environment, monkeypatch):
+    """A break starts at the current minute, which is usually not on the 5-minute grid new work uses."""
+    client, _ = environment
+    setup_user(client, monkeypatch, now=NOW + timedelta(hours=1, minutes=3))
+    add_task(client, 'Asm', 'High')
+    proposal = preview(client, '/schedule/break', minutes=15)
+    assert [(s['start'], s['end']) for s in proposal['sessions'] if s['type'] == 'break'][0] == (9 * 60 + 3, 9 * 60 + 18)
