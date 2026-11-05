@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, mergeDrafts, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, runAssistantCommand } from '../src/services/assistantCommands.ts';
-import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, looksLikePlanEntry } from '../src/services/planEntry.ts';
+import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry } from '../src/services/planEntry.ts';
 import { calendarSessions, previewText, todayAgenda, todayText } from '../src/utils/schedulePreview.ts';
 import type {
   ApplyResult, Availability, CalendarEvent, DraftView, FeasibilityResult, InterpretResult, SchedulePreferences, SchedulePreview,
@@ -195,4 +195,19 @@ test('greetings are not taken as answers to an open draft question', () => {
 test('the no-hours notice wraps as one piece of text', () => {
   const source = readFileSync(new URL('../src/components/TaskSidebar.tsx', import.meta.url), 'utf8');
   assert.match(source, /<span>No available hours · <a href="#\/settings">set&nbsp;hours<\/a><\/span>/);
+});
+
+test('changing a draft to a fixed event clears the fields it does not have', () => {
+  assert.deepEqual(kindPatch('fixed_event'), { kind: 'fixed_event', minutes: null, deadline: null, dueTime: null, earliestStart: null });
+  assert.deepEqual(kindPatch('task'), { kind: 'task', repeat: null });
+  assert.deepEqual(kindPatch('flexible_event'), { kind: 'flexible_event', repeat: null });
+});
+
+test('a day with a time range is a new item, not a chat question or a draft answer', () => {
+  for (const text of ['Gym every Monday and Wednesday 9–5', 'Gym every Tuesday 6-7pm', 'Gym Monday 9-5', 'Yoga tomorrow 10 to 11am']) {
+    assert.equal(looksLikePlanEntry(text), true, text);
+  }
+  for (const text of ['What is on Monday?', 'show my plan', 'AM', 'Dec 12', '2-3', 'Monday']) {
+    assert.equal(looksLikePlanEntry(text), false, text);
+  }
 });

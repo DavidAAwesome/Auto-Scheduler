@@ -27,6 +27,7 @@ FIELD_LABELS = {
     'repeat.weekdays': 'weekdays', 'priority': 'priority', 'earliestStart': 'earliest start', 'location': 'location',
     'windows': 'preferred times',
 }
+NOT_FOR_FIXED_EVENTS = {'minutes', 'deadline', 'dueTime', 'earliestStart'}  # flagged by the extractor, never asked about
 WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 
@@ -126,12 +127,15 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
     if 'windows' in {*draft.unreadable, *draft.ambiguous}:
         ask('windows', f'The preferred times of "{name}" could not be read, so it can use any time you are available.',
             'warning', blocking=False)
+    def skip(field: str) -> bool:
+        return field == 'windows' or (draft.kind == 'fixed_event' and field in NOT_FOR_FIXED_EVENTS)
+
     for field in draft.unreadable:
-        if field == 'windows':
+        if skip(field):
             continue
         ask(field, f'The {FIELD_LABELS.get(field, field)} of "{name}" could not be read. What is it?', 'unreadable')
     for field in draft.ambiguous:
-        if field == 'windows':
+        if skip(field):
             continue
         if field in {'start', 'end'}:
             value = draft.start if field == 'start' else draft.end

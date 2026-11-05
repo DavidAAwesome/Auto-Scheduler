@@ -1,4 +1,4 @@
-import type { DraftView, PlanDraft } from "../types/models.ts";
+import type { DraftKind, DraftView, PlanDraft } from "../types/models.ts";
 import { clock12, longDate } from "../utils/calendar.ts";
 
 /** Same limits as the backend (plan_extraction.MAX_IMAGE_BYTES / IMAGE_SIGNATURES). */
@@ -17,18 +17,27 @@ export function emptyDraft(id: string, patch: Partial<PlanDraft> = {}): PlanDraf
 const DURATION = /\b\d+(?:\.\d+)?\s*(?:h|hrs?|hours?|m|mins?|minutes?)\b|\b(?:half an hour|an hour)\b/i;
 const WHEN = /\b(?:due|by|deadline|today|tomorrow|tonight|mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}(?::\d{2})?\s*[-–]\s*\d{1,2}(?::\d{2})?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d/i;
 const ADD = /^\s*(?:please\s+)?(?:add|create|schedule|plan|put|remind me to|i (?:need|have) to)\b/i;
+const DAY = /\b(?:today|tomorrow|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*)\b/i;
+const CLOCK_RANGE = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i;
 const QUESTION = /\?\s*$|^\s*(?:what|when|why|how|which|who|show|can you explain|explain)\b/i;
 
 /**
  * True when a chat message describes tasks or events to add (rather than asking a question): several
- * lines, or one line with a length or time plus a date, or an explicit "add …".
+ * lines, one line with a length or time plus a date, a day with a time range ("Gym every Monday 9-5"), or an
+ * explicit "add …".
  */
 export function looksLikePlanEntry(text: string) {
   const trimmed = text.trim();
   if (!trimmed || QUESTION.test(trimmed)) return false;
   const lines = trimmed.split(/\n|;/).map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) return lines.filter(l => DURATION.test(l) || WHEN.test(l)).length >= 1;
-  return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed));
+  return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed))
+    || (DAY.test(trimmed) && CLOCK_RANGE.test(trimmed));
+}
+
+/** Changing an item's kind: a fixed event has no length, deadline or "not before", and only a fixed event can repeat. */
+export function kindPatch(kind: DraftKind): Partial<PlanDraft> {
+  return kind === "fixed_event" ? { kind, minutes: null, deadline: null, dueTime: null, earliestStart: null } : { kind, repeat: null };
 }
 
 const CHATTER = /^\s*(?:hi|hello|hey|thanks|thank you|thx|ok|okay|cool|great|nice|got it|sure)\b[\s!.,]*(?:there|so much|you)?[\s!.,]*$/i;

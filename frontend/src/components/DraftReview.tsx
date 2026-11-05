@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
+import { kindPatch } from "../services/planEntry";
 import { missingSummary } from "../services/workspaceStore";
 import type { DraftIssue, DraftKind, DraftView, EventKind, FeasibilityResult, FitStatus, PlanDraft, Priority } from "../types/models";
 import { clock12 } from "../utils/calendar";
@@ -72,7 +73,7 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
           <input type="checkbox" checked={d.include} onChange={e => set({ include: e.target.checked })} />
         </label>
         <input className={`draft-title ${uncertain("title")}`} value={d.title ?? ""} placeholder="Name" maxLength={80} aria-label="Name" onChange={e => set({ title: e.target.value || null })} />
-        <select value={d.kind} aria-label="Kind" onChange={e => set({ kind: e.target.value as DraftKind, ...(e.target.value === "fixed_event" ? {} : { repeat: null }) })}>
+        <select value={d.kind} aria-label="Kind" onChange={e => set(kindPatch(e.target.value as DraftKind))}>
           {(Object.keys(KIND_LABEL) as DraftKind[]).map(k => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
         </select>
         <button className="icon-button ghost small" aria-label={`Remove ${d.title ?? "item"}`} onClick={() => workspaceService.removeDraft(d.id)}><Icon name="close" size={15} /></button>

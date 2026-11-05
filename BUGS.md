@@ -27,9 +27,11 @@ Priority: **P1** crash or wrong data, **P2** blocked flow, **P3** confusing text
 | B15 | P3 | Open | On a phone, the chat sheet covers split options and the calendar |
 | B16 | P3 | Fixed (85f8148) | Replaced sessions are listed one by one as "Moves" in a split preview |
 | B17 | P1 | Fixed (7fdee1c) | The AI can return one item twice, and both copies are saved |
-| B18 | P1 | Fixed | Saved breaks stay on the calendar after their work is gone |
+| B18 | P1 | Fixed (8fd7053) | Saved breaks stay on the calendar after their work is gone |
+| B19 | P1 | Fixed | An activity with a stated day and times becomes a flexible event |
+| B20 | P3 | Open | "Class Mon/Wed 10-11:15am until Dec 18" gets a garbled name and one date |
 
-Open: B15 only.
+Open: B15 and B20.
 
 Behavior to expect, not bugs:
 - AM/PM is still asked for "10-11:30". The app does not guess AM or PM, so the demo message gets one question; answering "AM" sets both times and the split options follow.
@@ -135,3 +137,16 @@ Reported after the bug bash.
 Expected: no breaks. Actual: "Break" blocks stayed (Thu to Sat at 9:50, 10:50, 11:50, 12:50). Cleanup ran only for
 `DELETE /tasks/{id}`, not for completing a task, deleting a session or deleting through chat. Automatic breaks are no
 longer saved, older ones are removed on load, and chat "delete breaks" now works with confirmation.
+
+### B19. An activity with a stated day and times becomes a flexible event (P1)
+Reported after the bug bash.
+1. In chat, say "Gym every Monday and Wednesday 9–5".
+
+Expected: a weekly fixed event on those days. Actual: a flexible event of 480 minutes that asks "By when should Gym
+happen?" and then says "Repeating flexible work is not supported". Without AI, the bare "9–5" was not read as a time at
+all. With a draft question open, the message could also be taken as the answer to it.
+
+### B20. Weekdays without "every" get a garbled name (P3)
+1. With no AI key, say "Class Mon/Wed 10-11:15am until Dec 18".
+
+Expected: a weekly class. Actual: a one-time event on the next Monday called "Class /Wed until Dec 18".

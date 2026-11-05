@@ -300,3 +300,100 @@ def test_an_item_the_model_returns_twice_becomes_one_draft():
                                              LlmItem(**{**lab, 'title': 'lab report '}), LlmItem(**{**lab, 'minutes': 60})])
     assert [(d.id, d.title, d.minutes) for d in drafts_from_extraction(extraction)] == [
         ('d1', 'Essay', 120), ('d2', 'Lab report', 180), ('d3', 'Lab report', 60)]
+
+
+# ------------------------------------------------------------------ set times make a fixed event
+
+def parsed(text):
+    drafts = parse_text(text, NOW, NY, {})
+    assert len(drafts) == 1
+    return drafts[0]
+
+
+@pytest.mark.parametrize('text, weekdays, start, end', [
+    ('Gym every Monday and Wednesday 9–5', [0, 2], 540, 1020),
+    ('Gym every Monday and Wednesday 9-5', [0, 2], 540, 1020),
+    ('gym every mon and wed 9 to 5', [0, 2], 540, 1020),
+    ('Gym every Friday 6-7pm', [4], 1080, 1140),
+    ('Yoga Mondays and Wednesdays 10:30-11:30am', [0, 2], 630, 690),
+])
+def test_every_weekday_with_times_is_a_weekly_fixed_event(text, weekdays, start, end):
+    draft = parsed(text)
+    assert draft.kind == 'fixed_event' and draft.repeat.weekdays == weekdays and (draft.start, draft.end) == (start, end)
+    assert (draft.minutes, draft.deadline, draft.earliestStart) == (None, None, None)
+    asked = {i.field for i in review_draft(draft, NOW, NY).issues if i.blocking}
+    assert 'deadline' not in asked and 'repeat' not in asked and asked <= {'repeat.startDate', 'repeat.until'}
+
+
+def test_a_stated_day_with_times_is_a_one_time_fixed_event():
+    draft = parsed('Gym Monday 9-5')
+    assert (draft.kind, draft.date, draft.start, draft.end, draft.repeat) == ('fixed_event', '2026-10-26', 540, 1020, None)
+    assert review_draft(draft, NOW, NY).ready
+
+
+def test_a_range_that_could_be_morning_or_evening_is_still_asked_about():
+    draft = parsed('Gym every Monday 9-10')
+    assert draft.kind == 'fixed_event' and {'start', 'end'} <= set(draft.ambiguous)
+
+
+@pytest.mark.parametrize('text, kind', [
+    ('Read chapters 2-3 by Friday', 'task'), ('Review chapters 2-3 on Friday 1 hour', 'task'),
+    ('Essay 2-3 hours due Friday', 'task'), ('gym sometime Saturday 1 hour', 'flexible_event'),
+])
+def test_numbers_that_are_not_clock_times_stay_as_they_were(text, kind):
+    draft = parsed(text)
+    assert draft.kind == kind and draft.start is None and draft.end is None
+
+
+def gym_item(**extra):
+    return LlmItem(**{**flexible_item([]).model_dump(), 'kind': 'flexible_event', 'title': 'Gym', 'minutes': 480, 'deadlineDate': None,
+                      'priority': None, 'sourceText': 'Gym every Monday and Wednesday 9–5', **extra})
+
+
+@pytest.mark.parametrize('extra', [
+    {'repeatWeekdays': [0, 2], 'startTime': '09:00', 'endTime': '17:00'},
+    {'repeatWeekdays': [0, 2], 'windows': [LlmWindow(weekdays=[0, 2], start='09:00', end='17:00')]},
+    {'windows': [LlmWindow(weekdays=[0, 2], start='09:00', end='17:00')]},
+    {'repeatWeekdays': [0, 2], 'startTime': '09:00', 'endTime': '05:00', 'ambiguousFields': ['startTime', 'endTime', 'minutes']},
+])
+def test_the_ai_reading_gym_as_flexible_becomes_a_weekly_fixed_event(extra):
+    draft = _convert_item(gym_item(**extra), 0, {})
+    assert draft.kind == 'fixed_event' and draft.repeat.weekdays == [0, 2] and (draft.start, draft.end) == (540, 1020)
+    assert (draft.minutes, draft.deadline, draft.windows, draft.ambiguous, draft.assumed) == (None, None, [], [], [])
+    issues = review_draft(draft, NOW, NY).issues
+    assert {i.field for i in issues if i.blocking} == {'repeat.startDate', 'repeat.until'}
+    assert not any('Repeating flexible' in i.question or 'By when' in i.question for i in issues)
+
+
+def test_every_weekday_with_no_time_asks_for_the_time_instead_of_refusing():
+    draft = _convert_item(gym_item(minutes=None, repeatWeekdays=[0]), 0, {})
+    assert draft.kind == 'fixed_event'
+    assert {'start', 'end'} <= {i.field for i in review_draft(draft, NOW, NY).issues if i.blocking}
+
+
+def test_the_ai_reading_a_dated_time_range_as_a_task_becomes_a_one_time_fixed_event():
+    item = gym_item(kind='task', date='2026-10-27', startTime='09:00', endTime='10:00', minutes=60, sourceText='Gym Tue 9-10am')
+    draft = _convert_item(item, 0, {})
+    assert (draft.kind, draft.date, draft.start, draft.end, draft.minutes) == ('fixed_event', '2026-10-27', 540, 600, None)
+
+
+@pytest.mark.parametrize('extra', [
+    {'minutes': 60, 'windows': [LlmWindow(weekdays=[0, 1, 2, 3, 4], start='17:00', end='21:00')], 'sourceText': 'Gym 1 hour weekday evenings', 'deadlineDate': '2026-10-30'},
+    {'minutes': 60, 'deadlineDate': '2026-10-31', 'sourceText': 'Gym 1 hour sometime Saturday'},
+])
+def test_activities_with_a_length_and_no_set_time_stay_flexible(extra):
+    assert _convert_item(gym_item(**extra), 0, {}).kind == 'flexible_event'
+
+
+def test_a_task_with_a_deadline_stays_a_task_and_still_needs_one_without():
+    assert _convert_item(flexible_item([]), 0, {}).kind == 'task'
+    no_deadline = LlmItem(**{**flexible_item([]).model_dump(), 'deadlineDate': None})
+    assert any(i.field == 'deadline' and i.blocking for i in review_draft(_convert_item(no_deadline, 0, {}), NOW, NY).issues)
+
+
+@pytest.mark.parametrize('field', ['deadline', 'minutes', 'earliestStart', 'dueTime'])
+@pytest.mark.parametrize('flag', ['unreadable', 'ambiguous'])
+def test_a_fixed_event_is_never_asked_about_fields_it_does_not_have(field, flag):
+    draft = PlanDraft(id='d1', kind='fixed_event', title='Gym', date='2026-10-27', start=540, end=600, **{flag: [field]})
+    view = review_draft(draft, NOW, NY)
+    assert view.ready and view.issues == []

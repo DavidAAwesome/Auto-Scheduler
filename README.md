@@ -176,6 +176,10 @@ Automatic breaks are not saved. The engine keeps the gap free, previews show the
 
 Loading the schedule (`GET /schedule`) removes automatic breaks saved by older versions, for the signed-in user. In chat, "delete breaks" lists your saved breaks and deletes them after you confirm (`POST /actions/delete-breaks`); if there are none, it explains the automatic ones.
 
+### Fixed or flexible
+
+Any item with a stated day and a start and end time is a fixed event, whatever the activity. "Gym every Monday and Wednesday 9–5" is a weekly fixed event on those days, and "Gym Monday 9-5" is one event. Fixed events have no length, deadline or "not before", so none of those are asked for or shown. A deadline is only asked for items without set times. A range such as "9-5" can only start in the morning and end in the afternoon, so it needs no AM/PM question; "9-10" does. Weekly events still need a first and last date.
+
 ### Preferred times
 
 An item's preferred times (for example “weekday evenings”) are optional. Without them it can use any time you are available. Times the AI could not read are dropped with a note on the draft; they never block it. When given, they are limits: work is placed only inside them. (In the API and code the field is `windows`.)
