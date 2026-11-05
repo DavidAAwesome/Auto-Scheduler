@@ -3,7 +3,7 @@ import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
-import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
+import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, splitFromEntry, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
 import type { PendingAction, PreferenceChange } from "../types/models";
 import { BUTTONS, CANCEL, CONFIRM, chosen, openActions, parseSelection, resolveConfirm } from "../services/pendingActions";
 import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
@@ -69,6 +69,8 @@ export default function ChatPanel() {
   const [working, setWorking] = useState<ParsedRequest["command"] | null>(null);
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
+  /** A message asked for split options after its items; shown once those drafts are ready. */
+  const splitAfterDrafts = useRef(false);
   const context = { tasks, sessions, events, availability, connections, schedulePreview };
   const welcome = buildWelcome(context);
   const busy = thinking || working !== null || saving || reading || planBusy;
@@ -181,7 +183,16 @@ export default function ChatPanel() {
       const result = await workspaceService.interpretPlan(text, attachment ? { mediaType: attachment.mediaType, dataBase64: attachment.dataBase64, name: attachment.name } : null);
       if (attachment) URL.revokeObjectURL(attachment.url);
       append({ id: `${id}-a`, role: "assistant", text: draftsReply(result.drafts, result.provider, result.notes) });
+      if (splitAfterDrafts.current) {
+        if (firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? [])) {
+          append({ id: `${id}-s`, role: "assistant", text: "I’ll show the ways to split them as soon as that’s answered." });
+        } else {
+          splitAfterDrafts.current = false;
+          await run({ command: "split_options", target: "drafts" });
+        }
+      }
     } catch (e) {
+      splitAfterDrafts.current = false;
       setInput(text);
       setImage(attachment);
       setError((e as Error).message);
@@ -198,6 +209,12 @@ export default function ChatPanel() {
       const updated = await workspaceService.clarifyDraft(open.draftId, open.field, text);
       const next = firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? []);
       const title = updated.draft.title ?? "that item";
+      if (!next && splitAfterDrafts.current) {
+        splitAfterDrafts.current = false;
+        append({ id: `${id}-a`, role: "assistant", text: `Updated “${title}”. Every draft has what it needs.` });
+        await run({ command: "split_options", target: "drafts" });
+        return;
+      }
       append({ id: `${id}-a`, role: "assistant", text: next
         ? `Updated “${title}”. Next: ${next.question}`
         : `Updated “${title}”. Every draft has what it needs. Use “Can this fit?” or “Preview on calendar”; nothing is saved until you Apply.` });
@@ -221,6 +238,13 @@ export default function ChatPanel() {
     setError("");
 
     if (!attachment && await typedReply(text, id)) return;
+    if (!workspaceService.getSnapshot().planDrafts) splitAfterDrafts.current = false;
+    // "Essay 2h due Fri, show me ways to split it": read the items, then show the options once they are ready.
+    const { entry, wantsSplit } = splitFromEntry(text);
+    if (wantsSplit && (attachment || looksLikePlanEntry(entry))) {
+      splitAfterDrafts.current = true;
+      return interpret(entry, id, attachment);
+    }
     // Images and multi-item messages always become drafts; a single line is checked for commands first.
     const multiline = text.split(/\n/).filter(l => l.trim()).length > 1;
     if (attachment || (multiline && looksLikePlanEntry(text))) return interpret(text, id, attachment);

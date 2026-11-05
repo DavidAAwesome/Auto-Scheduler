@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, type AssistantReply, type Requester } from '../src/services/workspaceStore.ts';
-import { parseRequest, requestFromIntent, runAssistantCommand } from '../src/services/assistantCommands.ts';
+import { parseRequest, requestFromIntent, runAssistantCommand, splitFromEntry } from '../src/services/assistantCommands.ts';
 import { activeSplitOptions, calendarSessions, previewText, splitOptionSessions, splitOptionSummary, splitOptionWarnings } from '../src/utils/schedulePreview.ts';
 import type { Availability, DraftView, PlanDraft, SavedSchedule, SchedulePreferences, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task } from '../src/types/models.ts';
 
@@ -159,4 +159,17 @@ test('chat: running it previews the first option and offers Apply, with no times
   assert.match(message.text, /Here are 2 ways to split Asm\. Not saved yet/);
   assert.deepEqual(message.actions, ['apply_schedule', 'cancel_schedule']);
   assert.equal(workspace.getSnapshot().schedulePreview?.previewId, 'preview-front_loaded');
+});
+
+test('a split request after new items is separated from them', () => {
+  const items = 'Study for calculus 4h due Thu noon high priority; lab report 3h due Sat; class Tue 10-11:30';
+  assert.deepEqual(splitFromEntry(`${items}, show me ways to split them`), { entry: items, wantsSplit: true });
+  assert.deepEqual(splitFromEntry(`${items} and compare ways to split them.`), { entry: items, wantsSplit: true });
+  assert.deepEqual(splitFromEntry(`${items}; split them`), { entry: items, wantsSplit: true });
+});
+
+test('items that only mention splitting or showing stay whole', () => {
+  for (const text of ['Essay 2h due Friday', 'Show and tell prep 1h due Friday', 'Lab, split the work with Sam 2h due Fri', 'show me different ways to split them']) {
+    assert.deepEqual(splitFromEntry(text), { entry: text, wantsSplit: false });
+  }
 });

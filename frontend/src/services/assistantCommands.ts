@@ -75,6 +75,7 @@ const SPLIT_OPTIONS = new RegExp([
   String.raw`\bhow (?:should|can|could|would|do|to)\b.*\b${SPLIT_VERB}\b`,
   String.raw`^\s*(?:please\s+|can you\s+|could you\s+)?${SPLIT_VERB}\s+(?:them|it|these|those|this|that|my tasks?|the tasks?)\b`,
 ].join("|"), "i");
+const TRAILING_REQUEST = /(?:[,;.\n]\s*|\s+(?:and|then)\s+)((?:(?:and|then|also|please)\s+)*(?:show|give|compare|list|what|how|can you|could you|split|divide|break)\b[^,;\n]*)[.!?]?\s*$/i;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
 function durationMinutes(text: string): number | null {
@@ -210,6 +211,13 @@ export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
   if (close.length === 1 && !exact.length) return { command: "pick_tasks", prompt: `Did you mean this task? Reply 1 to choose it.`, options: [label(close[0])] };
   if (!close.length) return { command: "pick_tasks", prompt: `I couldn’t find a task named “${name}”. Which one should I delete?`, options: open.slice(0, 12).map(label) };
   return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
+}
+
+/** Separates a trailing "show me ways to split them" from the items before it, so it is not read as part of an item. */
+export function splitFromEntry(text: string) {
+  const match = text.match(TRAILING_REQUEST);
+  if (!match || !SPLIT_OPTIONS.test(match[1])) return { entry: text, wantsSplit: false };
+  return { entry: text.slice(0, match.index).trim(), wantsSplit: true };
 }
 
 /** What a request to compare splits refers to: tasks it names, else the drafts under review, else the open tasks. */
