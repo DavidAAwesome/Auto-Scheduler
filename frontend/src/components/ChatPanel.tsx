@@ -9,7 +9,7 @@ import { BUTTONS, CANCEL, CONFIRM, chosen, openActions, parseSelection, resolveC
 import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
 import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
-import { draftsReply, firstOpenQuestion, IMAGE_TYPES, looksLikePlanEntry, readImage } from "../services/planEntry";
+import { draftsReply, firstOpenQuestion, IMAGE_TYPES, isChatter, looksLikePlanEntry, readImage } from "../services/planEntry";
 import type { ImageAttachment } from "../services/workspaceStore";
 import Icon from "./Icon";
 
@@ -255,7 +255,7 @@ export default function ChatPanel() {
     }
     if (looksLikePlanEntry(text)) return interpret(text, id, null);
     const open = firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? []);
-    if (open && !/\?\s*$/.test(text)) return answer(text, id, open);
+    if (open && !/\?\s*$/.test(text) && !isChatter(text)) return answer(text, id, open);
 
     let reply: Awaited<ReturnType<typeof workspaceService.chatAssistant>>;
     setThinking(true);

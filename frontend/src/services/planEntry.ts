@@ -31,6 +31,10 @@ export function looksLikePlanEntry(text: string) {
   return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed));
 }
 
+const CHATTER = /^\s*(?:hi|hello|hey|thanks|thank you|thx|ok|okay|cool|great|nice|got it|sure)\b[\s!.,]*(?:there|so much|you)?[\s!.,]*$/i;
+/** A greeting or acknowledgement is not an answer to the draft question that happens to be open. */
+export function isChatter(text: string) { return CHATTER.test(text); }
+
 /** One line per draft for chat: what was read, with deadlines kept apart from fixed times. */
 export function draftLine(d: PlanDraft) {
   const name = d.title ?? "Untitled";

@@ -185,3 +185,9 @@ test('draft lines in chat use readable dates', () => {
   assert.equal(draftLine(emptyDraft('d2', { kind: 'fixed_event', title: 'Class', date: '2026-11-10', start: 600, end: 690 })),
     'Class: fixed event, Tue, Nov 10, 2026, 10 AM–11:30 AM');
 });
+
+
+test('greetings are not taken as answers to an open draft question', () => {
+  for (const text of ['hello', 'Hi!', 'thanks', 'thank you', 'ok', 'Great.']) assert.equal(isChatter(text), true, text);
+  for (const text of ['AM', 'Dec 12', '90 min', 'Okay Corral visit', 'Hello Kitty party']) assert.equal(isChatter(text), false, text);
+});
