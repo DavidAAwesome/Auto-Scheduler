@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { CalendarEvent, Task, WorkSession } from "../types/models";
+import type { CalendarEvent, ScheduleSession, Task, WorkSession } from "../types/models";
 import TaskSidebar from "../components/TaskSidebar";
 import CalendarPane from "../components/CalendarPane";
 import ChatPanel from "../components/ChatPanel";
@@ -8,6 +8,7 @@ import SessionForm from "../components/SessionForm";
 import EventForm from "../components/EventForm";
 import TaskPopover from "../components/TaskPopover";
 import EventPopover from "../components/EventPopover";
+import BreakPopover from "../components/BreakPopover";
 import SlotMenu from "../components/SlotMenu";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { accountToday } from "../utils/timeZones";
@@ -25,6 +26,7 @@ export default function Home() {
   const [eventForm, setEventForm] = useState<EventFormState>(null);
   const [selected, setSelected] = useState<{ id: string; rect: DOMRect; sessionId?: string } | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<{ id: string; date: string; rect: DOMRect } | null>(null);
+  const [selectedBreak, setSelectedBreak] = useState<{ session: ScheduleSession; rect: DOMRect } | null>(null);
   const [slot, setSlot] = useState<{ date: string; start: number; rect: DOMRect } | null>(null);
   const [status, setStatus] = useState("");
   const today = accountToday(availability);
@@ -32,12 +34,13 @@ export default function Home() {
   const selectedTask = selected && tasks.find(t => t.id === selected.id);
   const openEvent = selectedEvent && events.find(e => e.id === selectedEvent.id);
   const toast = (message: string) => { setStatus(message); setTimeout(() => setStatus(""), 2500); };
-  const closeFloating = () => { setSelected(null); setSelectedEvent(null); setSlot(null); };
+  const closeFloating = () => { setSelected(null); setSelectedEvent(null); setSelectedBreak(null); setSlot(null); };
   const editTask = (task: Task) => { closeFloating(); setTaskForm({ task }); };
   const plan = (state: NonNullable<SessionFormState>) => { closeFloating(); setSessionForm(state); };
   const addEvent = (state: NonNullable<EventFormState>) => { closeFloating(); setEventForm(state); };
   const showTask = (task: Task, rect: DOMRect, sessionId?: string) => { closeFloating(); setSelected({ id: task.id, rect, sessionId }); };
   const showEvent = (event: CalendarEvent, date: string, rect: DOMRect) => { closeFloating(); setSelectedEvent({ id: event.id, date, rect }); };
+  const showBreak = (session: ScheduleSession, rect: DOMRect) => { closeFloating(); setSelectedBreak({ session, rect }); };
   return (
     <div className="home-layout">
       <TaskSidebar
@@ -47,11 +50,13 @@ export default function Home() {
         onOpen={showTask}
         onOpenSession={showTask}
         onOpenEvent={showEvent}
+        onOpenBreak={showBreak}
       />
       <CalendarPane
         today={today}
         onOpen={showTask}
         onOpenEvent={showEvent}
+        onOpenBreak={showBreak}
         onAdd={deadline => setTaskForm({ deadline })}
         onSlot={(date, start, rect) => { closeFloating(); setSlot({ date, start, rect }); }}
         onPlan={date => plan({ date })}
@@ -71,6 +76,7 @@ export default function Home() {
       {openEvent && (
         <EventPopover event={openEvent} date={selectedEvent.date} anchor={selectedEvent.rect} onClose={() => setSelectedEvent(null)} onEdit={event => addEvent({ event })} />
       )}
+      {selectedBreak && <BreakPopover session={selectedBreak.session} anchor={selectedBreak.rect} onClose={() => setSelectedBreak(null)} />}
       {slot && (
         <SlotMenu
           date={slot.date}

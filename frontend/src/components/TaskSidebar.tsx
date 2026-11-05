@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DEFAULT_DUE_TIME, type CalendarEvent, type Task } from "../types/models";
+import { DEFAULT_DUE_TIME, type CalendarEvent, type ScheduleSession, type Task } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { clock12, longDate } from "../utils/calendar";
@@ -43,13 +43,14 @@ function TaskRow({ task, today, planned, onOpen, onError }: { task: Task; today:
   );
 }
 
-export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSession, onOpenEvent }: {
+export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSession, onOpenEvent, onOpenBreak }: {
   today: string;
   onAdd: () => void;
   onAddEvent: () => void;
   onOpenEvent: (event: CalendarEvent, date: string, rect: DOMRect) => void;
   onOpen: (task: Task, rect: DOMRect) => void;
   onOpenSession: (task: Task, rect: DOMRect, sessionId: string) => void;
+  onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
 }) {
   const { tasks, sessions, events, availability, schedulePreview, saving } = useWorkspace();
   const [error, setError] = useState("");
@@ -135,13 +136,16 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                 );
               }
               if (s.type === "break" || !task) {
+                const content = <>
+                  <span className="today-session-time">{clock12(s.start)}</span>
+                  <span className="today-session-title">{s.locked ? "Protected break" : "Break"}</span>
+                  <small>{duration(s.end - s.start)}{proposed ? " · proposed" : ""}</small>
+                </>;
                 return (
                   <li key={s.id}>
-                    <span className={`today-break ${proposed ? "proposed" : ""}`}>
-                      <span className="today-session-time">{clock12(s.start)}</span>
-                      <span className="today-session-title">{s.locked ? "Protected break" : "Break"}</span>
-                      <small>{duration(s.end - s.start)}{proposed ? " · proposed" : ""}</small>
-                    </span>
+                    {proposed || s.type !== "break"
+                      ? <span className={`today-break ${proposed ? "proposed" : ""}`}>{content}</span>
+                      : <button className="today-break" onClick={e => onOpenBreak(s, e.currentTarget.getBoundingClientRect())}>{content}</button>}
                   </li>
                 );
               }

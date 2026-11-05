@@ -24,6 +24,8 @@ export interface CalendarHandlers {
   onOpen: (task: Task, rect: DOMRect, sessionId?: string) => void;
   /** Open one occurrence of an event. */
   onOpenEvent: (event: CalendarEvent, date: string, rect: DOMRect) => void;
+  /** Open a saved break (to delete it). */
+  onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
   /** Add a task due on `date`. */
   onAdd: (date: string) => void;
   /** An empty time slot was clicked: offer to plan work or add an event there. */
@@ -75,19 +77,24 @@ function SessionBlock({ session, task, place, onOpen }: { session: WorkSession; 
 }
 
 /** A break, saved or proposed. Breaks are reserved time: work is never placed on top of them. */
-function BreakBlock({ item, place }: { item: CalendarItem; place: Placed }) {
+function BreakBlock({ item, place, onOpen }: { item: CalendarItem; place: Placed; onOpen: CalendarHandlers["onOpenBreak"] }) {
   const { session } = item;
   const proposed = item.kind === "proposed";
   const label = session.locked ? "Protected break" : "Break";
+  const className = `plan-block break ${proposed ? "preview" : ""} ${session.end - session.start < 45 ? "compact" : ""}`;
+  const content = <>
+    <span className="session-title">{label}</span>
+    <span className="session-time">{range(session.start, session.end)}{proposed ? " · proposed" : ""}</span>
+  </>;
+  // A proposed break is only part of the preview; a saved one opens its card so it can be deleted.
+  if (proposed) {
+    return <div className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · proposed, not saved`}>{content}</div>;
+  }
   return (
-    <div
-      className={`plan-block break ${proposed ? "preview" : ""} ${session.end - session.start < 45 ? "compact" : ""}`}
-      style={laneStyle(place, session.start, session.end)}
-      title={`${label} · ${range(session.start, session.end)} · ${proposed ? "proposed, not saved" : "saved"}`}
-    >
-      <span className="session-title">{label}</span>
-      <span className="session-time">{range(session.start, session.end)}{proposed ? " · proposed" : ""}</span>
-    </div>
+    <button className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · click to delete`}
+      onClick={e => { e.stopPropagation(); onOpen(session, e.currentTarget.getBoundingClientRect()); }}>
+      {content}
+    </button>
   );
 }
 
@@ -187,7 +194,7 @@ function PreviewBlock({ session, place }: { session: ScheduleSession; place: Pla
   );
 }
 
-function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
+function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
   const { tasks, sessions, events, availability, schedulePreview } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
   const zone = accountTimeZone(availability);
@@ -284,7 +291,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onAdd, onSlot }: Calendar
                   : item.kind === "preview"
                     ? <PreviewBlock key={`preview-${item.session.id}`} session={item.session} place={lanes.get(item)!} />
                     : item.kind === "break"
-                      ? <BreakBlock key={`break-${item.session.id}`} item={item.item} place={lanes.get(item)!} />
+                      ? <BreakBlock key={`break-${item.session.id}`} item={item.item} place={lanes.get(item)!} onOpen={onOpenBreak} />
                       : <RemovedBlock key={`removed-${item.session.id}`} item={item.item} place={lanes.get(item)!} />)}
               {date === today && <div className="now-line" style={{ top: (now / 60) * HOUR_HEIGHT }} aria-hidden="true" />}
             </div>

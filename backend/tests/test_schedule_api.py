@@ -66,6 +66,49 @@ def test_acceptance_preview_apply_refresh(transaction_environment, monkeypatch):
     assert len(client.get('/schedule').json()['sessions']) == 6
 
 
+def save_acceptance_plan(db, tasks):
+    """The saved acceptance plan, stored the way apply stores it (apply itself needs a transaction-capable server)."""
+    from datetime import date
+    from zoneinfo import ZoneInfo
+    from app.scheduling_engine import from_abs, local_to_abs
+    owner, zone, ids = str(db.users.find_one()['_id']), ZoneInfo('America/New_York'), {t['title']: t['id'] for t in tasks}
+    for day, span, kind, title in ACCEPTANCE:
+        start, end = (int(x[:2]) * 60 + int(x[3:]) for x in span.split('-'))
+        at = lambda minute: from_abs(local_to_abs(date.fromisoformat(day), minute, zone))
+        db.sessions.insert_one({'user_id': owner, 'task_id': ids.get(title) if kind == 'work' else None, 'type': kind,
+                                'status': 'saved', 'locked': False, 'source': 'auto', 'start_at': at(start), 'end_at': at(end),
+                                'date': day, 'start': start, 'end': end, 'schedule_version': 1})
+
+
+def test_deleting_a_task_removes_breaks_left_between_nothing(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    asm, rev = acceptance_tasks(client)
+    save_acceptance_plan(db, (asm, rev))
+    assert rows(client.get('/schedule').json()['sessions']) == ACCEPTANCE
+
+    # 09:50 sits between two Asm sessions and stays; 10:50 sat between two revision sessions and goes with them.
+    assert client.delete(f"/tasks/{rev['id']}").status_code == 204
+    assert rows(client.get('/schedule').json()['sessions']) == ACCEPTANCE[:3]
+
+    assert client.delete(f"/tasks/{asm['id']}").status_code == 204
+    assert client.get('/schedule').json()['sessions'] == []
+
+
+def test_breaks_you_asked_for_survive_task_deletion_and_any_break_can_be_deleted(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    asm, rev = acceptance_tasks(client)
+    save_acceptance_plan(db, (asm, rev))
+    db.sessions.update_one({'type': 'break', 'start': 10 * 60 + 50}, {'$set': {'locked': True, 'source': 'manual'}})
+    assert client.delete(f"/tasks/{rev['id']}").status_code == 204
+    breaks = [s for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break']
+    assert [(b['start'], b['locked']) for b in breaks] == [(590, False), (650, True)]
+    for brk in breaks:
+        assert client.delete(f"/sessions/{brk['id']}").status_code == 204
+    assert db.sessions.count_documents({'type': 'break'}) == 0
+
+
 def test_concurrent_apply_requests_save_once(transaction_environment, monkeypatch):
     client, db = transaction_environment
     setup_user(client, monkeypatch)

@@ -269,8 +269,14 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
     setCompleted(id: string, done: boolean) {
       return mutate<Task>(`/tasks/${id}/completion`, { method: 'PATCH', body: JSON.stringify({ done }) }, task => ({ tasks: state.tasks.map(t => t.id === id ? task : t), ...stale() }));
     },
-    deleteTask(id: string) {
-      return mutate<void>(`/tasks/${id}`, { method: 'DELETE' }, () => ({ tasks: state.tasks.filter(t => t.id !== id), sessions: state.sessions.filter(s => s.taskId !== id), ...stale() }));
+    async deleteTask(id: string) {
+      await mutate<void>(`/tasks/${id}`, { method: 'DELETE' }, () => ({ tasks: state.tasks.filter(t => t.id !== id), sessions: state.sessions.filter(s => s.taskId !== id), ...stale() }));
+      // The server also drops scheduler breaks that no longer sit between work; re-read so they disappear here too.
+      const current = generation;
+      try {
+        const schedule = await request<SavedSchedule>('/schedule');
+        if (current === generation) publish({ ...state, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion });
+      } catch { /* The task is deleted; leftover breaks show until the next reload. */ }
     },
     createSession(input: WorkSessionInput) {
       validateSession(input);
