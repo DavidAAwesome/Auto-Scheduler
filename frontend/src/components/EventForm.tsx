@@ -5,7 +5,7 @@ import { workspaceService } from "../services/workspace";
 import { WEEKDAYS, clock12, clockTime, parseClock, weekdayIndex } from "../utils/calendar";
 import { addDays } from "../utils/dates";
 import { accountToday } from "../utils/timeZones";
-import { EVENT_KINDS, eventIcon, occurrenceCount, occursOn } from "../utils/events";
+import { EVENT_KINDS, eventIcon, eventTimeProblem, occurrenceCount, occursOn, overlappingWork } from "../utils/events";
 import Icon from "./Icon";
 import Modal from "./Modal";
 
@@ -42,7 +42,8 @@ export default function EventForm({ event, date, start, onClose, onSave }: {
   };
   const count = repeat && weekdays.length && repeatUntil >= day ? occurrenceCount(draft) : 1;
   // Work already planned in this time slot: allowed to save, but the user should move it.
-  const conflicts = endMin > startMin ? sessions.filter(s => s.start < endMin && s.end > startMin && occursOn(draft, s.date)) : [];
+  const conflicts = overlappingWork(sessions.filter(s => s.status === "saved"), draft, startMin, endMin);
+  const timeProblem = eventTimeProblem(startMin, endMin);
   const overlapsEvent = endMin > startMin && events.some(e => e.id !== event?.id && e.start < endMin && e.end > startMin && occursOn(e, day) && occursOn(draft, day));
 
   function toggleWeekday(index: number) {
@@ -138,6 +139,7 @@ export default function EventForm({ event, date, start, onClose, onSave }: {
             {conflicts.length} planned work session{conflicts.length > 1 ? "s overlap" : " overlaps"} this time. You can still save, then move {conflicts.length > 1 ? "them" : "it"}.
           </p>
         )}
+        {timeProblem && <p className="form-warning" role="alert">{timeProblem}</p>}
         {overlapsEvent && <p className="form-warning">This overlaps another event on {day}.</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
         <div className="task-dialog-footer">

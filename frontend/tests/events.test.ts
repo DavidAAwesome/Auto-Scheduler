@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventClash, layoutLanes, occurrenceCount, occurrencesOn, occursOn } from '../src/utils/events.ts';
+import { eventClash, eventTimeProblem, layoutLanes, occurrenceCount, occurrencesOn, occursOn, overlappingWork } from '../src/utils/events.ts';
 import { validateEvent } from '../src/services/taskRules.ts';
 import type { CalendarEvent } from '../src/types/models.ts';
 
@@ -89,4 +89,22 @@ test('an imported multi-day event is listed once, as a span', async () => {
   // A different event with a gap day is not merged.
   const gap = groupEvents([piece('a', '2026-11-06', 600, 1440), piece('x', '2026-11-08', 0, 960)], '2026-11-04').upcoming;
   assert.equal(gap.length, 2);
+});
+
+
+test('the event form explains backwards times', () => {
+  assert.equal(eventTimeProblem(600, 480), 'The event must end after it starts.');
+  assert.equal(eventTimeProblem(600, 600), 'The event must end after it starts.');
+  assert.equal(eventTimeProblem(600, 660), null);
+  assert.equal(eventTimeProblem(Number.NaN, 660), null);
+});
+
+test('an event overlaps work sessions only, not the breaks between them', () => {
+  const event = { id: 'e', title: '', kind: 'Meeting', date: '2026-11-05', start: 540, end: 600, location: null, repeat: null, skipDates: [], source: 'manual' } as CalendarEvent;
+  const sessions = [
+    { type: 'work', date: '2026-11-05', start: 540, end: 590 }, { type: 'break', date: '2026-11-05', start: 590, end: 600 },
+    { type: 'work', date: '2026-11-05', start: 600, end: 650 }, { type: 'work', date: '2026-11-06', start: 540, end: 590 },
+  ];
+  assert.deepEqual(overlappingWork(sessions, event, 540, 600), [sessions[0]]);
+  assert.deepEqual(overlappingWork(sessions, event, 600, 540), []);
 });

@@ -46,6 +46,16 @@ export function eventClash(events: CalendarEvent[], date: string, start: number,
 }
 
 /** How many times a repeating event happens in total (shown when creating a class schedule). */
+/** Why these times cannot be saved, or null. Shown in the form, so the disabled button is never a mystery. */
+export function eventTimeProblem(start: number, end: number) {
+  return Number.isFinite(start) && Number.isFinite(end) && end <= start ? "The event must end after it starts." : null;
+}
+
+/** Work sessions (not breaks) an event at these times would overlap. */
+export function overlappingWork<T extends { type: string; start: number; end: number; date: string }>(sessions: T[], event: CalendarEvent, start: number, end: number) {
+  return end > start ? sessions.filter(s => s.type === "work" && s.start < end && s.end > start && occursOn(event, s.date)) : [];
+}
+
 export function occurrenceCount(event: Pick<CalendarEvent, 'date' | 'repeat' | 'skipDates'>) {
   if (!event.repeat) return 1;
   let count = 0;
