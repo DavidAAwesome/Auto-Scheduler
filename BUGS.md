@@ -10,22 +10,29 @@ Priority: **P1** crash or wrong data, **P2** blocked flow, **P3** confusing text
 
 | ID | Priority | Status | Summary |
 |----|----------|--------|---------|
-| B1 | P1 | Open | Asking for a break fails with a 500 |
-| B2 | P1 | Open | "Add a task" confirm saves every draft while saying it saves one |
-| B3 | P1 | Open | A one-time class is read as weekly |
-| B4 | P1 | Open | The request text ends up in an event's name |
-| B5 | P1 | Open | AI-invented "Not before" and session limits on drafts |
-| B6 | P2 | Open | "show me ways to split them" is dropped when it follows new items |
-| B7 | P2 | Open | An event the AI leaves unnamed blocks the plan |
-| B8 | P2 | Open | Split options from chat render below the drafts, out of sight |
-| B9 | P3 | Open | Add event is disabled with no reason when it ends before it starts |
-| B10 | P3 | Open | The event form counts breaks as work sessions |
-| B11 | P3 | Open | Chat shows raw dates such as 2026-11-05 |
-| B12 | P3 | Open | "Greedy heuristic" jargon in chat and in the preview |
-| B13 | P3 | Open | The sidebar's "No available hours · set hours" wraps badly |
-| B14 | P3 | Open | Any message is taken as a draft answer while a question is open |
+| B1 | P1 | Fixed (49e0be5) | Asking for a break fails with a 500 |
+| B2 | P1 | Fixed (199b1a6) | "Add a task" confirm saves every draft while saying it saves one |
+| B3 | P1 | Fixed (c77743a) | A one-time class is read as weekly |
+| B4 | P1 | Fixed (56391b1) | The request text ends up in an event's name |
+| B5 | P1 | Fixed (96eb710) | AI-invented "Not before" and session limits on drafts |
+| B6 | P2 | Fixed (56391b1) | "show me ways to split them" is dropped when it follows new items |
+| B7 | P2 | Fixed (fe0647a) | An event the AI leaves unnamed blocks the plan |
+| B8 | P2 | Fixed (4c1ad0d) | Split options from chat render below the drafts, out of sight |
+| B9 | P3 | Fixed (ab530cb) | Add event is disabled with no reason when it ends before it starts |
+| B10 | P3 | Fixed (ab530cb) | The event form counts breaks as work sessions |
+| B11 | P3 | Fixed (4434d0a) | Chat shows raw dates such as 2026-11-05 |
+| B12 | P3 | Fixed (e2bdd68) | "Greedy heuristic" jargon in chat and in the preview |
+| B13 | P3 | Fixed (f14c00c) | The sidebar's "No available hours · set hours" wraps badly |
+| B14 | P3 | Fixed (ba63f89) | Any message is taken as a draft answer while a question is open |
 | B15 | P3 | Open | On a phone, the chat sheet covers split options and the calendar |
-| B16 | P3 | Open | Replaced sessions are listed one by one as "Moves" in a split preview |
+| B16 | P3 | Fixed (85f8148) | Replaced sessions are listed one by one as "Moves" in a split preview |
+| B17 | P1 | Fixed (7fdee1c) | The AI can return one item twice, and both copies are saved |
+
+Open: B15 only.
+
+Behavior to expect, not bugs:
+- AM/PM is still asked for "10-11:30". The app does not guess AM or PM, so the demo message gets one question; answering "AM" sets both times and the split options follow.
+- "Study for calculus 4h due Thu noon" cannot fully fit: with 9 AM to 5 PM hours and a 50-minute focus limit, only 2h 30m fits before noon on the day it is due, so the preview reports the rest and offers "Apply partial plan". On the day itself, less fits.
 
 ## Details
 
@@ -112,3 +119,10 @@ Expected: "1 planned work session overlaps". Actual: "2 planned work sessions ov
 ### B16. Replaced sessions are listed one by one as "Moves" (P3)
 1. Compare splits for a task that already has saved sessions. Actual: one "Moves ... Replaced by this split option."
    line for every session, which pushes the useful text down.
+
+### B17. The AI can return one item twice (P1)
+Found while retesting B6.
+1. Send the demo message. On one run the AI returned "Lab report" twice.
+
+Expected: one "Lab report". Actual: "I read 4 items", with both copies under review and both would be saved, doubling the
+work. Items that match on kind, name, length and dates are now merged.
