@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.auth import get_current_user
 from app.config import get_settings
 from app.database import get_database
-from app.feasibility import FeasibilityResult, check_feasibility
+from app.feasibility import FeasibilityResult, check_feasibility, fit_warnings
 from app.plan_drafts import DraftView, PlanDraft, review_all, review_draft
 from app.plan_extraction import ImageInput, apply_answer, decode_image, extract_with_model, new_batch_id, parse_text
 from app.schedule_model import SchedulePreview, SplitOptions
@@ -109,17 +109,19 @@ def interpret(body: InterpretRequest, user=Depends(get_current_user), db=Depends
         notes.append('Read with AutoPlan’s built-in parser (no AI key set). Check each item.')
     if not drafts:
         notes.append('No tasks or events were found. Try one item per line, such as “Essay, 2 hours, due Friday”.')
-    views = review_all(drafts, now, zone, set(titles))
+    views = fit_warnings(user, db, now, review_all(drafts, now, zone, set(titles)))
     return InterpretResponse(batchId=new_batch_id(body.batchId), provider=provider, drafts=views, notes=notes,
                              now=now, timeZone=str(zone))
 
 
 @router.post('/review', response_model=list[DraftView])
 def review(body: DraftsRequest, user=Depends(get_current_user), db=Depends(get_database)):
+    now = utc_now()
     try:
-        return review_all(body.drafts, utc_now(), _zone(user, db), set(_task_ids(user, db)))
+        views = review_all(body.drafts, now, _zone(user, db), set(_task_ids(user, db)))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    return fit_warnings(user, db, now, views)
 
 
 @router.post('/clarify', response_model=DraftView)
@@ -131,7 +133,7 @@ def clarify(body: ClarifyRequest, user=Depends(get_current_user), db=Depends(get
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     known = set(body.otherDraftIds) | {updated.id} | set(_task_ids(user, db))
-    return review_draft(updated, now, zone, known)
+    return fit_warnings(user, db, now, [review_draft(updated, now, zone, known)])[0]
 
 
 @router.post('/feasibility', response_model=FeasibilityResult)

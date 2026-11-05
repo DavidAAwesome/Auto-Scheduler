@@ -60,7 +60,11 @@ export function draftLine(d: PlanDraft) {
 export function draftsReply(views: DraftView[], provider: string, notes: string[] = []) {
   if (!views.length) return notes.join(" ") || "I couldn’t find any tasks or events in that. Try one per line, like “Essay, 2 hours, due Friday”.";
   const lines = [`I read ${views.length} item${views.length === 1 ? "" : "s"}${provider === "openai" ? " (AI)" : provider === "local" ? " (built-in parser)" : ""}. Nothing is saved yet; they’re in the review panel above the calendar:`];
-  for (const v of views) lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
+  for (const v of views) {
+    lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
+    const fit = v.issues.find(i => i.code === "wont_fit");
+    if (fit) lines.push(`  ${fit.question} The draft has options for this.`);
+  }
   const open = views.flatMap(v => v.issues.filter(i => i.blocking).map(i => i.question));
   if (open.length) lines.push(`First question: ${open[0]} (Answer here or in the panel.)`);
   else lines.push("Use “Can this fit?” or “Preview on calendar”, then Apply to save.");

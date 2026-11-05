@@ -176,6 +176,10 @@ Automatic breaks are not saved. The engine keeps the gap free, previews show the
 
 Loading the schedule (`GET /schedule`) removes automatic breaks saved by older versions, for the signed-in user. In chat, "delete breaks" lists your saved breaks and deletes them after you confirm (`POST /actions/delete-breaks`); if there are none, it explains the automatic ones.
 
+### Drafts that cannot fit
+
+A task or flexible event whose work can't fit before its deadline is flagged on the draft as soon as it is read or edited, for example "Only 30 min left before the deadline, so 3 h can't fit." The check measures that item alone: time left, your available hours, events, fixed sessions, needed breaks and the daily limit. It is a warning, not a block. The draft offers **Move the deadline** (to the first deadline with enough time), **Shorten**, and **Schedule what fits**, which is a partial preview. Other flexible work can still leave an item short, which "Can this fit?" checks. Neither that check nor a preview ever places work after a deadline.
+
 ### Fixed or flexible
 
 Any item with a stated day and a start and end time is a fixed event, whatever the activity. "Gym every Monday and Wednesday 9–5" is a weekly fixed event on those days, and "Gym Monday 9-5" is one event. Fixed events have no length, deadline or "not before", so none of those are asked for or shown. A deadline is only asked for items without set times. A range such as "9-5" can only start in the morning and end in the afternoon, so it needs no AM/PM question; "9-10" does. Weekly events still need a first and last date.

@@ -17,18 +17,19 @@ search limits", which is not proof.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.plan_drafts import DRAFT_PREFIX, PlanDraft
+from app.plan_drafts import DRAFT_PREFIX, DraftIssue, DraftView, FitOption, PlanDraft, clock, draft_task
 from app.schedule_model import SchedulePreview
 from app.scheduling_engine import (
     MAX_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_PER_TASK, _Planner, local_parts, merge, subtract, to_abs,
 )
 from app.scheduling_service import (
-    engine_prefs, engine_tasks, event_refs, load_context, run_engine, saved_refs,
+    MAX_HORIZON_DAYS, engine_prefs, engine_tasks, event_refs, load_context, run_engine, saved_refs,
 )
 from app.scheduling_validator import ValidationError, validate_preview
 
@@ -88,6 +89,107 @@ class FeasibilityResult(BaseModel):
     windowEnd: datetime
     searchLimits: str
     savedDataChanged: Literal[False] = False
+
+
+def _hm(minutes: int) -> str:
+    hours, rest = divmod(minutes, 60)
+    return ' '.join(part for part in (f'{hours} h' if hours else '', f'{rest} min' if rest or not hours else '') if part)
+
+
+def _span_work(minutes: int, prefs) -> int:
+    """The most focus work that fits in one free stretch, with the breaks it needs between runs."""
+    runs = (minutes + prefs.brk) // (prefs.focus + prefs.brk)
+    return runs * prefs.focus + min(prefs.focus, max(0, minutes - runs * (prefs.focus + prefs.brk)))
+
+
+def _stretches(task, planner, prefs, zone, fixed, until: int) -> list[tuple[int, int]]:
+    """(end, work that fits) for each free stretch this task may use before `until`, within the daily limit.
+    Fixed commitments count; flexible work does not, because it can move."""
+    lo = max(planner.start, task.earliest or planner.start)
+    window = [(max(s, lo), min(e, until)) for s, e in planner.allowed(task) if min(e, until) > max(s, lo)]
+    taken: dict = {}
+    for w in planner.work:
+        if w.fixed and w.counts_daily:
+            day = local_parts(w.start, zone)[0]
+            taken[day] = taken.get(day, 0) + w.end - w.start
+    out = []
+    for s, e in subtract(window, fixed):
+        if not task.is_work:
+            out.append((e, e - s))
+            continue
+        day = local_parts(s, zone)[0]
+        work = min(_span_work(e - s, prefs), max(0, prefs.max_daily - taken.get(day, 0)))
+        taken[day] = taken.get(day, 0) + work
+        out.append((e, work))
+    return out
+
+
+def _move_deadline(need: int, spans: list[tuple[int, int]], split: bool, zone) -> FitOption:
+    """The first deadline that leaves enough time, or a plain prompt when the planning window has none."""
+    total = 0
+    for end, work in spans:
+        total = total + work if split else work
+        if total >= need:
+            day, minute = local_parts(end - 1, zone)
+            when = f'{day:%a, %b} {day.day}, {clock(minute + 1)}'
+            return FitOption(id='move_deadline', label=f'Move the deadline to {when}',
+                             patch={'deadline': day.isoformat(), 'dueTime': min(minute + 1, 1439)})
+    return FitOption(id='move_deadline', label='Choose a later deadline')
+
+
+def fit_issue(task, planner, prefs, zone, fixed, now_min: int) -> DraftIssue | None:
+    """A warning when the work cannot fit before the deadline, or None. Measured for this item alone, so a warning is
+    certain, while other flexible work can still leave it short ("Can this fit?" checks that)."""
+    need = task.remaining
+    if task.due > planner.window_end or (task.is_work and not task.allow_split and need > prefs.focus):
+        return None  # past the window nothing is certain, and a one-piece task over the limit has its own conflict
+    works = [work for _end, work in _stretches(task, planner, prefs, zone, fixed, task.due)]
+    usable = sum(works) if task.allow_split else max(works, default=0)
+    if usable >= need:
+        return None
+    left = max(0, task.due - now_min)
+    size = _hm(need)
+    if not left:
+        message = f"The deadline has passed, so {size} can't fit."
+    elif left < need and not usable:
+        message = f"Only {_hm(left)} left before the deadline, and none of it is in your available hours, so {size} can't fit."
+    elif left < need and usable < left:
+        message = f"Only {_hm(left)} left before the deadline, and {_hm(usable)} of it is available, so {size} can't fit."
+    elif left < need:
+        message = f"Only {_hm(left)} left before the deadline, so {size} can't fit."
+    elif usable:
+        message = f"Only {_hm(usable)} of your available time is left before the deadline, so {size} can't fit."
+    else:
+        message = f"None of your available time is left before the deadline, so {size} can't fit."
+    options = [_move_deadline(need, _stretches(task, planner, prefs, zone, fixed, planner.window_end), task.allow_split, zone)]
+    fits = usable - usable % 5
+    if fits >= min(task.min_session, need):
+        options.append(FitOption(id='shorten', label=f'Shorten to {_hm(fits)}', patch={'minutes': fits}))
+        if task.allow_split:
+            options.append(FitOption(id='schedule_what_fits', label=f'Schedule the {_hm(fits)} that fits'))
+    return DraftIssue(field='fit', code='wont_fit', question=message, blocking=False, options=options)
+
+
+def fit_warnings(user, db, now: datetime, views: list[DraftView]) -> list[DraftView]:
+    """Adds a `wont_fit` warning, with options, to each selected task or flexible event that cannot fit."""
+    checked = [v for v in views if v.draft.include and v.draft.kind != 'fixed_event' and v.draft.minutes and v.draft.deadline
+               and not any(i.blocking and i.field in {'deadline', 'dueTime', 'minutes', 'earliestStart'} for i in v.issues)]
+    if not checked:
+        return views
+    ready_events = [v.draft for v in views if v.draft.include and v.draft.kind == 'fixed_event' and v.ready]
+    ctx = load_context(user, db, now, MAX_HORIZON_DAYS, drafts=ready_events)
+    prefs = engine_prefs(ctx.prefs)
+    now_min = to_abs(now)
+    issues: dict[str, DraftIssue] = {}
+    for view in checked:
+        task = engine_tasks(replace(ctx, tasks=[draft_task(view.draft, set())]))[0]
+        planner = _Planner([task], ctx.availability, prefs, ctx.zone, ctx.events, ctx.existing, now_min, MAX_HORIZON_DAYS,
+                           'repair', None, None)
+        fixed = merge([*planner.events, *planner.rest_items, *[(w.start, w.end) for w in [*planner.work, *planner.flex]]])
+        issue = fit_issue(task, planner, prefs, ctx.zone, fixed, now_min)
+        if issue:
+            issues[view.draft.id] = issue
+    return [v.model_copy(update={'issues': [*v.issues, issues[v.draft.id]]}) if v.draft.id in issues else v for v in views]
 
 
 def _validated(preview: SchedulePreview, ctx, now):

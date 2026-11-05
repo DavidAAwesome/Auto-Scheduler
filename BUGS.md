@@ -28,8 +28,9 @@ Priority: **P1** crash or wrong data, **P2** blocked flow, **P3** confusing text
 | B16 | P3 | Fixed (85f8148) | Replaced sessions are listed one by one as "Moves" in a split preview |
 | B17 | P1 | Fixed (7fdee1c) | The AI can return one item twice, and both copies are saved |
 | B18 | P1 | Fixed (8fd7053) | Saved breaks stay on the calendar after their work is gone |
-| B19 | P1 | Fixed | An activity with a stated day and times becomes a flexible event |
+| B19 | P1 | Fixed (40dfc68) | An activity with a stated day and times becomes a flexible event |
 | B20 | P3 | Open | "Class Mon/Wed 10-11:15am until Dec 18" gets a garbled name and one date |
+| B21 | P2 | Fixed | A draft that cannot fit before its deadline shows no warning |
 
 Open: B15 and B20.
 
@@ -150,3 +151,11 @@ all. With a draft question open, the message could also be taken as the answer t
 1. With no AI key, say "Class Mon/Wed 10-11:15am until Dec 18".
 
 Expected: a weekly class. Actual: a one-time event on the next Monday called "Class /Wed until Dec 18".
+
+### B21. A draft that cannot fit before its deadline shows no warning (P2)
+Reported after the bug bash.
+1. In chat, say "Study 3 hours due in 30 minutes".
+
+Expected: a warning with options on the draft. Actual: a normal draft, with nothing said until "Can this fit?" was
+pressed. Without AI, "due in 30 minutes" also ended up in the task's name, with no deadline. Sessions were never placed
+after the deadline; tests now hold that in place.

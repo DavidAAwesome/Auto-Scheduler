@@ -246,7 +246,9 @@ export interface PlanDraft {
   assumed: string[];
   include: boolean;
 }
-export interface DraftIssue { field: string; code: "missing" | "ambiguous" | "unreadable" | "invalid" | "warning"; question: string; blocking: boolean }
+/** A way out of a draft that cannot fit. Nothing happens until the user picks it. */
+export interface FitOption { id: "move_deadline" | "shorten" | "schedule_what_fits"; label: string; patch: Partial<PlanDraft> }
+export interface DraftIssue { field: string; code: "missing" | "ambiguous" | "unreadable" | "invalid" | "warning" | "wont_fit"; question: string; blocking: boolean; options?: FitOption[] }
 export interface DraftView { draft: PlanDraft; issues: DraftIssue[]; ready: boolean }
 export interface InterpretResult { batchId: string; provider: "openai" | "local"; drafts: DraftView[]; notes: string[]; now: string; timeZone: string }
 export type FitStatus = "fits_without_moving" | "fits_after_changes" | "no_plan_found" | "proven_infeasible";

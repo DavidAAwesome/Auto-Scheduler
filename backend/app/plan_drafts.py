@@ -73,12 +73,21 @@ class PlanDraft(BaseModel):
         return (value or '').strip() or None
 
 
+class FitOption(BaseModel):
+    """A way out of a draft that cannot fit. `patch` is applied to the draft; nothing happens until the user picks it."""
+    model_config = ConfigDict(extra='forbid')
+    id: Literal['move_deadline', 'shorten', 'schedule_what_fits']
+    label: str
+    patch: dict = {}
+
+
 class DraftIssue(BaseModel):
     model_config = ConfigDict(extra='forbid')
     field: str
-    code: Literal['missing', 'ambiguous', 'unreadable', 'invalid', 'warning']
+    code: Literal['missing', 'ambiguous', 'unreadable', 'invalid', 'warning', 'wont_fit']
     question: str
     blocking: bool = True
+    options: list[FitOption] = []
 
 
 class DraftView(BaseModel):

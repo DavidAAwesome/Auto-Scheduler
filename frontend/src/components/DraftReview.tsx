@@ -3,7 +3,7 @@ import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { kindPatch } from "../services/planEntry";
 import { missingSummary } from "../services/workspaceStore";
-import type { DraftIssue, DraftKind, DraftView, EventKind, FeasibilityResult, FitStatus, PlanDraft, Priority } from "../types/models";
+import type { DraftIssue, DraftKind, DraftView, EventKind, FeasibilityResult, FitOption, FitStatus, PlanDraft, Priority } from "../types/models";
 import { clock12 } from "../utils/calendar";
 import Icon from "./Icon";
 
@@ -39,6 +39,17 @@ function IssueRow({ draftId, issue, busy, inline = false }: { draftId: string; i
       setError((e as Error).message);
     }
   }
+  /** Nothing changes until an option is picked. "Schedule what fits" previews; the others edit the draft. */
+  async function choose(option: FitOption) {
+    setError("");
+    try {
+      if (option.id === "schedule_what_fits") await workspaceService.previewDrafts();
+      else if (Object.keys(option.patch).length) workspaceService.updateDraft(draftId, option.patch);
+      else document.querySelector<HTMLInputElement>(`#draft-${draftId} input[type=date]`)?.focus();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   return (
     <li className={`draft-issue ${issue.blocking ? "blocking" : "warning"} ${inline ? "inline" : ""}`}>
       <span>{issue.question}</span>
@@ -47,6 +58,11 @@ function IssueRow({ draftId, issue, busy, inline = false }: { draftId: string; i
           <input value={answer} onChange={e => setAnswer(e.target.value)} placeholder={issue.field === "start" || issue.field === "end" ? "AM or PM" : "Your answer"} aria-label={`Answer: ${issue.question}`} maxLength={200} />
           <button className="button small secondary" disabled={busy || !answer.trim()}>Answer</button>
         </form>
+      )}
+      {issue.options && issue.options.length > 0 && (
+        <span className="fit-alternatives">
+          {issue.options.map(option => <button key={option.id} type="button" className="chip" disabled={busy} onClick={() => void choose(option)}>{option.label}</button>)}
+        </span>
       )}
       {error && <small role="alert" className="form-error">{error}</small>}
     </li>

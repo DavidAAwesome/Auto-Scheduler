@@ -478,7 +478,7 @@ def _event_kind(text: str) -> str:
     return 'Other'
 
 
-def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | None]:
+def parse_item(text: str, index: int, today: date, now: datetime | None = None) -> tuple[PlanDraft, str | None]:
     source = text.strip()[:400]
     body = LEAD.sub('', source)
     lower = body.lower()
@@ -526,8 +526,12 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         _TimeFirst.search(rf'\b(?:due|by|before)\s*(?:at\s+)?({TIME})\s*,?\s*(?:on\s+)?({DATE})', lower)  # "by noon tomorrow"
     on = re.search(rf'\b(?:on\s+)?({DATE})(?:\s*(?:at|@)\s*({TIME}))?', lower)
     at_time = re.search(rf'\b(?:at|@)\s*({TIME})', lower)
-    duration, duration_span = parse_duration(lower if not time_range else lower[:time_range.start()] + ' ' * (
-        time_range.end() - time_range.start()) + lower[time_range.end():])
+    # "due in 30 minutes" is a deadline counted from now, not the item's length.
+    relative = re.search(r'\b(?:due|deadline|by)\s+(?:is\s+)?in\s+(\d+(?:\.\d+)?|an?|half an?)\s*(h|hrs?|hours?|m|mins?|minutes?)\b', lower)
+    hidden = lower
+    for span in filter(None, (time_range, relative)):
+        hidden = hidden[:span.start()] + ' ' * (span.end() - span.start()) + hidden[span.end():]
+    duration, duration_span = parse_duration(hidden)
     if duration_span:
         cut.append(duration_span)
 
@@ -572,7 +576,12 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         draft['kind'] = 'flexible_event' if flex else 'task'
         draft['minutes'] = duration
         target = due or (on if flex else None)
-        if target:
+        if relative and now:
+            take(relative)
+            amount = {'a': 1, 'an': 1, 'half a': .5, 'half an': .5}.get(relative[1]) or float(relative[1])
+            moment = now + timedelta(minutes=amount * (60 if relative[2].startswith('h') else 1))
+            draft['deadline'], draft['dueTime'] = moment.date().isoformat(), min(moment.hour * 60 + moment.minute, 1439)
+        elif target:
             take(target)
             value, amb = resolve_date(target[1], today)
             draft['deadline'] = value.isoformat() if value else None
@@ -644,7 +653,7 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
 def parse_text(text: str, now: datetime, zone: ZoneInfo, saved_titles: dict[str, str] | None = None) -> list[PlanDraft]:
     """Deterministic interpretation of typed text into drafts, one per line, semicolon or sentence."""
     today = now.astimezone(zone).date()
-    parsed = [parse_item(part, i, today) for i, part in enumerate(split_items(text))]
+    parsed = [parse_item(part, i, today, now.astimezone(zone)) for i, part in enumerate(split_items(text))]
     titles = {(d.title or '').lower(): d.id for d, _ in parsed}
     saved = {k.lower(): v for k, v in (saved_titles or {}).items()}
     out = []

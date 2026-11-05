@@ -211,3 +211,12 @@ test('a day with a time range is a new item, not a chat question or a draft answ
     assert.equal(looksLikePlanEntry(text), false, text);
   }
 });
+
+test('chat repeats a will-not-fit warning from the draft', () => {
+  const view = {
+    draft: emptyDraft('d1', { title: 'Study', minutes: 180, deadline: '2026-11-05', dueTime: 74 }), ready: true,
+    issues: [{ field: 'fit', code: 'wont_fit' as const, question: "Only 30 min left before the deadline, so 3 h can't fit.", blocking: false, options: [] }],
+  };
+  assert.match(draftsReply([view], 'openai'), /Only 30 min left before the deadline, so 3 h can't fit\. The draft has options for this\./);
+  assert.doesNotMatch(draftsReply([{ ...view, issues: [] }], 'openai'), /can't fit/);
+});
