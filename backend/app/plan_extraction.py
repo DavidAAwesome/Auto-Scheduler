@@ -115,7 +115,9 @@ Rules:
 - Do not assume an event is movable, and do not invent anything: leave unknown fields null.
 - If AM/PM is not stated and not clear from context, give your best reading in startTime/endTime AND list the field
   ("startTime", "endTime") in ambiguousFields.
-- A weekly timetable is recurring: set repeatWeekdays (Monday=0). Never turn it into one-time events. Only fill
+- A weekly timetable is recurring: set repeatWeekdays (Monday=0). Never turn it into one-time events. Only repeat when
+  the user says so (every, weekly, each, "Tuesdays") or it is a timetable: "class Tue 10-11:30" is one event on that
+  date, with date set and repeatWeekdays empty. Only fill
   repeatStartDate/repeatUntil when they are visible or stated; otherwise leave them null (the app will ask).
 - For images, extract only what is visible. Put the original wording of each row in sourceText. List fields you
   cannot read in unreadableFields. Do not fill priority unless it is stated.
@@ -193,6 +195,23 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
         assumed=['priority'] if item.priority is None and item.kind != 'fixed_event' else [])
 
 
+WEEKLY_WORDS = re.compile(r'\b(?:every|each|weekly|per week|a week|repeat\w*|recurring|semester|term|timetable'
+                          r'|(?:mon|tues?|wednes|thurs?|fri|satur|sun)days)\b', re.I)
+
+
+def _settle_one_time(draft: PlanDraft, today: date) -> PlanDraft:
+    """The model sometimes reads "class Tue 10-11:30" as a weekly class. One weekday, no dates and nothing in the
+    wording about repeating is one event, on the next such day."""
+    repeat = draft.repeat
+    if (draft.kind != 'fixed_event' or not repeat or len(repeat.weekdays) != 1 or repeat.startDate or repeat.until
+            or not draft.sourceText or WEEKLY_WORDS.search(draft.sourceText)):
+        return draft
+    day = draft.date or (today + timedelta(days=(repeat.weekdays[0] - today.weekday()) % 7)).isoformat()
+    keep = lambda fields: [f for f in fields if not f.startswith('repeat') and f != 'date']
+    return draft.model_copy(update={'repeat': None, 'date': day, 'ambiguous': keep(draft.ambiguous),
+                                    'unreadable': keep(draft.unreadable)})
+
+
 def drafts_from_extraction(extraction: Extraction) -> list[PlanDraft]:
     items = extraction.items[:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
@@ -243,7 +262,10 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
         raise
     except Exception as exc:  # anything unexpected from the SDK is a provider failure, not a server crash
         raise HTTPException(502, 'The AI provider request failed. Your input was kept; try again.') from exc
-    return drafts_from_extraction(extraction), extraction.notes[:5]
+    drafts = drafts_from_extraction(extraction)
+    if not image:  # a photographed timetable is recurring by nature
+        drafts = [_settle_one_time(d, local.date()) for d in drafts]
+    return drafts, extraction.notes[:5]
 
 
 # ---------------------------------------------------------------- deterministic local parser (typed text)

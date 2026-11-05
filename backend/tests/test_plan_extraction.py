@@ -236,3 +236,30 @@ def test_drafts_already_flagged_on_windows_are_released(field):
     """Drafts held in a browser from before this change still carry the flag."""
     draft = PlanDraft(id='d1', title='Essay', minutes=120, deadline='2026-10-30', **{field: ['windows']})
     assert review_draft(draft, NOW, NY).ready
+
+
+# ------------------------------------------------------------------ one-time events
+
+def event_extraction(source, weekdays=(1,), **extra):
+    return Extraction(notes=[], items=[LlmItem(**{**flexible_item([]).model_dump(), 'kind': 'fixed_event', 'title': 'Class', 'sourceText': source,
+                                                  'minutes': None, 'deadlineDate': None, 'startTime': '10:00', 'endTime': '11:30',
+                                                  'eventKind': 'Class', 'repeatWeekdays': list(weekdays), **extra})])
+
+
+def extract(monkeypatch, extraction, image=None):
+    monkeypatch.setattr(plan_extraction, 'call_model', lambda inputs: extraction)
+    return plan_extraction.extract_with_model('text', image, NOW, NY, [])[0][0]
+
+
+def test_one_weekday_with_no_repeat_wording_is_one_event(monkeypatch):
+    draft = extract(monkeypatch, event_extraction('class Tue 10-11:30', ambiguousFields=['repeatUntil']))
+    assert draft.repeat is None and draft.date == '2026-10-27' and draft.ambiguous == []
+    assert review_draft(draft, NOW, NY).ready
+
+
+@pytest.mark.parametrize('source, weekdays, image', [
+    ('class every Tue 10-11:30', (1,), None), ('class Tuesdays 10-11:30', (1,), None),
+    ('class Tue/Thu 10-11:30', (1, 3), None), ('CS101 Tu 10:00-11:30', (1,), ('image/png', b'x')),
+])
+def test_stated_repeats_and_timetables_stay_weekly(monkeypatch, source, weekdays, image):
+    assert extract(monkeypatch, event_extraction(source, weekdays), image).repeat.weekdays == list(weekdays)
