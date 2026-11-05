@@ -341,7 +341,7 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
 
     case "add_event":
     case "delete_event":
-      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }));
+      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }, userText));
 
     default:
       return { command: intent };

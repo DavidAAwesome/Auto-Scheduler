@@ -105,7 +105,7 @@ function DraftRow({ view, others }: { view: DraftView; others: DraftView[] }) {
   const set = (patch: Partial<PlanDraft>) => workspaceService.updateDraft(d.id, patch);
   const fixed = d.kind === "fixed_event";
   const blocking = view.issues.filter(i => i.blocking);
-  const fit = view.issues.find(i => i.code === "wont_fit");
+  const fit = view.issues.find(i => i.code === "wont_fit") ?? view.issues.find(i => i.code === "past");
   const red = (field: string) => (blocking.some(i => i.field === field) ? "is-blocking" : "");
   const needed = needsMoreOptions(view);  // the field to fix is behind "More options": its row cell and link turn red
   const eventTime = d.start != null && d.end != null ? `${clock12(d.start)}–${clock12(d.end % 1440)}` : "Set time";
@@ -122,7 +122,7 @@ function DraftRow({ view, others }: { view: DraftView; others: DraftView[] }) {
           : <label className="draft-minutes"><input type="number" min={5} step={5} max={6000} className={red("minutes")} aria-label="Minutes" value={d.minutes ?? ""} onChange={e => set({ minutes: e.target.value ? Number(e.target.value) : null })} /><span>min</span></label>}
         {fixed && d.repeat
           ? <button type="button" className={`draft-value ${red("repeat.weekdays") || red("repeat.startDate") || red("repeat.until")}`} onClick={() => setMore(true)}>{d.repeat.weekdays.map(i => WEEKDAYS[i]).join(", ") || "Set days"}</button>
-          : <input type="date" className={`draft-date ${fixed ? red("date") : red("deadline") || (fit ? "is-blocking" : "")}`} aria-label={fixed ? "Date" : "Due date"} value={(fixed ? d.date : d.deadline) ?? ""} onChange={e => set(fixed ? { date: e.target.value || null } : { deadline: e.target.value || null })} />}
+          : <input type="date" className={`draft-date ${fixed ? red("date") || (fit ? "is-blocking" : "") : red("deadline") || (fit ? "is-blocking" : "")}`} aria-label={fixed ? "Date" : "Due date"} value={(fixed ? d.date : d.deadline) ?? ""} onChange={e => set(fixed ? { date: e.target.value || null } : { deadline: e.target.value || null })} />}
         {fixed
           ? <span className="draft-chip-space" />
           : <select className={`draft-chip priority-${d.priority.toLowerCase()}`} value={d.priority} aria-label="Priority" onChange={e => set({ priority: e.target.value as Priority })}>

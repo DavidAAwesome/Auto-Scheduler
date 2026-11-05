@@ -92,7 +92,9 @@ export function draftsReply(views: DraftView[], provider: string, notes: string[
   for (const v of views) {
     lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
     const fit = v.issues.find(i => i.code === "wont_fit");
+    const past = v.issues.find(i => i.code === "past");
     if (fit) lines.push(`  ${fit.question} The draft has options for this.`);
+    else if (past) lines.push(`  ${past.question} Change it in the draft if that’s wrong.`);
   }
   const open = views.flatMap(v => v.issues.filter(i => i.blocking).map(i => i.question));
   if (open.length) lines.push(`First question: ${open[0]} (Answer here or in the panel.)`);

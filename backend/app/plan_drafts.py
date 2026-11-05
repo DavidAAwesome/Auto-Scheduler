@@ -29,6 +29,7 @@ FIELD_LABELS = {
 }
 DEFAULT_MIN_SESSION = 15
 UNCERTAIN_WITH_A_VALUE = {'start', 'end', 'date', 'deadline', 'dueTime', 'repeat.startDate', 'repeat.until'}  # "10" or "next Friday"
+NOT_FOR_TASKS = {'date', 'start', 'end', 'location', 'repeat.startDate', 'repeat.until', 'repeat.weekdays'}
 NOT_FOR_FIXED_EVENTS = {'minutes', 'deadline', 'dueTime', 'earliestStart'}  # flagged by the extractor, never asked about
 WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -86,7 +87,7 @@ class FitOption(BaseModel):
 class DraftIssue(BaseModel):
     model_config = ConfigDict(extra='forbid')
     field: str
-    code: Literal['missing', 'ambiguous', 'unreadable', 'invalid', 'warning', 'wont_fit']
+    code: Literal['missing', 'ambiguous', 'unreadable', 'invalid', 'warning', 'wont_fit', 'past']
     question: str
     blocking: bool = True
     options: list[FitOption] = []
@@ -144,6 +145,11 @@ def _settled_flags(draft: PlanDraft) -> PlanDraft:
     return draft.model_copy(update={'unreadable': unreadable, 'ambiguous': ambiguous})
 
 
+def _past(day: date, minute: int, now: datetime, zone: ZoneInfo) -> bool:
+    local = now.astimezone(zone)
+    return (day, minute) <= (local.date(), local.hour * 60 + local.minute)
+
+
 def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set[str] | None = None) -> DraftView:
     """Business rules for one draft, using its current values. Blocking issues are questions the user must answer first."""
     draft = _settled_flags(draft)
@@ -160,7 +166,8 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
         ask('windows', f'The preferred times of "{name}" could not be read, so it can use any time you are available.',
             'warning', blocking=False)
     def skip(field: str) -> bool:
-        return field == 'windows' or (draft.kind == 'fixed_event' and field in NOT_FOR_FIXED_EVENTS)
+        """Optional fields, and fields this kind of item doesn't have, are never worth stopping for."""
+        return field in {'windows', 'location'} or field in (NOT_FOR_FIXED_EVENTS if draft.kind == 'fixed_event' else NOT_FOR_TASKS)
 
     for field in draft.unreadable:
         if skip(field):
@@ -189,9 +196,8 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
         elif deadline is None:
             ask('deadline', f'When is "{name}" due?' if draft.kind == 'task'
                 else f'By when should "{name}" happen? (Give the last day it can take place.)')
-        elif deadline < today:
-            ask('deadline', f'"{name}" was due {deadline.isoformat()}, which has passed. Nothing new can be planned '
-                'before it; change the deadline or keep it to see it reported.', 'warning', blocking=False)
+        elif _past(deadline, 1440 if draft.dueTime is None else draft.dueTime, now, zone):
+            ask('deadline', f'The due date {deadline:%a, %b} {deadline.day} has passed.', 'past', blocking=False)
         earliest = parse_local_instant(draft.earliestStart, zone)
         if draft.earliestStart and earliest is None:
             ask('earliestStart', f'When may "{name}" start at the earliest?', 'invalid')
@@ -223,6 +229,8 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
                     'invalid')
         elif first is None:
             ask('date', f'On what date is "{name}"?' if not draft.date else f'The date of "{name}" is not valid. Which date?')
+        elif _past(first, draft.end if draft.end is not None else 1440, now, zone):
+            ask('date', f'The date {first:%a, %b} {first.day} has passed.', 'past', blocking=False)
         if draft.start is None:
             ask('start', f'What time does "{name}" start?')
         if draft.end is None:

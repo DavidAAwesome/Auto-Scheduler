@@ -112,7 +112,8 @@ Item kinds:
 
 Rules:
 - title is the item's name in the user's words, even when short: "class Tue 10-11:30" has the title "Class".
-- Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
+- Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. A bare weekday is
+  its next occurrence. Keep the date words in sourceText, because the app works dates out again from them. Times are HH:MM 24-hour.
 - deadlineTime is the stated time only: noon is 12:00. Leave it null when no time is given (never fill in 23:59).
 - Ignore side remarks in parentheses that are not task details, such as "(I'm so tired)".
 - Never confuse a deadline with a scheduled date. "Essay due Friday" has deadlineDate Friday and no date/startTime.
@@ -257,6 +258,49 @@ def _settle_one_time(draft: PlanDraft, today: date) -> PlanDraft:
                                     'unreadable': keep(draft.unreadable)})
 
 
+def next_weekday(target: int, now: datetime, minute: int | None) -> date:
+    """The next `target` weekday (Monday = 0) from local `now`. Today counts only if `minute` hasn't passed; with no
+    time, today still counts."""
+    ahead = (target - now.weekday()) % 7
+    if not ahead and minute is not None and minute <= now.hour * 60 + now.minute:
+        ahead = 7
+    return now.date() + timedelta(days=ahead)
+
+
+def _stated_date(draft: PlanDraft) -> str | None:
+    """The words that give this item's date: after "due" or "by" for a task, or the only date mentioned."""
+    text = (draft.sourceText or '').lower()
+    if draft.kind != 'fixed_event':
+        due = re.search(rf'(?<!not )\b(?:due|by|before|deadline)\b[^,;]*?\b({DATE})', text)
+        if due:
+            return due[1]
+    found = {match[0] for match in re.finditer(rf'\b(?:{DATE})', text)}
+    return found.pop() if len(found) == 1 else None
+
+
+def resolve_stated_dates(draft: PlanDraft, now: datetime) -> PlanDraft:
+    """Works a draft's date out in code from the user's words and local `now`, replacing whatever the reader computed.
+    Items with no date words keep theirs, and a repeating event has no single date."""
+    field = 'date' if draft.kind == 'fixed_event' else 'deadline'
+    words = _stated_date(draft)
+    if not words or draft.repeat:
+        return draft
+    weekday = re.fullmatch(rf'(next |this )?({WD})', words)
+    if weekday and weekday[1] != 'next ':
+        target = WEEKDAYS.get(weekday[2]) if weekday[2] in WEEKDAYS else WEEKDAYS.get(weekday[2][:3])
+        value, unsure = next_weekday(target, now, draft.start if field == 'date' else draft.dueTime), False
+    else:
+        value, unsure = resolve_date(words, now.date())
+    if value is None:
+        return draft
+    update: dict = {field: value.isoformat()}
+    if unsure and field not in draft.ambiguous:
+        update['ambiguous'] = [*draft.ambiguous, field]
+    if draft.deadline and draft.earliestStart and draft.earliestStart.startswith(draft.deadline):
+        update['earliestStart'] = value.isoformat() + draft.earliestStart[len(draft.deadline):]  # "sometime Saturday"
+    return draft.model_copy(update=update)
+
+
 def _without_guesses(draft: PlanDraft, now: datetime, zone: ZoneInfo) -> PlanDraft:
     """Drops values that say nothing: a "not before" that has already passed and a session limit of the whole task.
     A date-only "not before" becomes the start of that day, which is the form the review field can show."""
@@ -272,10 +316,13 @@ def _without_guesses(draft: PlanDraft, now: datetime, zone: ZoneInfo) -> PlanDra
 
 
 def drafts_from_extraction(extraction: Extraction) -> list[PlanDraft]:
-    # The model sometimes returns the same item twice; saving both would double the work.
-    unique = {(i.kind, (i.title or i.sourceText).strip().lower(), i.minutes, i.deadlineDate, i.date, i.startTime, i.endTime,
-               tuple(i.repeatWeekdays)): i for i in reversed(extraction.items)}
-    items = list(reversed(unique.values()))[:MAX_ITEMS]
+    # The model sometimes returns the same item twice, even as two kinds; saving both would double the work.
+    exact = {(i.kind, (i.title or i.sourceText).strip().lower(), i.minutes, i.deadlineDate, i.date, i.startTime, i.endTime,
+              tuple(i.repeatWeekdays)): i for i in reversed(extraction.items)}
+    unique = list(reversed(exact.values()))
+    words = lambda i: ((i.title or '').strip().lower(), i.sourceText.strip().lower())
+    has_details = lambda i: bool(i.minutes or i.deadlineDate or i.date or i.startTime)
+    items = [i for i in unique if has_details(i) or not any(has_details(o) and words(o) == words(i) for o in unique)][:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
     return [_convert_item(item, i, titles) for i, item in enumerate(items)]
 
@@ -326,7 +373,7 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
         raise HTTPException(502, 'The AI provider request failed. Your input was kept; try again.') from exc
     drafts = [_without_guesses(d, now, zone) for d in drafts_from_extraction(extraction)]
     if not image:  # a photographed timetable is recurring by nature
-        drafts = [_settle_one_time(d, local.date()) for d in drafts]
+        drafts = [resolve_stated_dates(_settle_one_time(d, local.date()), local) for d in drafts]
     return drafts, extraction.notes[:5]
 
 
@@ -675,7 +722,7 @@ def parse_text(text: str, now: datetime, zone: ZoneInfo, saved_titles: dict[str,
                 draft.dependsOn = [titles[key]]
             elif after in saved:
                 draft.dependsOn = [saved[after]]
-        out.append(draft)
+        out.append(resolve_stated_dates(draft, now.astimezone(zone)))
     return out
 
 

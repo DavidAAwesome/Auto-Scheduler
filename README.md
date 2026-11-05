@@ -182,6 +182,10 @@ Questions come from a draft's current values: a field that holds a value is not 
 
 A task shorter than two of its shortest sessions (30 minutes with the default 15) can't be split: "Can split" is off, it is planned as one session, and split options aren't offered.
 
+### Dates
+
+Dates are worked out in code from the user's words and local time, on both read paths and for chat events, replacing what the AI computed; a date with no date words keeps the reader's value. A bare weekday is its next occurrence, and today counts only if its time hasn't passed. A due date or event date that has passed is flagged on the draft and in chat. It doesn't block, so it can still be reported or changed.
+
 ### Drafts that cannot fit
 
 A task or flexible event whose work can't fit before its deadline is flagged on the draft as soon as it is read or edited, for example "Only 30 min left before the deadline, so 3 h can't fit." The check measures that item alone: time left, your available hours, events, fixed sessions, needed breaks and the daily limit. It is a warning, not a block. The draft offers **Move the deadline** (to the first deadline with enough time), **Shorten**, and **Schedule what fits**, which is a partial preview. Other flexible work can still leave an item short, which the preview shows. Nothing is ever placed after a deadline.

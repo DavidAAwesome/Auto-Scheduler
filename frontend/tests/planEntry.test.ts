@@ -274,3 +274,9 @@ test('drafts are planned over the longest window, so a later deadline is not cut
   await workspace.previewDrafts();
   assert.equal(bodies['/plan/preview'].horizonDays, 21);
 });
+
+test('chat repeats a past date from the draft', () => {
+  const view = { draft: emptyDraft('d1', { title: 'Essay', minutes: 60, deadline: '2026-11-04' }), ready: true,
+    issues: [{ field: 'deadline', code: 'past' as const, question: 'The due date Wed, Nov 4 has passed.', blocking: false }] };
+  assert.match(draftsReply([view], 'openai'), /The due date Wed, Nov 4 has passed\. Change it in the draft/);
+});

@@ -31,7 +31,8 @@ Priority: **P1** crash or wrong data, **P2** blocked flow, **P3** confusing text
 | B19 | P1 | Fixed (40dfc68) | An activity with a stated day and times becomes a flexible event |
 | B20 | P3 | Open | "Class Mon/Wed 10-11:15am until Dec 18" gets a garbled name and one date |
 | B21 | P2 | Fixed (bbd26a5) | A draft that cannot fit before its deadline shows no warning |
-| B22 | P2 | Fixed | A filled-in name is still asked for, and short tasks are offered splits |
+| B22 | P2 | Fixed (db458a2) | A filled-in name is still asked for, and short tasks are offered splits |
+| B23 | P1 | Fixed | Weekdays resolve to the wrong date |
 
 Open: B15 and B20.
 
@@ -169,3 +170,12 @@ Expected: no question about the name, and "This task is too short to split, so i
 Actual: the name field said "Read chapter" while the draft asked "The name of "Read chapter" could not be read" and
 listed "Still needed: name". Review trusted the reader's flags over the field's value. The AI only flags this on some
 runs. Notes in parentheses could also reach the item.
+
+### B23. Weekdays resolve to the wrong date (P1)
+Reported after the bug bash, on Thu Nov 5.
+1. Say "Essay due Wednesday": it became Wed Nov 4, already past.
+2. Say "team meeting Monday 10-11 AM": it became Sat Nov 7.
+
+Expected: the next such weekday, with today only if the time hasn't passed. The AI's date was trusted, and the built-in
+parser took a bare weekday as today even after its time had gone. Past dates were also hidden by the compact panel. The
+AI could return an empty copy of an item, or mark `location` unreadable on a task, which stopped the draft.
