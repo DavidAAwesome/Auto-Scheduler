@@ -263,3 +263,22 @@ def test_one_weekday_with_no_repeat_wording_is_one_event(monkeypatch):
 ])
 def test_stated_repeats_and_timetables_stay_weekly(monkeypatch, source, weekdays, image):
     assert extract(monkeypatch, event_extraction(source, weekdays), image).repeat.weekdays == list(weekdays)
+
+
+# ------------------------------------------------------------------ values the user did not state
+
+@pytest.mark.parametrize('stated, kept', [
+    ('2026-10-26', None),  # today: already passed at 8 AM
+    ('2026-10-20T09:00', None),
+    ('2026-10-29', '2026-10-29T00:00:00'),
+    ('2026-10-29T14:00:00', '2026-10-29T14:00:00'),
+])
+def test_not_before_is_kept_only_when_it_limits_anything(monkeypatch, stated, kept):
+    item = {**flexible_item([]).model_dump(), 'earliestStart': stated}
+    assert extract(monkeypatch, Extraction(notes=[], items=[LlmItem(**item)])).earliestStart == kept
+
+
+@pytest.mark.parametrize('limit, kept', [(120, None), (240, None), (45, 45)])
+def test_a_session_limit_of_the_whole_task_is_not_a_limit(monkeypatch, limit, kept):
+    item = {**flexible_item([]).model_dump(), 'maxSessionMinutes': limit}
+    assert extract(monkeypatch, Extraction(notes=[], items=[LlmItem(**item)])).maxSessionMinutes == kept

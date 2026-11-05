@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.config import get_settings
-from app.plan_drafts import DraftRepeat, PlanDraft, safe_id
+from app.plan_drafts import DraftRepeat, PlanDraft, parse_local_instant, safe_id
 from app.workspace import TimeWindow
 
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -112,7 +112,8 @@ Rules:
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
 - deadlineTime is the stated time only: noon is 12:00. Leave it null when no time is given (never fill in 23:59).
 - Never confuse a deadline with a scheduled date. "Essay due Friday" has deadlineDate Friday and no date/startTime.
-- Do not assume an event is movable, and do not invent anything: leave unknown fields null.
+- Do not assume an event is movable, and do not invent anything: leave unknown fields null. earliestStart,
+  allowSplit and maxSessionMinutes stay null unless the user states them.
 - If AM/PM is not stated and not clear from context, give your best reading in startTime/endTime AND list the field
   ("startTime", "endTime") in ambiguousFields.
 - A weekly timetable is recurring: set repeatWeekdays (Monday=0). Never turn it into one-time events. Only repeat when
@@ -212,6 +213,20 @@ def _settle_one_time(draft: PlanDraft, today: date) -> PlanDraft:
                                     'unreadable': keep(draft.unreadable)})
 
 
+def _without_guesses(draft: PlanDraft, now: datetime, zone: ZoneInfo) -> PlanDraft:
+    """Drops values that say nothing: a "not before" that has already passed and a session limit of the whole task.
+    A date-only "not before" becomes the start of that day, which is the form the review field can show."""
+    update: dict = {}
+    earliest = parse_local_instant(draft.earliestStart, zone)
+    if earliest and earliest <= now:
+        update['earliestStart'] = None
+    elif earliest and len(draft.earliestStart) == 10:
+        update['earliestStart'] = f'{draft.earliestStart}T00:00:00'
+    if draft.maxSessionMinutes and draft.minutes and draft.maxSessionMinutes >= draft.minutes:
+        update['maxSessionMinutes'] = None
+    return draft.model_copy(update=update)
+
+
 def drafts_from_extraction(extraction: Extraction) -> list[PlanDraft]:
     items = extraction.items[:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
@@ -262,7 +277,7 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
         raise
     except Exception as exc:  # anything unexpected from the SDK is a provider failure, not a server crash
         raise HTTPException(502, 'The AI provider request failed. Your input was kept; try again.') from exc
-    drafts = drafts_from_extraction(extraction)
+    drafts = [_without_guesses(d, now, zone) for d in drafts_from_extraction(extraction)]
     if not image:  # a photographed timetable is recurring by nature
         drafts = [_settle_one_time(d, local.date()) for d in drafts]
     return drafts, extraction.notes[:5]
