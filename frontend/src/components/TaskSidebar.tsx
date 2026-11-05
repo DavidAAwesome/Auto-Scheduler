@@ -91,7 +91,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
         )}
         <p className={`today-hours ${hours?.enabled ? "" : "off"}`}>
           <Icon name="clock" size={14} />
-          {hours?.enabled ? `Available ${hours.periods.map(p => `${clock12(p.start)} – ${clock12(p.end)}`).join(", ")}` : <>No available hours · <a href="#/settings">set hours</a></>}
+          {hours?.enabled ? `Available ${hours.periods.map(p => `${clock12(p.start)} – ${clock12(p.end)}`).join(", ")}` : <span>No available hours · <a href="#/settings">set&nbsp;hours</a></span>}
         </p>
         {agenda.length > 0 && (
           <ul className="today-sessions" aria-label="Today's schedule">

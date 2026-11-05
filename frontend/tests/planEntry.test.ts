@@ -191,3 +191,8 @@ test('greetings are not taken as answers to an open draft question', () => {
   for (const text of ['hello', 'Hi!', 'thanks', 'thank you', 'ok', 'Great.']) assert.equal(isChatter(text), true, text);
   for (const text of ['AM', 'Dec 12', '90 min', 'Okay Corral visit', 'Hello Kitty party']) assert.equal(isChatter(text), false, text);
 });
+
+test('the no-hours notice wraps as one piece of text', () => {
+  const source = readFileSync(new URL('../src/components/TaskSidebar.tsx', import.meta.url), 'utf8');
+  assert.match(source, /<span>No available hours · <a href="#\/settings">set&nbsp;hours<\/a><\/span>/);
+});
