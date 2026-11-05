@@ -282,3 +282,11 @@ def test_not_before_is_kept_only_when_it_limits_anything(monkeypatch, stated, ke
 def test_a_session_limit_of_the_whole_task_is_not_a_limit(monkeypatch, limit, kept):
     item = {**flexible_item([]).model_dump(), 'maxSessionMinutes': limit}
     assert extract(monkeypatch, Extraction(notes=[], items=[LlmItem(**item)])).maxSessionMinutes == kept
+
+
+@pytest.mark.parametrize('kind, expected', [('Class', 'Class'), ('Meeting', 'Meeting'), ('Other', None)])
+def test_an_unnamed_event_takes_the_name_of_its_kind(monkeypatch, kind, expected):
+    extraction = event_extraction('class Tue 10-11:30', title=None, eventKind=kind, ambiguousFields=['title'])
+    draft = extract(monkeypatch, extraction)
+    assert draft.title == expected
+    assert ('title' in draft.ambiguous) == (expected is None)

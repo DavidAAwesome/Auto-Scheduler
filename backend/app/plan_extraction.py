@@ -109,6 +109,7 @@ Item kinds:
   the user explicitly allows splitting (then allowSplit=true). Give its allowed period with earliestStart/deadlineDate or windows. Leave windows empty unless the user states when it should happen.
 
 Rules:
+- title is the item's name in the user's words, even when short: "class Tue 10-11:30" has the title "Class".
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
 - deadlineTime is the stated time only: noon is 12:00. Leave it null when no time is given (never fill in 23:59).
 - Never confuse a deadline with a scheduled date. "Essay due Friday" has deadlineDate Friday and no date/startTime.
@@ -183,6 +184,10 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
     if item.kind == 'fixed_event' and start is not None and end is not None and minutes is None:
         minutes = end - start if end > start else None
     title = (item.title or '').strip()[:80] or None
+    if not title and item.kind == 'fixed_event' and item.eventKind not in {None, 'Other'}:
+        title = item.eventKind  # "class Tue 10-11:30" names its kind, and that is a fine name for it
+        unreadable = [f for f in unreadable if f != 'title']
+        ambiguous = [f for f in ambiguous if f != 'title']
     return PlanDraft(
         id=f'd{index + 1}', kind=item.kind, title=title, minutes=minutes if item.kind != 'fixed_event' else None,
         deadline=deadline, dueTime=None if due_time is None else min(due_time, 1439), earliestStart=item.earliestStart,
