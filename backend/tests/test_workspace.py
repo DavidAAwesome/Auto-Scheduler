@@ -84,6 +84,21 @@ def test_availability_saves_all_weekdays_and_reloads(environment):
     assert client.get('/availability').headers['cache-control'] == 'no-store'
 
 
+def test_turning_a_day_off_deletes_its_hours(environment):
+    client, db = environment
+    user = register(client)
+    data = client.get('/availability').json()
+    data['days'][2].update(enabled=True, periods=[{'start': 480, 'end': 600}, {'start': 780, 'end': 900}])
+    data['weekOverrides'] = [{'weekStart': '2026-11-02', 'days': [dict(d) for d in data['days']]}]
+    assert client.put('/availability', json=data).status_code == 200
+    data['days'][2]['enabled'] = False
+    data['weekOverrides'][0]['days'][2]['enabled'] = False
+    saved = client.put('/availability', json=data).json()
+    assert saved['days'][2] == {'day': 2, 'enabled': False, 'periods': []}
+    assert saved['weekOverrides'][0]['days'][2]['periods'] == []
+    assert db.availability.find_one({'user_id': user['id']})['days'][2]['periods'] == []
+
+
 @pytest.mark.parametrize('method,path,data', [
     ('get','/tasks',None), ('post','/tasks',TASK), ('get','/tasks/012345678901234567890123',None),
     ('put','/tasks/012345678901234567890123',TASK), ('patch','/tasks/012345678901234567890123/completion',{'done':True}),
@@ -110,11 +125,11 @@ def test_invalid_availability_keeps_previous_save(environment, case):
     original = client.get('/availability').json()
     assert original['saved'] is False
     assert client.put('/availability',json=original).status_code == 200
-    original['saved'] = True
+    original = client.get('/availability').json()
+    assert original['saved'] is True
     data = client.get('/availability').json()
     if case == 'reversed':
-        period = data['days'][0]['periods'][0]
-        period['end'] = period['start']
+        data['days'][0]['periods'] = [{'start': 600, 'end': 600}]
     if case == 'duplicate': data['days'][1]['day'] = 0
     if case == 'missing': data['days'].pop()
     if case == 'timezone': data['timeZone'] = 'Not/AZone'

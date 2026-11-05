@@ -457,6 +457,7 @@ class AvailableDay(BaseModel):
     @model_validator(mode='after')
     def valid_periods(self):
         if not self.enabled:
+            self.periods = []  # an unavailable day keeps no hours, so turning it back on starts fresh
             return self
         if not self.periods:
             raise ValueError('Enabled days need at least one available period.')

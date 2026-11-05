@@ -183,8 +183,10 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
   }
 
   function changeDay(day: number, patch: Partial<DraftDay>) {
+    // Turning a day off deletes its hours; turning it back on starts from the default 9 AM – 5 PM.
+    const cleared = patch.enabled === false ? { periods: [{ start: "09:00", end: "17:00" }] } : {};
     setDraftDays((rows) =>
-      rows.map((row) => (row.day === day ? { ...row, ...patch } : row)),
+      rows.map((row) => (row.day === day ? { ...row, ...patch, ...cleared } : row)),
     );
     edited();
   }
