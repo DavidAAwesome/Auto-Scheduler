@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventClash, eventTimeProblem, layoutLanes, occurrenceCount, occurrencesOn, occursOn, overlappingWork } from '../src/utils/events.ts';
+import { BLOCK_GAP, eventClash, eventTimeProblem, HOUR_HEIGHT, layoutBlocks, layoutLanes, MIN_BLOCK_HEIGHT, occurrenceCount, occurrencesOn, occursOn, overlappingWork } from '../src/utils/events.ts';
 import { validateEvent } from '../src/services/taskRules.ts';
 import type { CalendarEvent } from '../src/types/models.ts';
 
@@ -107,4 +107,73 @@ test('an event overlaps work sessions only, not the breaks between them', () => 
   ];
   assert.deepEqual(overlappingWork(sessions, event, 540, 600), [sessions[0]]);
   assert.deepEqual(overlappingWork(sessions, event, 600, 540), []);
+});
+
+
+// ------------------------------------------------------------------ block layout
+
+const block = (start: number, end: number) => ({ start, end });
+const boxes = (items: { start: number; end: number }[], hour: number) => {
+  const placed = layoutBlocks(items, hour);
+  return items.map(item => placed.get(item)!);
+};
+function assertNoTouching(items: { top: number; height: number }[]) {
+  items.forEach((box, i) => {
+    assert.ok(box.height >= MIN_BLOCK_HEIGHT, `block ${i} is ${box.height}px`);
+    if (i) assert.ok(box.top >= items[i - 1].top + items[i - 1].height + BLOCK_GAP, `block ${i} touches the one before`);
+  });
+}
+
+for (const [name, hour] of Object.entries(HOUR_HEIGHT)) {
+  test(`${name}: a 50-minute session and a 10-minute break stay apart, and work keeps its true start`, () => {
+    const day = [block(540, 590), block(590, 600), block(600, 650), block(650, 660), block(660, 710)];
+    const placed = boxes(day, hour);
+    assertNoTouching(placed);
+    for (const i of [0, 2, 4]) assert.equal(placed[i].top, Math.round((day[i].start / 60) * hour), `session ${i} starts at its time`);
+  });
+}
+
+test('hour rows are 80px on desktop and 64px on mobile', () => {
+  assert.deepEqual(HOUR_HEIGHT, { desktop: 80, mobile: 64 });
+});
+
+test('a block with room keeps its true size, less the gap only when something follows directly', () => {
+  assert.deepEqual(boxes([block(540, 600)], 80), [{ lane: 0, lanes: 1, top: 720, height: 80 }]);
+  const [first, second] = boxes([block(540, 600), block(600, 660)], 80);
+  assert.equal(first.height, 78);
+  assert.equal(second.top, 800);
+});
+
+test('a short block alone gets the minimum height', () => {
+  assert.equal(boxes([block(600, 605)], 80)[0].height, MIN_BLOCK_HEIGHT);
+});
+
+test('a run of short blocks moves down rather than overlap', () => {
+  const day = [block(540, 550), block(550, 560), block(560, 570), block(570, 580)];
+  assertNoTouching(boxes(day, 64));
+});
+
+test('a gap after a push is used to get back to true time', () => {
+  const day = [block(540, 545), block(545, 550), block(550, 555), block(720, 780)];
+  assert.equal(boxes(day, 80)[3].top, 960);
+});
+
+test('truly overlapping items sit side by side with their full times', () => {
+  const [a, b, c] = boxes([block(600, 660), block(630, 690), block(720, 780)], 80);
+  assert.deepEqual([a.lane, b.lane, a.lanes, b.lanes], [0, 1, 2, 2]);
+  assert.deepEqual([a.top, b.top], [800, 840]);
+  assert.equal(c.lanes, 1);
+});
+
+test('a short item beside a longer one is not squeezed by the lane next to it', () => {
+  const [long, short, after] = boxes([block(600, 660), block(600, 605), block(605, 660)], 80);
+  assert.equal(long.height, 80);
+  assert.ok(short.height >= MIN_BLOCK_HEIGHT);
+  assert.ok(after.top >= short.top + short.height + BLOCK_GAP || after.lane !== short.lane);
+});
+
+test('the block after a two-lane cluster clears both lanes', () => {
+  const [a, b, c] = boxes([block(600, 650), block(600, 660), block(660, 720)], 80);
+  assert.ok(c.top >= Math.max(a.top + a.height, b.top + b.height) + BLOCK_GAP);
+  assert.equal(c.lanes, 1);
 });

@@ -53,6 +53,17 @@ export function mondayOf(date: string) {
   return weekStart(date);
 }
 
+/** The earliest minute the user is available on any of these dates, or 8 AM when they have no hours set. */
+export function firstAvailableMinute(availability: Availability | null, dates: string[], fallback = 8 * 60) {
+  const starts = availability
+    ? dates.flatMap(date => {
+      const day = resolveDay(availability, date);
+      return day.enabled ? day.periods.map(period => period.start) : [];
+    })
+    : [];
+  return starts.length ? Math.min(...starts) : fallback;
+}
+
 export function resolveDay(availability: Availability, date: string): AvailableDay {
   const monday = mondayOf(date);
   const override = (availability.weekOverrides ?? []).find(

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { DEFAULT_DUE_TIME, DRAFT_PREFIX, type CalendarEvent, type ProposedEvent, type ScheduleConflict, type ScheduleSession, type Task, type WorkSession } from "../types/models";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { calendarViewStore, useCalendarView, useShowHolidays } from "../services/uiState";
@@ -7,9 +8,9 @@ import { observancesBetween, type Observance } from "../utils/holidays";
 import {
   clock12, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
 } from "../utils/calendar";
-import { resolveDay } from "../utils/availability";
+import { firstAvailableMinute, resolveDay } from "../utils/availability";
 import { endsAfterDue } from "../utils/planning";
-import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
+import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, HOUR_HEIGHT, layoutBlocks, occurrencesOn, TWO_LINE_HEIGHT, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 import { isDerivedBreak } from "../utils/breaks";
@@ -18,7 +19,6 @@ import DraftReview from "./DraftReview";
 import SplitOptionsPanel from "./SplitOptionsPanel";
 import { accountTimeZone } from "../utils/timeZones";
 
-const HOUR_HEIGHT = 48;
 const MONTH_ITEM_LIMIT = 3;
 
 export interface CalendarHandlers {
@@ -39,12 +39,16 @@ export interface CalendarHandlers {
 const dueLabel = (task: Task) => (task.dueTime === DEFAULT_DUE_TIME ? "" : clock12(task.dueTime));
 const range = (start: number, end: number) => `${clock12(start)} – ${clock12(end % 1440)}`;
 /** Horizontal placement for side-by-side (overlapping) blocks. */
-const laneStyle = ({ lane, lanes }: Placed, start: number, end: number): CSSProperties => ({
-  top: (start / 60) * HOUR_HEIGHT + 1,
-  height: Math.max(((end - start) / 60) * HOUR_HEIGHT - 2, 16),
+const laneStyle = ({ lane, lanes, top, height }: Placed): CSSProperties => ({
+  top,
+  height,
   left: `calc(${(lane / lanes) * 100}% + 3px)`,
   width: `calc(${100 / lanes}% - 6px)`,
 });
+/** Too short for a second line: the title alone, with the details in the tooltip and card. */
+const oneLine = (place: Placed) => (place.height < TWO_LINE_HEIGHT ? "compact" : "");
+/** A CSS position in the grid for a time of day. */
+const timeTop = (minute: number) => `calc(${minute / 60} * var(--hour))`;
 
 function TaskChip({ task, onOpen }: { task: Task; onOpen: CalendarHandlers["onOpen"] }) {
   const time = dueLabel(task);
@@ -67,8 +71,8 @@ function SessionBlock({ session, task, place, onOpen }: { session: WorkSession; 
   const done = task.done || session.status === "completed";
   return (
     <button
-      className={`session-block cat-${task.category.toLowerCase()} ${done ? "done" : ""} ${late ? "late" : ""} ${length < 45 ? "compact" : ""}`}
-      style={laneStyle(place, session.start, session.end)}
+      className={`session-block cat-${task.category.toLowerCase()} ${done ? "done" : ""} ${late ? "late" : ""} ${oneLine(place)}`}
+      style={laneStyle(place)}
       onClick={e => { e.stopPropagation(); onOpen(task, e.currentTarget.getBoundingClientRect(), session.id); }}
       title={`Work on ${task.title} · ${range(session.start, session.end)} · saved${session.locked ? ", locked" : ""}${session.status === "completed" ? ", done" : ""}${late ? " · ends after the due time" : ""}`}
     >
@@ -83,17 +87,17 @@ function BreakBlock({ item, place, onOpen }: { item: CalendarItem; place: Placed
   const { session } = item;
   const proposed = item.kind === "proposed";
   const label = session.locked ? "Protected break" : "Break";
-  const className = `plan-block break ${proposed ? "preview" : ""} ${session.end - session.start < 45 ? "compact" : ""}`;
+  const className = `plan-block break ${proposed ? "preview" : ""} ${oneLine(place)}`;
   const content = <>
     <span className="session-title">{label}</span>
     <span className="session-time">{range(session.start, session.end)}{proposed ? " · proposed" : ""}</span>
   </>;
   // Only a saved break has a card to delete it. A proposed one is part of the preview; an automatic one follows the work.
   if (proposed || isDerivedBreak(session)) {
-    return <div className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · ${proposed ? "proposed, not saved" : "automatic, between work sessions"}`}>{content}</div>;
+    return <div className={className} style={laneStyle(place)} title={`${label} · ${range(session.start, session.end)} · ${proposed ? "proposed, not saved" : "automatic, between work sessions"}`}>{content}</div>;
   }
   return (
-    <button className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · click to delete`}
+    <button className={className} style={laneStyle(place)} title={`${label} · ${range(session.start, session.end)} · click to delete`}
       onClick={e => { e.stopPropagation(); onOpen(session, e.currentTarget.getBoundingClientRect()); }}>
       {content}
     </button>
@@ -104,7 +108,7 @@ function BreakBlock({ item, place, onOpen }: { item: CalendarItem; place: Placed
 function RemovedBlock({ item, place }: { item: CalendarItem; place: Placed }) {
   const { session } = item;
   return (
-    <div className="plan-block removed compact" style={laneStyle(place, session.start, session.end)}
+    <div className={`plan-block removed ${oneLine(place)}`} style={laneStyle(place)}
       title={`Apply removes this saved ${session.type === "break" ? "break" : `session for ${session.title}`}: ${item.reason ?? ""}`}>
       <span className="session-title">{session.type === "break" ? "Break" : session.title}</span>
       <span className="session-time">moves</span>
@@ -116,8 +120,8 @@ function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date
   const length = event.end - event.start;
   return (
     <button
-      className={`event-block kind-${event.kind.toLowerCase()} source-${event.source} ${length < 45 ? "compact" : ""}`}
-      style={laneStyle(place, event.start, event.end)}
+      className={`event-block kind-${event.kind.toLowerCase()} source-${event.source} ${oneLine(place)}`}
+      style={laneStyle(place)}
       onClick={e => { e.stopPropagation(); onOpen(event, date, e.currentTarget.getBoundingClientRect()); }}
       title={`${event.title} · ${range(event.start, event.end)}${event.location ? ` · ${event.location}` : ""}${event.source === "google" ? " · from Google Calendar" : event.source === "outlook" ? " · from Outlook" : ""}`}
     >
@@ -163,7 +167,7 @@ function AllDayChip({ event, date, onOpen }: { event: CalendarEvent; date: strin
 /** A timed event marked "Free": a light band behind everything else, so busy items and planned work sit on top. */
 function FreeBand({ event, date, onOpen }: { event: CalendarEvent; date: string; onOpen: CalendarHandlers["onOpenEvent"] }) {
   return (
-    <div className={`free-band source-${event.source}`} style={{ top: (event.start / 60) * HOUR_HEIGHT, height: ((event.end - event.start) / 60) * HOUR_HEIGHT }}>
+    <div className={`free-band source-${event.source}`} style={{ top: timeTop(event.start), height: timeTop(event.end - event.start) }}>
       <button className="free-band-label" onClick={e => { e.stopPropagation(); onOpen(event, date, e.currentTarget.getBoundingClientRect()); }}
         title={`${event.title} · ${range(event.start, event.end)} · marked Free${SOURCE_LABEL[event.source]}: doesn't block time`}>
         <Icon name={eventIcon[event.kind]} size={12} /> {event.title} <small>Free</small>
@@ -175,8 +179,8 @@ function FreeBand({ event, date, onOpen }: { event: CalendarEvent; date: string;
 /** A fixed event that exists only as a draft: drawn dashed until Apply saves it. */
 function ProposedEventBlock({ event, place }: { event: ProposedEvent; place: Placed }) {
   return (
-    <div className={`event-block kind-${event.kind.toLowerCase()} preview ${event.end - event.start < 45 ? "compact" : ""}`}
-      style={laneStyle(place, event.start, event.end)} title={`Proposed event: ${event.title} · ${range(event.start, event.end)} · not saved`}>
+    <div className={`event-block kind-${event.kind.toLowerCase()} preview ${oneLine(place)}`}
+      style={laneStyle(place)} title={`Proposed event: ${event.title} · ${range(event.start, event.end)} · not saved`}>
       <span className="event-title"><Icon name={eventIcon[event.kind]} size={13} /> ✦ {event.title}</span>
       <span className="event-meta">{range(event.start, event.end)} · proposed</span>
     </div>
@@ -186,8 +190,8 @@ function ProposedEventBlock({ event, place }: { event: ProposedEvent; place: Pla
 function PreviewBlock({ session, place }: { session: ScheduleSession; place: Placed }) {
   return (
     <div
-      className={`plan-block focus preview ${session.end - session.start < 45 ? "compact" : ""}`}
-      style={laneStyle(place, session.start, session.end)}
+      className={`plan-block focus preview ${oneLine(place)}`}
+      style={laneStyle(place)}
       title={`Proposed: ${session.title} · ${range(session.start, session.end)}`}
     >
       <span className="session-title">✦ {session.title}</span>
@@ -199,6 +203,7 @@ function PreviewBlock({ session, place }: { session: ScheduleSession; place: Pla
 function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
   const { tasks, sessions, events, availability, schedulePreview, preferences } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
+  const hourHeight = useMediaQuery("(max-width: 760px)") ? HOUR_HEIGHT.mobile : HOUR_HEIGHT.desktop;
   const zone = accountTimeZone(availability);
   const [now, setNow] = useState(() => minutesInZone(zone));
   const byDate = tasksByDate(tasks);
@@ -221,18 +226,18 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
     const timer = setInterval(() => setNow(minutesInZone(zone)), 60_000);
     return () => clearInterval(timer);
   }, [zone]);
-  // Open the grid at the start of the user's day rather than at midnight.
-  const firstStart = Math.min(...(availability?.days.filter(d => d.enabled).flatMap(d => d.periods.map(p => p.start)) ?? []), 8 * 60);
+  // Open the grid at the user's first available hour, with its label clear of the sticky header.
+  const firstStart = firstAvailableMinute(availability, dates);
   useEffect(() => {
-    if (scroller.current) scroller.current.scrollTop = Math.max(0, (firstStart / 60 - 0.5) * HOUR_HEIGHT);
-  }, [firstStart, dates.length]);
+    if (scroller.current) scroller.current.scrollTop = Math.max(0, (firstStart / 60) * hourHeight - 12);
+  }, [firstStart, hourHeight, dates.length]);
   function slotAt(date: string, event: MouseEvent<HTMLDivElement>) {
     if (event.target !== event.currentTarget) return;
     const y = event.clientY - event.currentTarget.getBoundingClientRect().top;
-    const start = Math.min(Math.floor((y / HOUR_HEIGHT) * 4) * 15, 1440 - 15);
+    const start = Math.min(Math.floor((y / hourHeight) * 4) * 15, 1440 - 15);
     onSlot(date, start, new DOMRect(event.clientX, event.clientY, 0, 0));
   }
-  const columns = { "--cols": dates.length } as CSSProperties;
+  const columns = { "--cols": dates.length, "--hour": `${hourHeight}px` } as CSSProperties;
   return (
     <div className="time-grid" ref={scroller} style={columns}>
       <div className="grid-head" ref={head}>
@@ -256,7 +261,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
       </div>
       <div className="grid-body">
         <div className="hours">
-          {Array.from({ length: 24 }, (_, h) => <span key={h} style={{ top: h * HOUR_HEIGHT }}>{h ? clock12(h * 60) : ""}</span>)}
+          {Array.from({ length: 24 }, (_, h) => <span key={h} style={{ top: timeTop(h * 60) }}>{h ? clock12(h * 60) : ""}</span>)}
         </div>
         {dates.map(date => {
           const hours = availability ? resolveDay(availability, date) : null;
@@ -270,17 +275,17 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
             ...proposedEventsOn(schedulePreview, date).map(e => ({ kind: "proposedEvent" as const, start: e.start, end: e.end, proposed: e })),
             ...onDay.map(i => ({ kind: i.kind === "removed" ? "removed" as const : i.session.type === "break" ? "break" as const : i.kind === "proposed" ? "preview" as const : "session" as const,
               start: i.session.start, end: i.session.end, session: i.session, item: i }))];
-          const lanes = layoutLanes(items);
+          const lanes = layoutBlocks(items, hourHeight);
           return (
             <div key={date} className={`day-col ${date === today ? "is-today" : ""}`} onClick={e => slotAt(date, e)} title="Click to plan work or add an event">
               {hours?.enabled && hours.periods.map(period => (
-                <div key={period.start} className="availability-block" style={{ top: (period.start / 60) * HOUR_HEIGHT, height: ((period.end - period.start) / 60) * HOUR_HEIGHT }}>
+                <div key={period.start} className="availability-block" style={{ top: timeTop(period.start), height: timeTop(period.end - period.start) }}>
                   <span>Available {range(period.start, period.end)}</span>
                 </div>
               ))}
               {free.map(({ event }) => <FreeBand key={`free-${event.id}`} event={event} date={date} onOpen={onOpenEvent} />)}
               {(byDate.get(date) ?? []).filter(t => !t.done && t.dueTime !== DEFAULT_DUE_TIME).map(task => (
-                <div key={task.id} className={`due-marker cat-${task.category.toLowerCase()}`} style={{ top: (task.dueTime / 60) * HOUR_HEIGHT }}>
+                <div key={task.id} className={`due-marker cat-${task.category.toLowerCase()}`} style={{ top: timeTop(task.dueTime) }}>
                   <span>{task.title} due</span>
                 </div>
               ))}
@@ -295,7 +300,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
                     : item.kind === "break"
                       ? <BreakBlock key={`break-${item.session.id}`} item={item.item} place={lanes.get(item)!} onOpen={onOpenBreak} />
                       : <RemovedBlock key={`removed-${item.session.id}`} item={item.item} place={lanes.get(item)!} />)}
-              {date === today && <div className="now-line" style={{ top: (now / 60) * HOUR_HEIGHT }} aria-hidden="true" />}
+              {date === today && <div className="now-line" style={{ top: timeTop(now) }} aria-hidden="true" />}
             </div>
           );
         })}

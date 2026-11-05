@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addMonths, clock12, rangeTitle, shiftAnchor, tasksByDate, visibleDates, weekdayIndex } from '../src/utils/calendar.ts';
 import { duration } from '../src/utils/taskDisplay.ts';
-import type { Task } from '../src/types/models.ts';
+import { firstAvailableMinute } from '../src/utils/availability.ts';
+import type { Availability, Task } from '../src/types/models.ts';
 
 test('day, week and month views show the right dates', () => {
   assert.deepEqual(visibleDates('day', '2026-10-07'), ['2026-10-07']);
@@ -54,4 +55,14 @@ test('tasks group by due date with open, high-priority tasks first', () => {
   const map = tasksByDate(tasks);
   assert.deepEqual(map.get('2026-10-07')!.map(t => t.id), ['c', 'a', 'b']);
   assert.deepEqual(map.get('2026-10-08')!.map(t => t.id), ['d']);
+});
+
+
+test('the grid opens at the first available hour of the days on screen', () => {
+  const hours = (start: number, days = [0, 1, 2, 3, 4]) => ({ timeZone: 'UTC', reminders: false, weekOverrides: [], days: [0, 1, 2, 3, 4, 5, 6].map(day => ({ day, enabled: days.includes(day), periods: [{ start, end: 1020 }] })) }) as unknown as Availability;
+  const monday = '2026-11-02', saturday = '2026-11-07';
+  assert.equal(firstAvailableMinute(hours(8 * 60), [monday]), 8 * 60);
+  assert.equal(firstAvailableMinute(hours(9 * 60 + 30), [monday, saturday]), 9 * 60 + 30);
+  assert.equal(firstAvailableMinute(hours(9 * 60), [saturday]), 8 * 60, 'no hours on screen');
+  assert.equal(firstAvailableMinute(null, [monday]), 8 * 60);
 });
