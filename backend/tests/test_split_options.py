@@ -28,7 +28,7 @@ def task(id='t', priority='High', minutes=200, due_offset=3, **kw):
 
 def plan(strategy, tasks, events=(), existing=(), availability=None, prefs=Prefs(), days=7):
     return plan_schedule(list(tasks), availability or hours(), prefs, list(events), list(existing), at(0, 480), days,
-                         'repair', split=('t', strategy))
+                         'repair', split=(('t',), strategy))
 
 
 def work(result, task_id='t'):
@@ -157,7 +157,7 @@ def test_results_are_deterministic_and_unknown_strategies_are_refused():
 # ------------------------------------------------------------------ API
 
 def options(client, task_id):
-    response = client.post('/schedule/split-options', json={'taskId': task_id})
+    response = client.post('/schedule/split-options', json={'taskIds': [task_id]})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -237,7 +237,7 @@ def test_api_refuses_tasks_that_cannot_be_split(environment, monkeypatch, body, 
     client, _ = environment
     setup_user(client, monkeypatch)
     item = add_task(client, 'Item', 'High', **{'deadline': TOMORROW, **body})
-    response = client.post('/schedule/split-options', json={'taskId': item['id']})
+    response = client.post('/schedule/split-options', json={'taskIds': [item['id']]})
     assert response.status_code == status and text in response.json()['detail']
 
 
@@ -245,9 +245,9 @@ def test_api_scopes_tasks_to_their_owner(environment, monkeypatch):
     client, _ = environment
     setup_user(client, monkeypatch)
     item = add_task(client, 'Mine', 'High', deadline=TOMORROW)
-    assert client.post('/schedule/split-options', json={'taskId': 'nope'}).status_code == 404
+    assert client.post('/schedule/split-options', json={'taskIds': ['nope']}).status_code == 404
     sign_in(client, uid='someone-else', email='else@example.com', name='Else')
-    assert client.post('/schedule/split-options', json={'taskId': item['id']}).status_code == 404
+    assert client.post('/schedule/split-options', json={'taskIds': [item['id']]}).status_code == 404
 
 
 def test_api_apply_saves_the_picked_option_and_makes_the_others_stale(transaction_environment, monkeypatch):
@@ -280,3 +280,59 @@ def test_api_reshaping_replaces_saved_sessions_of_the_task_only(transaction_envi
     assert {s['id'] for s in saved if s['title'] == 'Lab'} == before
     assert sum(s['end'] - s['start'] for s in saved if s['title'] == 'Essay') == 240
     assert len({s['date'] for s in saved if s['title'] == 'Essay'}) == 4
+
+
+# ------------------------------------------------------------------ several tasks and drafts
+
+TWO_DRAFTS = [{'id': 'a', 'title': 'Essay', 'minutes': 120, 'deadline': DUE}, {'id': 'b', 'title': 'Lab', 'minutes': 100, 'deadline': DUE}]
+
+
+def test_the_same_shape_applies_to_every_task_being_split():
+    result = plan_schedule([task('a', minutes=120), task('b', minutes=120)], hours(), Prefs(), [], [], at(0, 480), 7,
+                           'repair', split=(('a', 'b'), 'even'))
+    assert len(per_day(result, 'a')) > 1 and len(per_day(result, 'b')) > 1
+
+
+def test_api_splits_several_saved_tasks_and_notes_any_it_cannot(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    essay = add_task(client, 'Essay', 'High', minutes=120, deadline=DUE)
+    lab = add_task(client, 'Lab', 'High', minutes=120, deadline=DUE)
+    whole = add_task(client, 'Exam', 'High', minutes=30, deadline=DUE, allowSplit=False)
+    response = client.post('/schedule/split-options', json={'taskIds': [essay['id'], lab['id'], whole['id']]})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['taskIds'] == [essay['id'], lab['id']]
+    assert (result['title'], result['remainingMinutes']) == ('Essay and Lab', 240)
+    assert any('Splitting is off for "Exam"' in note for note in result['notes'])
+    assert all(o['scheduledMinutes'] == 240 for o in result['options'])
+
+
+def test_api_splits_drafts_under_review_and_saves_nothing(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    response = client.post('/plan/split-options', json={'drafts': TWO_DRAFTS, 'batchId': 'b1'})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['taskIds'] == ['draft:a', 'draft:b'] and len(result['options']) >= 2
+    assert all(o['preview']['mode'] == 'plan' for o in result['options'])
+    assert db.tasks.count_documents({}) == 0
+
+
+def test_api_a_draft_flagged_on_preferred_times_still_gets_options(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    drafts = [{**draft, 'unreadable': ['windows']} for draft in TWO_DRAFTS]
+    assert client.post('/plan/review', json={'drafts': drafts}).json()[0]['ready'] is True
+    assert client.post('/plan/split-options', json={'drafts': drafts}).status_code == 200
+
+
+def test_api_applying_a_draft_option_saves_the_tasks_with_that_split(transaction_environment, monkeypatch):
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    options_ = client.post('/plan/split-options', json={'drafts': TWO_DRAFTS, 'batchId': 'b1'}).json()['options']
+    picked = next(o for o in options_ if o['id'] == 'even')
+    applied = client.post('/schedule/apply', json={'previewId': picked['preview']['previewId']})
+    assert applied.status_code == 200, applied.text
+    assert {t['title'] for t in applied.json()['tasks']} == {'Essay', 'Lab'}
+    assert rows(applied.json()['schedule']['sessions']) == rows(picked['preview']['sessions'])

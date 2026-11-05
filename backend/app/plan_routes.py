@@ -20,8 +20,8 @@ from app.database import get_database
 from app.feasibility import FeasibilityResult, check_feasibility
 from app.plan_drafts import DraftView, PlanDraft, review_all, review_draft
 from app.plan_extraction import ImageInput, apply_answer, decode_image, extract_with_model, new_batch_id, parse_text
-from app.schedule_model import SchedulePreview
-from app.scheduling_service import MAX_HORIZON_DAYS, build_preview
+from app.schedule_model import SchedulePreview, SplitOptions
+from app.scheduling_service import MAX_HORIZON_DAYS, build_preview, build_split_options
 from app.workspace import get_availability
 
 router = APIRouter(prefix='/plan', tags=['plan'])
@@ -139,6 +139,14 @@ def feasibility(body: DraftsRequest, user=Depends(get_current_user), db=Depends(
     """“Can this fit?” Reads only; nothing is saved, not even a proposal."""
     now = utc_now()
     return check_feasibility(user, db, now, _ready(body, user, db, now), body.horizonDays)
+
+
+@router.post('/split-options', response_model=SplitOptions)
+def split_options(body: DraftsRequest, user=Depends(get_current_user), db=Depends(get_database)):
+    """Ways to divide the task drafts under review. Apply saves the drafts with the option the user picks."""
+    now = utc_now()
+    drafts = _ready(body, user, db, now)
+    return build_split_options(user, db, now, [], drafts=drafts, batch_id=new_batch_id(body.batchId))
 
 
 @router.post('/preview', response_model=SchedulePreview)

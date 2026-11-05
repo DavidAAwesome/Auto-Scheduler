@@ -25,6 +25,7 @@ FIELD_LABELS = {
     'title': 'name', 'minutes': 'length', 'deadline': 'deadline', 'dueTime': 'due time', 'date': 'date',
     'start': 'start time', 'end': 'end time', 'repeat.until': 'last date', 'repeat.startDate': 'first date',
     'repeat.weekdays': 'weekdays', 'priority': 'priority', 'earliestStart': 'earliest start', 'location': 'location',
+    'windows': 'preferred times',
 }
 WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -121,9 +122,17 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
         if not any(i.field == field for i in issues):
             issues.append(DraftIssue(field=field, code=code, question=question, blocking=blocking))
 
+    # Preferred times are optional: without them an item can use any available time, so they never hold a draft up.
+    if 'windows' in {*draft.unreadable, *draft.ambiguous}:
+        ask('windows', f'The preferred times of "{name}" could not be read, so it can use any time you are available.',
+            'warning', blocking=False)
     for field in draft.unreadable:
+        if field == 'windows':
+            continue
         ask(field, f'The {FIELD_LABELS.get(field, field)} of "{name}" could not be read. What is it?', 'unreadable')
     for field in draft.ambiguous:
+        if field == 'windows':
+            continue
         if field in {'start', 'end'}:
             value = draft.start if field == 'start' else draft.end
             shown = f'{(value // 60) % 12 or 12}:{value % 60:02d}' if value is not None else 'the time'

@@ -8,8 +8,8 @@ from fastapi import HTTPException
 
 from app import plan_extraction
 from app.config import get_settings
-from app.plan_drafts import review_draft
-from app.plan_extraction import Extraction, LlmItem, apply_answer, parse_text
+from app.plan_drafts import PlanDraft, draft_task, review_draft
+from app.plan_extraction import Extraction, LlmItem, LlmWindow, _convert_item, apply_answer, parse_text
 from schedule_fixtures import NOW, setup_user
 
 NY = ZoneInfo('America/New_York')
@@ -203,3 +203,36 @@ def test_text_uses_the_model_when_configured_and_output_is_still_validated(envir
     first = body['drafts'][0]
     assert first['draft']['start'] is None and {'start', 'repeat.until'} <= set(first['draft']['unreadable'])
     assert any(i['code'] == 'unreadable' and i['field'] == 'start' for i in first['issues'])
+
+
+# ------------------------------------------------------------------ preferred times are optional
+
+def flexible_item(windows, ambiguous=()):
+    return LlmItem(kind='task', title='Essay', sourceText='Essay', minutes=120, deadlineDate='2026-10-30', deadlineTime=None,
+                   earliestStart=None, priority='High', allowSplit=None, maxSessionMinutes=None, date=None, startTime=None,
+                   endTime=None, eventKind=None, location=None, repeatWeekdays=[], repeatStartDate=None, repeatUntil=None,
+                   windows=windows, dependsOnTitles=[], ambiguousFields=list(ambiguous), unreadableFields=[])
+
+
+@pytest.mark.parametrize('windows', [[], [LlmWindow(weekdays=[], start='', end='')]])
+def test_missing_preferred_times_never_block_a_draft_and_leave_it_on_availability(windows):
+    draft = _convert_item(flexible_item(windows), 0, {})
+    view = review_draft(draft, NOW, NY)
+    assert view.ready and not any(i.field == 'windows' for i in view.issues)
+    assert draft.windows == [] and draft_task(draft, {draft.id}).windows == []
+
+
+def test_unreadable_preferred_times_are_a_note_not_a_question():
+    draft = _convert_item(flexible_item([LlmWindow(weekdays=[0], start='evening', end='late')]), 0, {})
+    assert draft.windows == [] and 'windows' in draft.unreadable
+    view = review_draft(draft, NOW, NY)
+    issue = next(i for i in view.issues if i.field == 'windows')
+    assert view.ready and not issue.blocking
+    assert 'preferred times' in issue.question and 'windows' not in issue.question
+
+
+@pytest.mark.parametrize('field', ['unreadable', 'ambiguous'])
+def test_drafts_already_flagged_on_windows_are_released(field):
+    """Drafts held in a browser from before this change still carry the flag."""
+    draft = PlanDraft(id='d1', title='Essay', minutes=120, deadline='2026-10-30', **{field: ['windows']})
+    assert review_draft(draft, NOW, NY).ready

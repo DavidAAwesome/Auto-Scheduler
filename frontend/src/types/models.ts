@@ -211,7 +211,7 @@ export interface SplitOption {
   movedSessions: number;
   preview: SchedulePreview;
 }
-export interface SplitOptions { taskId: string; title: string; dueAt: string; remainingMinutes: number; options: SplitOption[]; notes: string[] }
+export interface SplitOptions { taskIds: string[]; title: string; remainingMinutes: number; options: SplitOption[]; notes: string[] }
 export interface ApplyResult { previewId: string; status: "applied"; duplicate: boolean; schedule: SavedSchedule; tasks?: Task[]; events?: CalendarEvent[] }
 
 /** Draft ids are prefixed with this in previews (taskId "draft:d1") until Apply creates the real task. */

@@ -53,7 +53,7 @@ bounded (MAX_REPAIR_ATTEMPTS in total, MAX_REPAIR_ATTEMPTS_PER_TASK per task).
 This is a heuristic. Work it cannot place is reported with reasons; that is not proof that no valid
 schedule exists (see app.feasibility for the cases that are actually proven).
 
-Split options: `split=(task_id, strategy)` re-places that one task's flexible sessions in a chosen
+Split options: `split=(task_ids, strategy)` re-places those tasks' flexible sessions in a chosen
 shape and leaves everything else to the rules above. The order of tasks does not change, so
 higher-priority work is still placed first and every session still goes through `place`, which
 enforces availability, breaks, events and limits. A strategy only decides which days and how many
@@ -331,7 +331,7 @@ class _Planner:
         self.zone = zone
         self.mode = mode
         self.displace = displace
-        self.split_task, self.split_strategy = split or (None, None)
+        self.split_tasks, self.split_strategy = split or ((), None)
         self.now = now
         self.start = ceil_grid(now)
         first_day, _ = local_parts(now, zone)
@@ -699,10 +699,10 @@ class _Planner:
         return placed + self.place(task, sum(pieces), lo, hi, notes)
 
     def _place_task(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str]) -> list[Placed]:
-        """Places `task`, in the requested shape when it is the task being split."""
-        if task.id == self.split_task and self.split_strategy == 'even':
+        """Places `task`, in the requested shape when it is one of the tasks being split."""
+        if task.id in self.split_tasks and self.split_strategy == 'even':
             return self._place_even(task, need, lo, hi, notes)
-        if task.id == self.split_task and self.split_strategy == 'fewer_longer':
+        if task.id in self.split_tasks and self.split_strategy == 'fewer_longer':
             return self._place_fewer_longer(task, need, lo, hi, notes)
         return self.place(task, need, lo, hi, notes)
 
@@ -911,7 +911,7 @@ class _Planner:
         alloc = self.allocations[task.id]
         alloc.reasons = [r for r in alloc.reasons if r.code not in {
             'insufficient_capacity', 'daily_limit', 'no_contiguous_slot', 'beyond_planning_window'}]
-        where = 'in its allowed times' if task.windows else 'in your available hours'
+        where = 'in its preferred times' if task.windows else 'in your available hours'
         if not task.allow_split:
             limits = ' within your focus and daily limits' if task.is_work else ''
             self.add_reason(task.id, 'no_contiguous_slot', f'It needs one uninterrupted block of {short} minutes and no '
@@ -932,7 +932,7 @@ class _Planner:
     def _keep_flexible(self, need: dict[str, int]):
         kept_by_task: dict[str, int] = {}
         for item in self.flexible:
-            if item.task_id == self.split_task:
+            if item.task_id in self.split_tasks:
                 self.removals.append(Removal(item, 'Replaced by this split option.'))
                 continue
             task = self.task_by_id.get(item.task_id or '')
@@ -960,7 +960,7 @@ class _Planner:
                 elif any(overlaps(w.start, w.end, item.start, item.end) for w in [*self.work, *self.flex]):
                     reason = 'It overlaps fixed work.'
                 elif not any(s <= item.start and item.end <= e for s, e in self.allowed(task)):
-                    reason = 'It is outside your available hours.' if not task.windows else 'It is outside its allowed times.'
+                    reason = 'It is outside your available hours.' if not task.windows else 'It is outside its preferred times.'
                 elif task.is_work and self.day_work(self.day(item.start)) + item.end - item.start > self.prefs.max_daily:
                     reason = 'It would exceed your daily work limit.'
                 elif task.is_work and self.run_total(item.start, item.end) > self.prefs.focus:
@@ -1120,7 +1120,7 @@ def plan_schedule(tasks: list[EngineTask], availability: Availability, prefs: Pr
                   existing: list[Existing], now: int, horizon_days: int = 7, mode: str = 'generate',
                   requested_break: tuple[int, int] | None = None,
                   not_before: dict[str, int] | None = None, displace: bool = True,
-                  split: tuple[str, str] | None = None) -> EngineResult:
+                  split: tuple[tuple[str, ...], str] | None = None) -> EngineResult:
     if mode not in {'generate', 'repair'}:
         raise ValueError('mode must be generate or repair')
     if split and split[1] not in SPLIT_STRATEGIES:

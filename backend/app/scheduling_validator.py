@@ -145,11 +145,11 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
         inside_window = any(ws <= s and e <= we for ws, we in windows)
         if tid in is_flex and task.windows:
             if not inside_window:
-                raise ValidationError('availability', f'"{task.title}" is outside its allowed times.')
+                raise ValidationError('availability', f'"{task.title}" is outside its preferred times.')
         elif not inside_hours:
             raise ValidationError('availability', f'Work on "{task.title}" is outside your available hours.')
         elif task.windows and not inside_window:
-            raise ValidationError('availability', f'Work on "{task.title}" is outside its allowed times.')
+            raise ValidationError('availability', f'Work on "{task.title}" is outside its preferred times.')
         if e > _due(task, zone):
             raise ValidationError('deadline', f'Work on "{task.title}" ends after its deadline.')
         if task.earliestStart:

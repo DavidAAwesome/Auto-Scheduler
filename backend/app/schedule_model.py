@@ -165,8 +165,8 @@ class SchedulePreview(BaseModel):
 
 
 class SplitOption(BaseModel):
-    """One way to divide a task's work. `preview` is a complete stored preview, applied like any other.
-    The counts describe the split task's sessions in that preview, fixed ones included."""
+    """One way to divide the work of one or more tasks. `preview` is a complete stored preview, applied like any
+    other. The counts describe the split tasks' sessions in that preview, fixed ones included."""
     model_config = ConfigDict(extra='forbid')
     id: Literal['front_loaded', 'even', 'fewer_longer']
     label: str
@@ -178,16 +178,15 @@ class SplitOption(BaseModel):
     scheduledMinutes: int
     unallocatedMinutes: int
     lastEndAt: AwareDatetime | None
-    otherNewMinutes: int  # new work for other tasks in this preview
+    otherNewMinutes: int  # new work for tasks not being split in this preview
     movedSessions: int  # saved work sessions of other tasks this preview moves or removes
     preview: SchedulePreview
 
 
 class SplitOptions(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    taskId: str
+    taskIds: list[str]  # the tasks being split; draft tasks are `draft:<id>`
     title: str
-    dueAt: AwareDatetime
     remainingMinutes: int
     options: list[SplitOption]  # distinct valid options; the first is the default selection
     notes: list[str]  # why an alternative is missing, or what limited the search

@@ -106,7 +106,7 @@ Item kinds:
 - task: work with a length that the engine places (homework, revision). deadlineDate is when it is DUE, not when it is done.
 - fixed_event: happens at a stated date/time (class, meeting, appointment). Never movable.
 - flexible_event: an activity with a length but no fixed time (gym, coffee with a friend). One contiguous block unless
-  the user explicitly allows splitting (then allowSplit=true). Give its allowed period with earliestStart/deadlineDate or windows.
+  the user explicitly allows splitting (then allowSplit=true). Give its allowed period with earliestStart/deadlineDate or windows. Leave windows empty unless the user states when it should happen.
 
 Rules:
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
@@ -162,6 +162,8 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
     due_time = safe('dueTime', _hhmm, item.deadlineTime)
     windows = []
     for w in item.windows:
+        if not w.start.strip() and not w.end.strip():
+            continue  # an empty entry states nothing; the item uses the user's availability
         try:
             windows.append(TimeWindow(weekdays=[d for d in w.weekdays if 0 <= d <= 6], start=_hhmm(w.start), end=_hhmm(w.end)))
         except (ValueError, ValidationError):

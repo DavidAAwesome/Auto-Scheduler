@@ -145,7 +145,7 @@ def test_insufficient_capacity_is_proven_with_explicit_unscheduled_minutes(envir
     assert (item['neededMinutes'], item['unscheduledMinutes']) == (300, 300 - item['scheduledMinutes'])
     cause = item['causes'][0]
     assert cause == {'code': 'insufficient_capacity', 'proven': True, 'message':
-                     'Even with no other flexible work, only 180 minutes are free in its window before the deadline, '
+                     'Even with no other flexible work, only 180 minutes are free in the time it can use before the deadline, '
                      'and it needs 300.'}
 
 

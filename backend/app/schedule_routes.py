@@ -50,7 +50,7 @@ class BreakRequest(PreviewRequest):
 
 class SplitRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    taskId: str = Field(min_length=1, max_length=64)
+    taskIds: list[str] = Field(min_length=1, max_length=64)
 
 
 class ApplyRequest(BaseModel):
@@ -119,8 +119,8 @@ def request_break(body: BreakRequest, user=Depends(get_current_user), db=Depends
 
 @router.post('/split-options', response_model=SplitOptions)
 def split_options(body: SplitRequest, user=Depends(get_current_user), db=Depends(get_database)):
-    """Alternative ways to divide one task's work. Each option is a preview; Apply saves the one the user picks."""
-    return build_split_options(user, db, utc_now(), body.taskId)
+    """Alternative ways to divide saved tasks' work. Each option is a preview; Apply saves the one the user picks."""
+    return build_split_options(user, db, utc_now(), body.taskIds)
 
 
 @router.post('/apply', response_model=ApplyResponse)

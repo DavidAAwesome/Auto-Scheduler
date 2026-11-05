@@ -1,13 +1,13 @@
-import type { ActionTarget, AIProfile, InterpretResult, PendingAction, PendingChoice, PreferenceChange, SchedulePreferences, SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { ActionTarget, AIProfile, InterpretResult, PendingAction, PendingChoice, PreferenceChange, SchedulePreferences, SchedulePreview, SplitOptions, Task, WorkSession } from "../types/models.ts";
 import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
-import { draftsReply } from "./planEntry.ts";
+import { draftsReply, looksLikePlanEntry } from "./planEntry.ts";
 import { eventFromIntent, parseEventRequest, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
 import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
-import { busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { busyTimeText, calendarSessions, explainText, previewText, splitOptionsText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
 import { accountTimeZone } from "../utils/timeZones.ts";
 
 /** Actions the chat can run. Each one calls the same workspace method the calendar uses. */
@@ -30,6 +30,8 @@ export type ParsedRequest =
   | { command: Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
   | { command: "request_break"; minutes: number }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
+  /** Compare ways to divide saved tasks, or the task drafts under review. */
+  | { command: "split_options"; target: string[] | "drafts" }
   | { command: "update_preferences"; change: PreferenceChange; summary: string }
   | { command: "propose_event"; action: PendingEventAction; summary: string }
   /** The user's own words, read by the same parser as any plan entry (so "due Friday at noon" keeps its time). */
@@ -44,6 +46,8 @@ export type ParsedRequest =
 export interface CommandWorkspace {
   getSnapshot(): WorkspaceState;
   requestPreview(request: PreviewRequest): Promise<SchedulePreview>;
+  requestSplitOptions(taskIds: string[]): Promise<SplitOptions>;
+  previewDraftSplitOptions(): Promise<SplitOptions>;
   applySchedulePreview(): Promise<WorkSession[]>;
   clearSchedulePreview(): void;
   /** Reads the user's words into drafts in the review panel; nothing is saved. */
@@ -63,6 +67,14 @@ const TODAY = /\btoday.?s\s+(tasks?|plan|schedule|agenda)\b|\b(what|anything).*\
 const SHOW_PLAN = /\b(show|see|display|view)\b.*\b(plan|schedule)\b|\bmy (plan|schedule)\b/i;
 const BUSY = /\bbusy\b|my calendar|what'?s on|free time|events? (today|tomorrow|this week|next week)/i;
 const GENERATE = /\bgenerate\b|\bplan (my|the|this|next)\b|\bschedule (my|the|this|next)\b|\b(make|build|create)\b.*\b(plan|schedule)\b/i;
+const SPLIT_VERB = String.raw`(?:split|splitting|divide|dividing|spread|spreading|break(?:ing)? (?:\w+ )?up)`;
+const SPLIT_NOUN = "(?:ways?|options?|alternatives?|choices?)";
+const SPLIT_OPTIONS = new RegExp([
+  String.raw`\b${SPLIT_NOUN}\b.*\b${SPLIT_VERB}\b`,
+  String.raw`\b${SPLIT_VERB}\b.*\b${SPLIT_NOUN}\b`,
+  String.raw`\bhow (?:should|can|could|would|do|to)\b.*\b${SPLIT_VERB}\b`,
+  String.raw`^\s*(?:please\s+|can you\s+|could you\s+)?${SPLIT_VERB}\s+(?:them|it|these|those|this|that|my tasks?|the tasks?)\b`,
+].join("|"), "i");
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
 function durationMinutes(text: string): number | null {
@@ -200,7 +212,22 @@ export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
   return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
 }
 
-export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events">>, now = new Date()): ParsedRequest | null {
+/** What a request to compare splits refers to: tasks it names, else the drafts under review, else the open tasks. */
+function splitRequest(text: string, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "planDrafts">>, taskId?: string | null): ParsedRequest {
+  const lower = text.toLowerCase();
+  const mentions = (title: string | null) => !!title && lower.includes(title.toLowerCase());
+  const drafts = (state.planDrafts?.views ?? []).filter(v => v.draft.include && v.draft.kind === "task");
+  const open = state.tasks.filter(t => !t.done && t.allowSplit && t.kind !== "flexible_event" && t.remainingMinutes > 0);
+  const named = open.filter(t => t.id === taskId || mentions(t.title));
+  if (drafts.some(v => mentions(v.draft.title)) || (!named.length && drafts.length)) return { command: "split_options", target: "drafts" };
+  if (named.length) return { command: "split_options", target: named.map(t => t.id) };
+  if (!open.length) return { command: "clarify", question: "You have no open tasks to split. Add one with its length and deadline first." };
+  if (open.length === 1) return { command: "split_options", target: [open[0].id] };
+  if (/\b(it|this|that)\b/i.test(text)) return { command: "clarify", question: `Which task should I split? ${open.slice(0, 5).map(t => `“${t.title}”`).join(", ")}` };
+  return { command: "split_options", target: open.map(t => t.id) };
+}
+
+export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "planDrafts">>, now = new Date()): ParsedRequest | null {
   const zone = accountTimeZone(state.availability);
   const open = state.tasks.filter(t => !t.done);
   // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
@@ -213,6 +240,8 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     const event = parseEventRequest(text, { events: state.events, availability: state.availability });
     if (event) return fromEventProposal(event);
   }
+  // Before BREAK and MOVE, and before the chat treats the message as an answer to an open draft question.
+  if (SPLIT_OPTIONS.test(text) && !looksLikePlanEntry(text)) return splitRequest(text, state);
   if (BREAK.test(text)) {
     const minutes = durationMinutes(text);
     if (minutes === null) return { command: "clarify", question: "How long a break do you need? For example: “I need a 15-minute break now.”" };
@@ -260,7 +289,7 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>, userText = ""): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability" | "planDrafts">>, userText = ""): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
     case "update_preferences": {
@@ -278,6 +307,8 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       if (!minutes || minutes < 5 || minutes > 240) return { command: "clarify", question: "How long a break do you need? For example: “I need a 15-minute break now.”" };
       return { command: "request_break", minutes };
     }
+    case "split_options":
+      return splitRequest(userText, state, params.taskId);
     case "move_task": {
       const task = state.tasks.find(t => t.id === params.taskId && !t.done);
       if (!task) return { command: "clarify", question: "Which task should I move?" };
@@ -423,6 +454,14 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     case "busy_time":
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
     
+    case "split_options": {
+      try {
+        const split = req.target === "drafts" ? await workspace.previewDraftSplitOptions() : await workspace.requestSplitOptions(req.target);
+        return reply(splitOptionsText(split), ["apply_schedule", "cancel_schedule"]);
+      } catch (error) {
+        return reply(`I couldn’t build split options: ${errorText(error)} Nothing was changed.`);
+      }
+    }
     case "add_task": {
       try {
         const result = await workspace.interpretPlan(req.text);

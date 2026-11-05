@@ -9,7 +9,7 @@ export default function SplitOptionsPanel({ onError }: { onError: (message: stri
   const split = activeSplitOptions(splitOptions, schedulePreview);
   if (!split || !schedulePreview) return null;
   const selected = schedulePreview.previewId;
-  const recalculate = () => workspaceService.requestSplitOptions(split.taskId).catch(e => onError((e as Error).message));
+  const recalculate = () => workspaceService.refreshSplitOptions().catch(e => onError((e as Error).message));
   return (
     <div className="schedule-preview-bar split-options" role="region" aria-label={`Split options for ${split.title}`}>
       <div className="schedule-preview-head">
@@ -26,8 +26,8 @@ export default function SplitOptionsPanel({ onError }: { onError: (message: stri
               <span className="muted small">{option.description}</span>
               <span className="split-option-summary">{splitOptionSummary(option)}</span>
               <ul className="split-option-sessions">
-                {splitOptionSessions(option, split.taskId).map(s => (
-                  <li key={s.id}>{longDate(s.date).replace(/, \d{4}$/, "")} · {timeRange(s.start, s.end)}</li>
+                {splitOptionSessions(option, split.taskIds).map(s => (
+                  <li key={s.id}>{split.taskIds.length > 1 && `${s.title}: `}{longDate(s.date).replace(/, \d{4}$/, "")} · {timeRange(s.start, s.end)}</li>
                 ))}
               </ul>
               {splitOptionWarnings(option).map(text => <span key={text} className="form-warning small">{text}</span>)}

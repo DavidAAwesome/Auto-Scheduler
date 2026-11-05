@@ -1,4 +1,4 @@
-import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SplitOptions, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
+import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, DRAFT_PREFIX, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SplitOptions, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { browserTimeZone } from '../utils/timeZones.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
@@ -8,6 +8,7 @@ export type AssistantIntent =
   | "show_plan"
   | "busy_time"
   | "generate_schedule"
+  | "split_options"
   | "explain_unscheduled"
   | "request_break"
   | "replan"
@@ -388,14 +389,14 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
     previewSchedule(horizonDays = 7) {
       return api.requestPreview({ kind: 'generate', horizonDays });
     },
-    /** Compares ways to divide one task; the first option goes on the calendar until the user picks another. */
-    async requestSplitOptions(taskId: string) {
+    /** Compares ways to divide saved tasks; the first option goes on the calendar until the user picks another. */
+    async requestSplitOptions(taskIds: string[]) {
       if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
       if (state.saving) throw new Error('A change is still saving. Please try again shortly.');
       const current = generation;
       publish({ ...state, saving: true, error: '' });
       try {
-        const result = await request<SplitOptions>('/schedule/split-options', { method: 'POST', body: JSON.stringify({ taskId }) });
+        const result = await request<SplitOptions>('/schedule/split-options', { method: 'POST', body: JSON.stringify({ taskIds }) });
         if (current !== generation) throw new Error('Your account changed. Please try again.');
         publish({ ...state, splitOptions: result, schedulePreview: result.options[0].preview, previewStale: false, saving: false, error: '' });
         return result;
@@ -403,6 +404,18 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
         if (current === generation) publish({ ...state, saving: false, error: (error as Error).message });
         throw error;
       }
+    },
+    /** The same comparison for the task drafts under review. Apply saves the drafts with the chosen option. */
+    async previewDraftSplitOptions() {
+      const plan = await reviewed('preview');
+      const result = await planCall<SplitOptions>('/plan/split-options', { drafts: plan.views.map(v => v.draft), horizonDays: plan.horizonDays, batchId: plan.batchId });
+      publish({ ...state, splitOptions: result, schedulePreview: result.options[0].preview, previewStale: false, error: '' });
+      return result;
+    },
+    /** Recomputes the options on screen after their inputs changed. */
+    refreshSplitOptions() {
+      const ids = state.splitOptions?.taskIds ?? [];
+      return ids.some(id => id.startsWith(DRAFT_PREFIX)) ? api.previewDraftSplitOptions() : api.requestSplitOptions(ids);
     },
     /** Shows another split option on the calendar. Only switches previews; Apply saves the one shown. */
     chooseSplitOption(id: SplitOptions['options'][number]['id']) {

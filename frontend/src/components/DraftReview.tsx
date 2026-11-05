@@ -138,7 +138,7 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
               ))}{at("dependsOn")}</span>
             )}
             {d.repeat && <span className="draft-meta">Repeats weekly <button type="button" className="button small ghost" onClick={() => set({ repeat: null })}>Remove repeat</button>{at("repeat")}</span>}
-            {d.windows.length > 0 && <span className="draft-meta">Only {d.windows.map(w => `${w.weekdays.length ? w.weekdays.map(i => WEEKDAYS[i]).join("/") + " " : ""}${clock12(w.start)}–${clock12(w.end)}`).join(", ")}</span>}
+            {d.windows.length > 0 && <span className="draft-meta">Preferred times: {d.windows.map(w => `${w.weekdays.length ? w.weekdays.map(i => WEEKDAYS[i]).join("/") + " " : ""}${clock12(w.start)}–${clock12(w.end)}`).join(", ")}</span>}
           </>
         )}
       </div>

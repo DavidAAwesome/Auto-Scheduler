@@ -3,7 +3,7 @@
 - `saved_schedule` reads the authoritative saved schedule (canonical sessions, UTC timestamps).
 - `build_preview` runs the engine in generate, repair or break mode, validates the result
   independently and stores it as a proposal. It never changes saved sessions.
-- `build_split_options` runs the same engine once per split strategy for one task and stores each
+- `build_split_options` runs the same engine once per split strategy for chosen tasks and stores each
   distinct result as its own preview, so choosing an option is choosing a preview to Apply.
 - `apply_preview` re-validates against current data inside a transaction, rejects stale or changed
   previews, and persists atomically. Repeated Apply of the same preview is idempotent.
@@ -216,7 +216,7 @@ def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, reques
     result = plan_schedule(engine_tasks(ctx), ctx.availability, engine_prefs(ctx.prefs), ctx.events, ctx.existing,
                            now_min, horizon_days, 'generate' if mode == 'generate' else 'repair',
                            requested_break, request.get('notBefore') or None, displace,
-                           (request['splitTaskId'], request['splitStrategy']) if request.get('splitTaskId') else None)
+                           (tuple(request['splitTaskIds']), request['splitStrategy']) if request.get('splitTaskIds') else None)
     sessions = [_session_model(p, ctx.zone, ctx.version, i) for i, p in enumerate(result.sessions, 1)]
     removed = [SessionRemoval(session=_existing_model(r.session, ctx.zone, ctx.version), reason=r.reason,
                               newEndAt=from_abs(r.new_end) if r.new_end is not None else None)
@@ -331,60 +331,80 @@ def _minutes(session: ScheduleSession) -> int:
     return to_abs(session.endAt) - to_abs(session.startAt)
 
 
-def _split_sessions(preview: SchedulePreview, task_id: str) -> list[ScheduleSession]:
-    return [s for s in preview.sessions if s.taskId == task_id and s.type == 'work']
+def _split_sessions(preview: SchedulePreview, task_ids: set[str]) -> list[ScheduleSession]:
+    return [s for s in preview.sessions if s.taskId in task_ids and s.type == 'work']
 
 
-def _split_option(strategy: str, preview: SchedulePreview, task_id: str) -> SplitOption:
-    mine = _split_sessions(preview, task_id)
+def _split_option(strategy: str, preview: SchedulePreview, task_ids: set[str]) -> SplitOption:
+    mine = _split_sessions(preview, task_ids)
     lengths = [_minutes(s) for s in mine]
     label, description = SPLIT_TEXT[strategy]
-    allocation = next(a for a in preview.tasks if a.taskId == task_id)
     return SplitOption(
         id=strategy, label=label, description=description, sessionCount=len(mine), dayCount=len({s.date for s in mine}),
         longestMinutes=max(lengths, default=0), shortestMinutes=min(lengths, default=0), scheduledMinutes=sum(lengths),
-        unallocatedMinutes=allocation.unallocatedMinutes, lastEndAt=max((s.endAt for s in mine), default=None),
+        unallocatedMinutes=sum(a.unallocatedMinutes for a in preview.tasks if a.taskId in task_ids),
+        lastEndAt=max((s.endAt for s in mine), default=None),
         otherNewMinutes=sum(_minutes(s) for s in preview.sessions
-                            if s.type == 'work' and s.change == 'new' and s.taskId != task_id),
-        movedSessions=sum(1 for r in preview.removed if r.session.type == 'work' and r.session.taskId != task_id),
+                            if s.type == 'work' and s.change == 'new' and s.taskId not in task_ids),
+        movedSessions=sum(1 for r in preview.removed if r.session.type == 'work' and r.session.taskId not in task_ids),
         preview=preview)
 
 
-def build_split_options(user, db, now: datetime, task_id: str) -> SplitOptions:
-    """Previews of one task divided in different shapes. All times come from the engine, and each option passes
-    the independent validator and Apply's staleness checks like any other preview.
+def _split_problem(task: TaskOutput, ctx: Context, now: datetime) -> str | None:
+    """Why this task cannot be split, or None."""
+    if task.done or task.minutes <= task.completedMinutes:
+        return f'"{task.title}" has no work left to split.'
+    if task.kind == 'flexible_event':
+        return f'"{task.title}" is a flexible event, so it has no work sessions to split.'
+    if not task.allowSplit:
+        return f'Splitting is off for "{task.title}". Turn it on in the task to compare options.'
+    if task_due(task, ctx.zone) <= to_abs(now):
+        return f'The deadline for "{task.title}" has passed. Change it to plan this work.'
+    return None
+
+
+def _joined(titles: list[str]) -> str:
+    return titles[0] if len(titles) == 1 else f"{', '.join(titles[:-1])} and {titles[-1]}"
+
+
+def build_split_options(user, db, now: datetime, task_ids: list[str], drafts: list[PlanDraft] | None = None,
+                        batch_id: str | None = None) -> SplitOptions:
+    """Previews of the same work divided in different shapes, for saved tasks or for reviewed drafts (every task
+    draft is split, and Apply saves the drafts with the option). All times come from the engine, and each option
+    passes the independent validator and Apply's staleness checks like any other preview.
 
     The plan always spans the longest window: a shorter one would drop other tasks' saved sessions beyond it, and
     the shapes need the days up to the deadline. An alternative is left out when it schedules any task less
     than front-loaded does, when it repeats an earlier option, or when "fewer" would not actually be fewer."""
-    ctx = load_context(user, db, now, MAX_HORIZON_DAYS)
-    task = next((t for t in ctx.tasks if t.id == task_id), None)
-    if task is None:
+    base_request: dict = draft_request(drafts, batch_id or '') if drafts is not None else {}
+    ctx = load_context(user, db, now, MAX_HORIZON_DAYS, drafts=stored_drafts(base_request))
+    by_id = {t.id: t for t in ctx.tasks}
+    if drafts is not None:
+        task_ids = [t.id for t in ctx.tasks if t.id.startswith(DRAFT_PREFIX) and t.kind == 'task']
+    if any(task_id not in by_id for task_id in task_ids):
         raise HTTPException(404, 'Task not found.')
-    if task.done or task.minutes <= task.completedMinutes:
-        raise HTTPException(422, f'"{task.title}" has no work left to split.')
-    if task.kind == 'flexible_event':
-        raise HTTPException(422, f'"{task.title}" is a flexible event, so it has no work sessions to split.')
-    if not task.allowSplit:
-        raise HTTPException(422, f'Splitting is off for "{task.title}". Turn it on in the task to compare options.')
-    due = task_due(task, ctx.zone)
-    if due <= to_abs(now):
-        raise HTTPException(422, f'The deadline for "{task.title}" has passed. Change it to plan this work.')
+    problems = {task_id: _split_problem(by_id[task_id], ctx, now) for task_id in dict.fromkeys(task_ids)}
+    targets = [task_id for task_id, problem in problems.items() if problem is None]
+    notes = [problem for problem in problems.values() if problem]
+    if not targets:
+        raise HTTPException(422, notes[0] if notes else 'There are no tasks to split.')
+    title = _joined([by_id[task_id].title for task_id in targets])
+    split_ids = set(targets)
+    mode = 'split' if drafts is None else 'plan'  # plan previews also save the drafts on Apply
 
-    requests = {s: {'splitTaskId': task_id, 'splitStrategy': s} for s in SPLIT_STRATEGIES}
-    previews = {s: validated_preview(ctx, now, MAX_HORIZON_DAYS, 'split', requests[s]) for s in SPLIT_STRATEGIES}
+    requests = {s: {**base_request, 'splitTaskIds': targets, 'splitStrategy': s} for s in SPLIT_STRATEGIES}
+    previews = {s: validated_preview(ctx, now, MAX_HORIZON_DAYS, mode, requests[s]) for s in SPLIT_STRATEGIES}
     base = previews['front_loaded']
-    if not any(s.change == 'new' for s in _split_sessions(base, task_id)):
-        allocation = next(a for a in base.tasks if a.taskId == task_id)
-        why = ' '.join(r.message for r in allocation.reasons) or 'Locked or in-progress sessions already cover its work.'
-        raise HTTPException(422, f'There is nothing to split for "{task.title}". {why}')
+    if not any(s.change == 'new' for s in _split_sessions(base, split_ids)):
+        reasons = [r.message for a in base.tasks if a.taskId in split_ids for r in a.reasons]
+        why = ' '.join(reasons) or 'Locked or in-progress sessions already cover its work.'
+        raise HTTPException(422, f'There is nothing to split for {title}. {why}')
 
     def shape(preview: SchedulePreview) -> list[tuple]:
-        return [(s.startAt, s.endAt) for s in _split_sessions(preview, task_id)]
+        return [(s.startAt, s.endAt) for s in _split_sessions(preview, split_ids)]
 
     short = {a.taskId: a.unallocatedMinutes for a in base.tasks}
     kept = {'front_loaded': base}
-    notes: list[str] = []
     for strategy in SPLIT_STRATEGIES[1:]:
         preview = previews[strategy]
         label = SPLIT_TEXT[strategy][0]
@@ -394,18 +414,18 @@ def build_split_options(user, db, now: datetime, task_id: str) -> SplitOptions:
             notes.append(f'{label} is not offered: it would leave more of "{worse.title}" unscheduled.')
         elif same:
             notes.append(f'{label} gives the same sessions as {SPLIT_TEXT[same][0].lower()} here.')
-        elif strategy == 'fewer_longer' and any(len(_split_sessions(preview, task_id)) > len(_split_sessions(other, task_id))
+        elif strategy == 'fewer_longer' and any(len(_split_sessions(preview, split_ids)) > len(_split_sessions(other, split_ids))
                                                 for other in kept.values()):
             notes.append(f'{label} is not offered: it would not use fewer sessions here.')
         else:
             kept[strategy] = preview
-    if due > to_abs(base.windowEnd):
+    if any(task_due(by_id[task_id], ctx.zone) > to_abs(base.windowEnd) for task_id in targets):
         notes.append(f'The deadline is more than {MAX_HORIZON_DAYS} days away, so options only use the next '
                      f'{MAX_HORIZON_DAYS} days.')
     for strategy, preview in kept.items():
-        store_preview(db, ctx, preview, now, MAX_HORIZON_DAYS, 'split', requests[strategy])
-    return SplitOptions(taskId=task_id, title=task.title, dueAt=from_abs(due), remainingMinutes=task.remainingMinutes,
-                        options=[_split_option(s, p, task_id) for s, p in kept.items()], notes=notes)
+        store_preview(db, ctx, preview, now, MAX_HORIZON_DAYS, mode, requests[strategy])
+    return SplitOptions(taskIds=targets, title=title, remainingMinutes=sum(by_id[t].minutes - by_id[t].completedMinutes for t in targets),
+                        options=[_split_option(s, p, split_ids) for s, p in kept.items()], notes=notes)
 
 
 def owned_preview(db, user, preview_id: str, session=None) -> dict:

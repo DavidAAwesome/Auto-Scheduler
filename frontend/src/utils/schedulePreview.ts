@@ -129,9 +129,9 @@ export function activeSplitOptions(split: SplitOptions | null, preview: Schedule
   return split?.options.some(o => o.preview.previewId === preview?.previewId) ? split : null;
 }
 
-/** The split task's sessions in an option, including any fixed ones the option works around. */
-export function splitOptionSessions(option: SplitOption, taskId: string) {
-  return option.preview.sessions.filter(s => s.taskId === taskId && s.type === 'work');
+/** The split tasks' sessions in an option, including any fixed ones the option works around. */
+export function splitOptionSessions(option: SplitOption, taskIds: string[]) {
+  return option.preview.sessions.filter(s => s.taskId !== null && taskIds.includes(s.taskId) && s.type === 'work');
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -142,6 +142,17 @@ export function splitOptionSummary(option: SplitOption) {
     ? minutesLabel(option.longestMinutes)
     : `${minutesLabel(option.shortestMinutes)}–${minutesLabel(option.longestMinutes)}`;
   return `${plural(option.sessionCount, 'session')} over ${plural(option.dayCount, 'day')} · ${length} each`;
+}
+
+/** Chat summary of the options. The times stay in the panel and on the calendar, which show the same sessions. */
+export function splitOptionsText(split: SplitOptions) {
+  const count = split.options.length;
+  const lines = [count > 1
+    ? `Here are ${count} ways to split ${split.title}. Not saved yet. Pick one above the calendar, then Apply:`
+    : `I found one way to split ${split.title}. It’s on the calendar and not saved yet:`];
+  for (const option of split.options) lines.push(`• ${option.label}: ${splitOptionSummary(option)}`);
+  lines.push(...split.notes);
+  return lines.join('\n');
 }
 
 /** What else choosing this option does, so a side effect is seen before Apply. */

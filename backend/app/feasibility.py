@@ -145,7 +145,7 @@ def _proofs(ctx, now: datetime, horizon: int, drafts: list[PlanDraft], full: Sch
             causes = [c for c in causes if c.code != 'insufficient_capacity']
             if task.remaining > bound:
                 causes.append(Cause(code='insufficient_capacity', proven=True, message=(
-                    f'Even with no other flexible work, only {bound} minutes are free in its window before the '
+                    f'Even with no other flexible work, only {bound} minutes are free in the time it can use before the '
                     f'deadline, and it needs {task.remaining}.')))
             elif not task.allow_split and longest < task.remaining:
                 causes.append(Cause(code='no_contiguous_interval', proven=True, message=(
