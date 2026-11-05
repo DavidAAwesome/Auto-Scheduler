@@ -75,7 +75,8 @@
     ],
     "weekOverrides": [],
     "timeZone": "America/New_York",
-    "reminders": false
+    "reminders": false,
+    "saved": true
   },
   "preferences": {
     "focusMinutes": 50,
@@ -331,7 +332,7 @@
     "savedDataChanged": false
   },
   "preview": {
-    "previewId": "6ae0e2298ebfb5fd4813d99a",
+    "previewId": "6aec0e79a3d1eabdc86cac70",
     "status": "proposed",
     "mode": "plan",
     "baseScheduleVersion": 1,
@@ -470,7 +471,7 @@
     ],
     "firstProposedDate": "2026-10-26",
     "explanations": [],
-    "note": "AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this heuristic found no valid place under your rules; that is not proof that no schedule exists. Search limits: earliest-fit in priority order, then at most 20 local repairs (6 per task) over the next 1 days. Unplaced work means no plan was found within these limits, not that none exists, unless a reason says it is impossible.",
+    "note": "Work left unplaced means AutoPlan found no place for it under your rules. That is not proof that no schedule exists: changing a deadline, your hours or a priority may make it fit. AutoPlan looked over the next 1 days, earliest free time first in priority order, and tried up to 20 rearrangements (6 per task).",
     "inputFingerprint": "cfd8db2d2c8a8a5a355ff65c041b45a097c7d1637f4d7b37ae9b7a50635d4d41",
     "proposedEvents": [
       {

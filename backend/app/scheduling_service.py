@@ -202,9 +202,8 @@ def _existing_model(item: Existing, zone, version) -> ScheduleSession:
                            startAt=from_abs(item.start), endAt=from_abs(item.end), date=day, start=start, end=end)
 
 
-PLAN_NOTE = ('Search limits: earliest-fit in priority order, then at most {attempts} local repairs '
-             '({per_task} per task) over the next {days} days. Unplaced work means no plan was found within these '
-             'limits, not that none exists, unless a reason says it is impossible.')
+PLAN_NOTE = ('AutoPlan looked over the next {days} days, earliest free time first in priority order, and tried up to '
+             '{attempts} rearrangements ({per_task} per task).')
 
 
 def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, request: dict,

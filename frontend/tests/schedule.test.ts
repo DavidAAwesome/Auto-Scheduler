@@ -289,6 +289,7 @@ test('explaining unscheduled work uses the preview’s reasons and the heuristic
   const text = explainText(short, fixture.tasks, [], NOW);
   assert.match(text, /Test revision: 30 min not placed\. The 4h daily work limit/);
   assert.match(text, /not proof that no schedule exists/);
+  assert.doesNotMatch(text, /heuristic|unallocated/i);
   assert.match(explainText(fixture.preview, fixture.tasks, [], NOW), /Nothing is unscheduled/);
 });
 

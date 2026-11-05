@@ -87,8 +87,8 @@ CONTEXT_LOOKBACK = 12 * 60  # recent past work that still counts toward the cont
 SPLIT_STRATEGIES = ('front_loaded', 'even', 'fewer_longer')  # front_loaded is the baseline the others are judged against
 EVEN_TARGET_BLOCK = 30  # "even" uses fewer days rather than sessions shorter than this
 
-HEURISTIC_NOTE = ('AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this '
-                  'heuristic found no valid place under your rules; that is not proof that no schedule exists.')
+HEURISTIC_NOTE = ('Work left unplaced means AutoPlan found no place for it under your rules. That is not proof that no '
+                  'schedule exists: changing a deadline, your hours or a priority may make it fit.')
 
 
 # ---------------------------------------------------------------- time helpers
