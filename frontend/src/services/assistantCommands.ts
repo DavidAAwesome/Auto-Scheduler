@@ -469,7 +469,10 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
         const selected = result.drafts.filter(v => v.draft.include);
         if (!selected.length || selected.some(v => !v.ready)) return reply(text);
         const action = await workspace.proposeCreateItems();
-        return { ...reply(`${text}\nConfirm to save ${selected.length === 1 ? "it" : "them"} as ${selected.length === 1 ? "a task" : "tasks"} now (not scheduled yet), or Edit them in the review panel.`), actionId: action.id };
+        // Confirming saves everything ticked in the panel, not only what this message added, so say exactly that.
+        const names = action.targets.map(t => `“${t.title}”`).join(", ");
+        const what = action.targets.length === 1 ? names : `all ${action.targets.length} items under review (${names})`;
+        return { ...reply(`${text}\nConfirm to save ${what} now (not scheduled yet), or Edit in the review panel.`), actionId: action.id };
       } catch (error) {
         return reply(`I couldn’t read that task: ${errorText(error)} Nothing was saved.`);
       }
