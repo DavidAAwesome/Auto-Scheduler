@@ -235,7 +235,7 @@ test('chat “add task … at noon” keeps noon from the parser to the saved ta
   const request = parseRequest('Add a task called Study Networking, due October 30 at noon, with a duration of 50 minutes.', workspace.getSnapshot(), NOW);
   assert.deepEqual(request, { command: 'add_task', text: 'Study Networking, due October 30 at noon, 50 minutes.' });
   const message = await runAssistantCommand(request!, workspace, NOW);
-  assert.match(message.text, /Study Networking: task, 50 min, due 2026-10-30 12 PM/);
+  assert.match(message.text, /Study Networking: task, 50 min, due Fri, Oct 30, 2026, 12 PM/);
   assert.ok(message.actionId && !api.log.includes('POST /tasks'), 'nothing saved before Confirm tasks');
   await workspace.confirmAction(message.actionId!);
   const saved = workspace.getSnapshot().tasks.find(t => t.title === 'Study Networking')!;
