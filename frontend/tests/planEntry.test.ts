@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, mergeDrafts, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, runAssistantCommand } from '../src/services/assistantCommands.ts';
-import { draftsReply, emptyDraft, firstOpenQuestion, looksLikePlanEntry } from '../src/services/planEntry.ts';
+import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, looksLikePlanEntry } from '../src/services/planEntry.ts';
 import { calendarSessions, previewText, todayAgenda, todayText } from '../src/utils/schedulePreview.ts';
 import type {
   ApplyResult, Availability, CalendarEvent, DraftView, FeasibilityResult, InterpretResult, SchedulePreferences, SchedulePreview,
@@ -176,4 +176,12 @@ test('new drafts never take the id of a draft already under review, and keep the
   const b = merged.find(v => v.draft.title === 'B')!;
   const c = merged.find(v => v.draft.title === 'C')!;
   assert.deepEqual(c.draft.dependsOn, [b.draft.id], 'C still depends on B, not on the older A');
+});
+
+
+test('draft lines in chat use readable dates', () => {
+  assert.equal(draftLine(emptyDraft('d1', { title: 'Essay', minutes: 60, deadline: '2026-11-05', dueTime: 720, priority: 'High' })),
+    'Essay: task, 60 min, due Thu, Nov 5, 2026, 12 PM, High');
+  assert.equal(draftLine(emptyDraft('d2', { kind: 'fixed_event', title: 'Class', date: '2026-11-10', start: 600, end: 690 })),
+    'Class: fixed event, Tue, Nov 10, 2026, 10 AM–11:30 AM');
 });

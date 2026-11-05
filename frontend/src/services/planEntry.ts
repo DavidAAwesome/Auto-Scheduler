@@ -1,5 +1,5 @@
 import type { DraftView, PlanDraft } from "../types/models.ts";
-import { clock12 } from "../utils/calendar.ts";
+import { clock12, longDate } from "../utils/calendar.ts";
 
 /** Same limits as the backend (plan_extraction.MAX_IMAGE_BYTES / IMAGE_SIGNATURES). */
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
@@ -36,10 +36,10 @@ export function draftLine(d: PlanDraft) {
   const name = d.title ?? "Untitled";
   if (d.kind === "fixed_event") {
     const times = d.start != null && d.end != null ? `${clock12(d.start)}–${clock12(d.end % 1440)}` : "time ?";
-    if (d.repeat) return `${name}: weekly event (${times}), ${d.repeat.startDate ?? "start ?"} to ${d.repeat.until ?? "end ?"}`;
-    return `${name}: fixed event, ${d.date ?? "date ?"} ${times}`;
+    if (d.repeat) return `${name}: weekly event (${times}), ${d.repeat.startDate ? longDate(d.repeat.startDate) : "start ?"} to ${d.repeat.until ? longDate(d.repeat.until) : "end ?"}`;
+    return `${name}: fixed event, ${d.date ? longDate(d.date) : "date ?"}, ${times}`;
   }
-  const due = d.deadline ? `due ${d.deadline}${d.dueTime != null ? ` ${clock12(d.dueTime)}` : ""}` : "no deadline yet";
+  const due = d.deadline ? `due ${longDate(d.deadline)}${d.dueTime != null ? `, ${clock12(d.dueTime)}` : ""}` : "no deadline yet";
   return `${name}: ${d.kind === "flexible_event" ? "flexible event" : "task"}, ${d.minutes ?? "?"} min, ${due}, ${d.priority}`;
 }
 
