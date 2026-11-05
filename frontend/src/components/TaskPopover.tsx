@@ -77,6 +77,11 @@ export default function TaskPopover({ task, anchor, focusSessionId, onClose, onE
           <Icon name="plus" size={15} /> {planned >= task.remainingMinutes ? "Add another work session" : `Plan work time (${duration(task.remainingMinutes - planned)} unplanned)`}
         </button>
       )}
+      {!task.done && task.allowSplit && task.kind !== "flexible_event" && task.remainingMinutes > 0 && (
+        <button className="button secondary small full" disabled={busy} onClick={() => void run(() => workspaceService.requestSplitOptions(task.id), true)}>
+          <Icon name="assistant" size={15} /> Compare ways to split
+        </button>
+      )}
       {error && <p role="alert" className="form-error">{error}</p>}
       {confirming ? (
         <div className="task-popover-actions">

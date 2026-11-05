@@ -170,6 +170,18 @@ For every open task: `remaining = estimated − completed`, and `retained + new 
 - Unlocked automatic future work is flexible: Generate replaces it, Repair keeps it when it is still valid and only moves what must change.
 - Automatic breaks are recalculated.
 
+### Split options
+
+On a task's card, **Compare ways to split** asks the engine for up to three shapes of the same work and shows them above the calendar. The first is drawn on the calendar straight away, next to existing tasks and events; picking another swaps the preview, and **Apply schedule** saves the one shown.
+
+- **Front-loaded**: the normal earliest fit, so the work finishes as early as possible.
+- **Spread evenly**: equal minutes on evenly spaced days up to the deadline, using fewer days rather than sessions under 30 minutes.
+- **Fewer, longer blocks**: only blocks of the longest length the task and focus limit allow, one a day while days remain, skipping gaps too short for a full block.
+
+The AI takes no part: these are deterministic strategies in `scheduling_engine.py`. A strategy only chooses days and lengths and then calls the same placement code, in the same priority order, so availability, breaks, events, locked work, dependencies and limits all still apply, and it falls back to earliest fit for anything it cannot place. Only the chosen task's unlocked automatic sessions are released; other saved sessions stay unless higher-priority work needs their time, and each option says if it moves them or schedules other tasks' unplaced work.
+
+Each option is stored as its own preview, checked by the validator and applied by the usual `POST /schedule/apply`, so applying one makes the others stale (409). An alternative is left out, with a note saying why, if it would schedule any task less than front-loaded does, if it matches an earlier option, or if "fewer" would not use fewer sessions. So a short task, or one due today, may get a single option. Options always plan 21 days, and a later deadline is noted. Tasks still under review in chat are not covered; save them first.
+
 ### Schedule API
 
 - `GET /schedule` → `{scheduleVersion, timeZone, sessions}`, the saved schedule.
@@ -177,6 +189,7 @@ For every open task: `remaining = estimated − completed`, and `retained + new 
 - `POST /schedule/repair` (alias `/schedule/replan`) `{horizonDays?, moves?: [{taskId, notBefore}]}`: a local repair. `moves` asks for a task to start no earlier than an instant ("move Asm to tomorrow").
 - `POST /schedule/break` `{minutes}`: a protected break starting now, with the schedule repaired around it. If an event or locked work is in the way the break is shortened or refused, and the preview says why.
 - Each preview returns `{previewId, mode, sessions, removed, tasks, conflicts, days, firstProposedDate, note, ...}`. `sessions` is the complete future schedule in the window if applied, with `change` = `retained`, `kept`, `new` or `truncated`. `removed` lists saved sessions Apply deletes (or shortens, when `newEndAt` is set) with a reason.
+- `POST /schedule/split-options` `{taskId}` → `{taskId, title, dueAt, remainingMinutes, options, notes}`: ways to divide one task's work (see below). Each option carries a complete preview with mode `split`. Returns 422 when the task is done, its deadline has passed, splitting is off, it is a flexible event, or nothing could be placed.
 - `POST /schedule/apply` `{previewId}` → `{previewId, status, duplicate, schedule}`. Returns 409 for a stale or invalid preview.
 - `GET /schedule/preview/{id}`: a stored preview.
 - `POST /schedule/interpret`: OpenAI interpretation of a scheduling request.

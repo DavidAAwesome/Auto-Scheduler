@@ -52,6 +52,17 @@ bounded (MAX_REPAIR_ATTEMPTS in total, MAX_REPAIR_ATTEMPTS_PER_TASK per task).
 
 This is a heuristic. Work it cannot place is reported with reasons; that is not proof that no valid
 schedule exists (see app.feasibility for the cases that are actually proven).
+
+Split options: `split=(task_id, strategy)` re-places that one task's flexible sessions in a chosen
+shape and leaves everything else to the rules above. The order of tasks does not change, so
+higher-priority work is still placed first and every session still goes through `place`, which
+enforces availability, breaks, events and limits. A strategy only decides which days and how many
+minutes to ask `place` for; whatever it cannot fit falls back to earliest fit, so a shape never
+gives up work that would otherwise have fitted.
+- front_loaded: plain earliest fit, so the work is finished as soon as possible.
+- even: equal minutes on evenly spaced days up to the deadline, at least EVEN_TARGET_BLOCK a session.
+- fewer_longer: only whole blocks of the longest length the task and focus limit allow, one a day
+  while days remain, so a free stretch too short for a full block is skipped.
 """
 from __future__ import annotations
 
@@ -73,6 +84,8 @@ MAX_REPAIR_ATTEMPTS_PER_TASK = 6
 MAX_VICTIMS = 4  # sessions removed in one repair attempt
 FAR_FUTURE = 2 ** 40
 CONTEXT_LOOKBACK = 12 * 60  # recent past work that still counts toward the continuous-work run
+SPLIT_STRATEGIES = ('front_loaded', 'even', 'fewer_longer')  # front_loaded is the baseline the others are judged against
+EVEN_TARGET_BLOCK = 30  # "even" uses fewer days rather than sessions shorter than this
 
 HEURISTIC_NOTE = ('AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this '
                   'heuristic found no valid place under your rules; that is not proof that no schedule exists.')
@@ -313,11 +326,12 @@ class _Work:
 
 class _Planner:
     def __init__(self, tasks, availability, prefs, zone, events, existing, now, horizon_days, mode,
-                 requested_break, not_before, displace=True):
+                 requested_break, not_before, displace=True, split=None):
         self.prefs = prefs
         self.zone = zone
         self.mode = mode
         self.displace = displace
+        self.split_task, self.split_strategy = split or (None, None)
         self.now = now
         self.start = ceil_grid(now)
         first_day, _ = local_parts(now, zone)
@@ -555,8 +569,9 @@ class _Planner:
 
     # -- placement
 
-    def place(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str]) -> list[Placed]:
-        """Earliest valid sessions for `need` minutes inside [lo, hi) and the task's allowed time."""
+    def place(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str], floor: int = 0) -> list[Placed]:
+        """Earliest valid sessions for `need` minutes inside [lo, hi) and the task's allowed time. No session is
+        shorter than `floor`, which lets a split strategy ask for a part of the task without a short tail."""
         placed: list[Placed] = []
         if need <= 0 or hi <= lo:
             return placed
@@ -592,6 +607,8 @@ class _Planner:
                 length = upper
             if length < need and length < task.min_session:
                 continue  # only the final piece may be shorter than the minimum session
+            if length < floor:
+                continue
             session = Placed(task.id, 'work', t, t + length, 'proposed', False, 'auto', 'new', title=task.title)
             placed.append(session)
             self._track(t, t + length, task.id, False, ref=session)
@@ -605,6 +622,89 @@ class _Planner:
             if exact:
                 break
         return placed
+
+    # -- split options
+
+    def _split_days(self, task: EngineTask, lo: int, hi: int) -> list[tuple[int, int]]:
+        """The part of each local day in [lo, hi) that still has room for a session of this task, earliest first."""
+        blockers = self.blockers()
+        out = []
+        for day in self.days:
+            start = max(local_to_abs(day, 0, self.zone), lo)
+            end = min(local_to_abs(day + timedelta(days=1), 0, self.zone), hi)
+            if start >= end:
+                continue
+            spans = [(max(s, start), min(e, end)) for s, e in self.allowed(task) if s < end and e > start]
+            room = sum(e - s for s, e in subtract(spans, blockers) if e - s >= task.min_session)
+            if min(room, self.prefs.max_daily - self.day_work(day)) >= task.min_session:
+                out.append((start, end))
+        return out
+
+    def _place_even(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str]) -> list[Placed]:
+        days = self._split_days(task, lo, hi)
+        limit = min(task.max_session, self.prefs.focus)
+        block = max(task.min_session, min(EVEN_TARGET_BLOCK, task.max_session))
+        count = max(1, min(len(days), need // block))
+        if len(days) < 2 or count < 2 or limit < task.min_session:
+            return self.place(task, need, lo, hi, notes)
+        # Evenly spaced days, first and last included; equal shares in grid steps.
+        chosen = [days[(2 * i * (len(days) - 1) + count - 1) // (2 * (count - 1))] for i in range(count)]
+        shares = [need // count // GRID * GRID] * count
+        for i in range((need - sum(shares)) // GRID):
+            shares[i % count] += GRID
+        shares[0] += need - sum(shares)  # a remainder below the grid
+        placed: list[Placed] = []
+        minutes_on: dict[tuple[int, int], int] = {}
+        for span, share in zip(chosen, shares):
+            # A share above the session limit becomes equal sessions, not one long and one tiny.
+            parts = max(1, min(-(-share // limit), share // task.min_session))
+            sizes = [share // parts // GRID * GRID] * parts
+            sizes[0] += share - sum(sizes)
+            for size in sizes:
+                got = self.place(task, size, span[0], span[1], notes, floor=size)
+                placed += got
+                minutes_on[span] = minutes_on.get(span, 0) + sum(s.end - s.start for s in got)
+        # A chosen day that ran out of room hands its minutes to the lightest days.
+        rest = need - sum(minutes_on.values())
+        for span in sorted(days, key=lambda d: (minutes_on.get(d, 0), d)):
+            if rest <= 0:
+                break
+            ask = min(rest, shares[-1])
+            got = self.place(task, ask, span[0], span[1], notes, floor=min(task.min_session, ask))
+            placed += got
+            rest -= sum(s.end - s.start for s in got)
+        return placed + self.place(task, rest, lo, hi, notes)
+
+    def _place_fewer_longer(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str]) -> list[Placed]:
+        block = min(task.max_session, self.prefs.focus, self.prefs.max_daily)
+        if block < task.min_session:
+            return self.place(task, need, lo, hi, notes)
+        pieces = [block] * (need // block) + ([need % block] if need % block else [])
+        if len(pieces) > 1 and pieces[-1] < task.min_session <= block - (task.min_session - pieces[-1]):
+            # Keep the last block usable by taking the difference from the one before it.
+            pieces[-2] -= task.min_session - pieces[-1]
+            pieces[-1] = task.min_session
+        placed: list[Placed] = []
+        progress = True
+        while pieces and progress:  # one whole block per day each round
+            progress = False
+            for start, end in self._split_days(task, lo, hi):
+                if not pieces:
+                    break
+                got = self.place(task, pieces[0], start, end, notes, floor=pieces[0])
+                if got:
+                    placed += got
+                    pieces.pop(0)
+                    progress = True
+        return placed + self.place(task, sum(pieces), lo, hi, notes)
+
+    def _place_task(self, task: EngineTask, need: int, lo: int, hi: int, notes: set[str]) -> list[Placed]:
+        """Places `task`, in the requested shape when it is the task being split."""
+        if task.id == self.split_task and self.split_strategy == 'even':
+            return self._place_even(task, need, lo, hi, notes)
+        if task.id == self.split_task and self.split_strategy == 'fewer_longer':
+            return self._place_fewer_longer(task, need, lo, hi, notes)
+        return self.place(task, need, lo, hi, notes)
 
     def remove_session(self, session: Placed):
         self.sessions = [s for s in self.sessions if s is not session]
@@ -798,7 +898,7 @@ class _Planner:
                                 f'Splitting is off and {task.remaining} minutes exceeds your daily work limit.')
                 window = None
         if missing > 0 and window:
-            self.sessions.extend(self.place(task, missing, window[0], window[1], notes))
+            self.sessions.extend(self._place_task(task, missing, window[0], window[1], notes))
         short = need[task.id] - self.allocated(task.id)
         if short > 0 and window:
             self._explain_short(task, short, notes)
@@ -832,6 +932,9 @@ class _Planner:
     def _keep_flexible(self, need: dict[str, int]):
         kept_by_task: dict[str, int] = {}
         for item in self.flexible:
+            if item.task_id == self.split_task:
+                self.removals.append(Removal(item, 'Replaced by this split option.'))
+                continue
             task = self.task_by_id.get(item.task_id or '')
             reason = None
             if task is None:
@@ -1016,14 +1119,17 @@ class _Planner:
 def plan_schedule(tasks: list[EngineTask], availability: Availability, prefs: Prefs, events: list[Busy],
                   existing: list[Existing], now: int, horizon_days: int = 7, mode: str = 'generate',
                   requested_break: tuple[int, int] | None = None,
-                  not_before: dict[str, int] | None = None, displace: bool = True) -> EngineResult:
+                  not_before: dict[str, int] | None = None, displace: bool = True,
+                  split: tuple[str, str] | None = None) -> EngineResult:
     if mode not in {'generate', 'repair'}:
         raise ValueError('mode must be generate or repair')
+    if split and split[1] not in SPLIT_STRATEGIES:
+        raise ValueError(f'Unknown split strategy: {split[1]}')
     if prefs.focus <= 0 or prefs.brk <= 0 or prefs.max_daily <= 0:
         raise ValueError('Focus, break and daily limits must be positive.')
     zone = ZoneInfo(availability.timeZone)
     planner = _Planner(tasks, availability, prefs, zone, events, existing, now, horizon_days, mode,
-                       requested_break, not_before, displace)
+                       requested_break, not_before, displace, split)
     return planner.run()
 
 

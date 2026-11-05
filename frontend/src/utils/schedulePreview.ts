@@ -1,4 +1,4 @@
-import type { CalendarEvent, ProposedEvent, SchedulePreview, ScheduleSession, Task, TaskAllocation } from '../types/models.ts';
+import type { CalendarEvent, ProposedEvent, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task, TaskAllocation } from '../types/models.ts';
 import { addDays } from './dates.ts';
 import { clock12, longDate } from './calendar.ts';
 import { busyOccurrencesOn, occurrencesOn } from './events.ts';
@@ -90,7 +90,7 @@ export function unscheduledLine(task: TaskAllocation) {
   return `${task.title}: ${task.unallocatedMinutes} min not placed. ${reasons || 'No valid slot was found.'}`;
 }
 
-const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break', plan: 'Proposed plan with your new items' };
+const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break', plan: 'Proposed plan with your new items', split: 'Proposed split' };
 
 /** Human summary of a preview: the same sessions the calendar draws, what moves and why, and what did not fit. */
 export function previewText(preview: SchedulePreview) {
@@ -122,6 +122,35 @@ export function previewText(preview: SchedulePreview) {
     lines.push('All remaining work fits.');
   }
   return lines.join('\n');
+}
+
+/** The split options to show: only while the calendar is previewing one of them, so any other preview replaces them. */
+export function activeSplitOptions(split: SplitOptions | null, preview: SchedulePreview | null) {
+  return split?.options.some(o => o.preview.previewId === preview?.previewId) ? split : null;
+}
+
+/** The split task's sessions in an option, including any fixed ones the option works around. */
+export function splitOptionSessions(option: SplitOption, taskId: string) {
+  return option.preview.sessions.filter(s => s.taskId === taskId && s.type === 'work');
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/** One line comparing an option: how many sessions, across how many days, how long, and when it finishes. */
+export function splitOptionSummary(option: SplitOption) {
+  const length = option.longestMinutes === option.shortestMinutes
+    ? minutesLabel(option.longestMinutes)
+    : `${minutesLabel(option.shortestMinutes)}–${minutesLabel(option.longestMinutes)}`;
+  return `${plural(option.sessionCount, 'session')} over ${plural(option.dayCount, 'day')} · ${length} each`;
+}
+
+/** What else choosing this option does, so a side effect is seen before Apply. */
+export function splitOptionWarnings(option: SplitOption) {
+  const lines: string[] = [];
+  if (option.unallocatedMinutes) lines.push(`${minutesLabel(option.unallocatedMinutes)} can’t be placed before the deadline.`);
+  if (option.otherNewMinutes) lines.push(`Also schedules ${minutesLabel(option.otherNewMinutes)} of your other tasks.`);
+  if (option.movedSessions) lines.push(`Moves ${plural(option.movedSessions, 'saved session')} of other tasks.`);
+  return lines;
 }
 
 /** "Why didn't X fit?" from the pending preview, or the saved schedule's coverage when there is none. */

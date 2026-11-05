@@ -792,6 +792,15 @@ main:focus { outline: none; }
 }
 @media (max-width: 760px) { .calendar-review { max-height: none; overflow: visible; } }
 .avatar-status { margin-top: -6px; min-height: 0; }
+/* Split options: one card per option, side by side when there is room. */
+.split-option-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 8px; }
+.split-option { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; }
+.split-option.selected { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.split-option input { margin: 3px 0 0; accent-color: var(--primary); }
+.split-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.split-option-summary { font-weight: 600; }
+.split-option-sessions { margin: 2px 0 0; padding: 0; max-height: 92px; overflow-y: auto; list-style: none; color: var(--muted, inherit); font-size: 12px; }
+.split-options p { margin: 0; }
 .preview-badge { display: inline-block; margin-right: 6px; padding: 2px 9px; border: 1px dashed var(--primary); border-radius: 999px; background: var(--lavender); color: var(--primary); font-size: 11.5px; font-weight: 700; letter-spacing: .2px; vertical-align: 1px; }
 
 /* Saved breaks open a card so they can be deleted. */

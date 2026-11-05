@@ -14,6 +14,7 @@ import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 import { calendarSessions, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
 import DraftReview from "./DraftReview";
+import SplitOptionsPanel from "./SplitOptionsPanel";
 import { accountTimeZone } from "../utils/timeZones";
 
 const HOUR_HEIGHT = 48;
@@ -456,6 +457,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
         </div>
       )}
+      <SplitOptionsPanel onError={setScheduleError} />
       {schedulePreview && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
           <div className="schedule-preview-head">

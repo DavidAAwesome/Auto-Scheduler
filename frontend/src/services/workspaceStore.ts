@@ -1,4 +1,4 @@
-import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
+import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SplitOptions, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { browserTimeZone } from '../utils/timeZones.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
@@ -64,6 +64,8 @@ export interface WorkspaceState {
   scheduleVersion: number;
   /** A proposal from the scheduling service. It is never saved until Apply succeeds. */
   schedulePreview: SchedulePreview | null;
+  /** Alternative splits of one task. The one the user picks is `schedulePreview`; nothing is saved until Apply. */
+  splitOptions: SplitOptions | null;
   /** Inputs changed after the preview was made; Apply will be rejected, so offer to regenerate. */
   previewStale: boolean;
   /** Items read from chat text or an image, waiting for review. Never saved until a plan preview is applied. */
@@ -81,7 +83,7 @@ export interface WorkspaceState {
 }
 export interface PlanDrafts { batchId: string; provider: InterpretResult['provider'] | 'chat'; notes: string[]; views: DraftView[]; horizonDays: number }
 export interface ImageAttachment { mediaType: string; dataBase64: string; name: string }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, previewStale: false, planDrafts: null, feasibility: null, planBusy: false, pendingActions: [], pendingChoice: null, error: '', saving: false });
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, splitOptions: null, previewStale: false, planDrafts: null, feasibility: null, planBusy: false, pendingActions: [], pendingChoice: null, error: '', saving: false });
 const newBatchId = () => `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 /** Gives incoming drafts ids that do not clash with drafts already under review, keeping their links. */
@@ -200,7 +202,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       // The AI profile is optional: if it cannot load, the workspace still opens with default personalization.
       const profile = request<AIProfile>('/assistant/profile').then(normalizeProfile, () => DEFAULT_AI_PROFILE);
       const [tasks, schedule, events, connections, availability, preferences, aiProfile] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<LoadedAvailability>('/availability').then(firstTimeZone), request<SchedulePreferences>('/schedule/preferences'), profile]);
-      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, previewStale: false, planDrafts: state.planDrafts, feasibility: null, planBusy: false, pendingActions: state.pendingActions, pendingChoice: null, error: '', saving: false });
+      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, splitOptions: null, previewStale: false, planDrafts: state.planDrafts, feasibility: null, planBusy: false, pendingActions: state.pendingActions, pendingChoice: null, error: '', saving: false });
         void refreshActions(current);
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
@@ -386,8 +388,29 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
     previewSchedule(horizonDays = 7) {
       return api.requestPreview({ kind: 'generate', horizonDays });
     },
+    /** Compares ways to divide one task; the first option goes on the calendar until the user picks another. */
+    async requestSplitOptions(taskId: string) {
+      if (!owner || state.status !== 'ready') throw new Error('Wait for your workspace to load.');
+      if (state.saving) throw new Error('A change is still saving. Please try again shortly.');
+      const current = generation;
+      publish({ ...state, saving: true, error: '' });
+      try {
+        const result = await request<SplitOptions>('/schedule/split-options', { method: 'POST', body: JSON.stringify({ taskId }) });
+        if (current !== generation) throw new Error('Your account changed. Please try again.');
+        publish({ ...state, splitOptions: result, schedulePreview: result.options[0].preview, previewStale: false, saving: false, error: '' });
+        return result;
+      } catch (error) {
+        if (current === generation) publish({ ...state, saving: false, error: (error as Error).message });
+        throw error;
+      }
+    },
+    /** Shows another split option on the calendar. Only switches previews; Apply saves the one shown. */
+    chooseSplitOption(id: SplitOptions['options'][number]['id']) {
+      const option = state.splitOptions?.options.find(o => o.id === id);
+      if (option) publish({ ...state, schedulePreview: option.preview, error: '' });
+    },
     clearSchedulePreview() {
-      publish({ ...state, schedulePreview: null, previewStale: false, error: '' });
+      publish({ ...state, schedulePreview: null, splitOptions: null, previewStale: false, error: '' });
     },
     /** Saves the pending preview. Shared state changes only after the server confirms the commit. */
     async applySchedulePreview() {
@@ -400,7 +423,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
           '/schedule/apply',
           { method: 'POST', body: JSON.stringify({ previewId: preview.previewId }) },
           saved => ({
-            sessions: saved.schedule.sessions, scheduleVersion: saved.schedule.scheduleVersion, schedulePreview: null, previewStale: false, error: '',
+            sessions: saved.schedule.sessions, scheduleVersion: saved.schedule.scheduleVersion, schedulePreview: null, splitOptions: null, previewStale: false, error: '',
             // Tasks and events created from drafts by this Apply join the shared state; the drafts are done.
             tasks: [...state.tasks, ...(saved.tasks ?? []).filter(t => !state.tasks.some(x => x.id === t.id))],
             events: [...state.events, ...(saved.events ?? []).filter(e => !state.events.some(x => x.id === e.id))],
@@ -410,7 +433,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       } catch (error) {
         // 409 means the server rejected this proposal as stale or invalid: drop it so the user regenerates.
         if ((error as { status?: number }).status === 409 && state.schedulePreview?.previewId === preview.previewId) {
-          publish({ ...state, schedulePreview: null, previewStale: false });
+          publish({ ...state, schedulePreview: null, splitOptions: null, previewStale: false });
         }
         throw error;
       }

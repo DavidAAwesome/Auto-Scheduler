@@ -169,7 +169,7 @@ export interface DaySummary { date: string; workMinutes: number; newWorkMinutes:
 export interface SchedulePreview {
   previewId: string;
   status: "proposed" | "applied";
-  mode: "generate" | "repair" | "break" | "plan";
+  mode: "generate" | "repair" | "break" | "plan" | "split";
   baseScheduleVersion: number;
   generatedAt: string;
   timeZone: string;
@@ -193,6 +193,25 @@ export interface SchedulePreview {
   proposedEvents?: ProposedEvent[];
   horizonDays?: number;
 }
+/** One way to divide a task's work. Its preview is complete and is applied like any other. */
+export interface SplitOption {
+  id: "front_loaded" | "even" | "fewer_longer";
+  label: string;
+  description: string;
+  sessionCount: number;
+  dayCount: number;
+  longestMinutes: number;
+  shortestMinutes: number;
+  scheduledMinutes: number;
+  unallocatedMinutes: number;
+  lastEndAt: string | null;
+  /** New work for other tasks in this preview. */
+  otherNewMinutes: number;
+  /** Saved work sessions of other tasks this preview moves or removes. */
+  movedSessions: number;
+  preview: SchedulePreview;
+}
+export interface SplitOptions { taskId: string; title: string; dueAt: string; remainingMinutes: number; options: SplitOption[]; notes: string[] }
 export interface ApplyResult { previewId: string; status: "applied"; duplicate: boolean; schedule: SavedSchedule; tasks?: Task[]; events?: CalendarEvent[] }
 
 /** Draft ids are prefixed with this in previews (taskId "draft:d1") until Apply creates the real task. */

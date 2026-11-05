@@ -14,9 +14,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from app.auth import get_current_user
 from app.database import get_database
 from app.openai_interpret import InterpretResult, interpret_request
-from app.schedule_model import SavedSchedule, SchedulePreferences, SchedulePreview
+from app.schedule_model import SavedSchedule, SchedulePreferences, SchedulePreview, SplitOptions
 from app.scheduling_service import (
-    MAX_HORIZON_DAYS, apply_preview, build_preview, get_preferences, owned_preview, save_preferences, saved_schedule,
+    MAX_HORIZON_DAYS, apply_preview, build_preview, build_split_options, get_preferences, owned_preview, save_preferences, saved_schedule,
     stored_preview,
 )
 from app.events import EventOutput
@@ -46,6 +46,11 @@ class RepairRequest(PreviewRequest):
 
 class BreakRequest(PreviewRequest):
     minutes: int = Field(strict=True, ge=5, le=240)
+
+
+class SplitRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    taskId: str = Field(min_length=1, max_length=64)
 
 
 class ApplyRequest(BaseModel):
@@ -110,6 +115,12 @@ def repair(body: RepairRequest = RepairRequest(), user=Depends(get_current_user)
 def request_break(body: BreakRequest, user=Depends(get_current_user), db=Depends(get_database)):
     """Preview a protected break starting now and repair the flexible work it displaces."""
     return build_preview(user, db, utc_now(), body.horizonDays, 'break', break_minutes=body.minutes)
+
+
+@router.post('/split-options', response_model=SplitOptions)
+def split_options(body: SplitRequest, user=Depends(get_current_user), db=Depends(get_database)):
+    """Alternative ways to divide one task's work. Each option is a preview; Apply saves the one the user picks."""
+    return build_split_options(user, db, utc_now(), body.taskId)
 
 
 @router.post('/apply', response_model=ApplyResponse)
