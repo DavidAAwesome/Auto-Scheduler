@@ -12,7 +12,7 @@ import { endsAfterDue } from "../utils/planning";
 import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
-import { calendarSessions, draftsBeforePreview, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
+import { calendarSessions, draftsBeforePreview, proposedEventsOn, savedWorkChanges, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
 import DraftReview from "./DraftReview";
 import SplitOptionsPanel from "./SplitOptionsPanel";
 import { accountTimeZone } from "../utils/timeZones";
@@ -495,7 +495,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
             {previewStale && <p className="form-warning small">{schedulePreview.mode === "plan" ? "The items under review changed after this preview. Preview again before applying." : "Your tasks, events or settings changed after this preview. Generate it again before applying."}</p>}
             {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
               <ul className="form-warning small">
-                {moved.map(r => <li key={r.session.id}>{r.newEndAt ? "Shortens" : "Moves"} {r.session.title} ({range(r.session.start, r.session.end)}): {r.reason}</li>)}
+                {savedWorkChanges(schedulePreview).map(line => <li key={line}>{line}</li>)}
                 {schedulePreview.conflicts.map((c, i) => (
                   <li key={`c${i}`}>{c.message}
                     {(c.choices ?? []).length > 0 && (

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, type AssistantReply, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, requestFromIntent, runAssistantCommand, splitFromEntry } from '../src/services/assistantCommands.ts';
-import { activeSplitOptions, calendarSessions, draftsBeforePreview, previewText, splitOptionSessions, splitOptionSummary, splitOptionWarnings } from '../src/utils/schedulePreview.ts';
+import { activeSplitOptions, calendarSessions, draftsBeforePreview, savedWorkChanges, previewText, splitOptionSessions, splitOptionSummary, splitOptionWarnings } from '../src/utils/schedulePreview.ts';
 import type { Availability, DraftView, PlanDraft, SavedSchedule, SchedulePreferences, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task } from '../src/types/models.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/acceptance.json', import.meta.url), 'utf8')) as {
@@ -183,4 +183,15 @@ test('split options and Apply come before the drafts in the review area', async 
   await workspace.previewSchedule(7);
   const after = workspace.getSnapshot();
   assert.equal(draftsBeforePreview(after.splitOptions, after.schedulePreview), true);
+});
+
+test('sessions a split replaces are counted, while real moves stay listed', () => {
+  const removal = (id: string, reason: string) => ({ session: session(id, '2026-11-05', 540, 590), reason, newEndAt: null });
+  const preview = { ...fixture.preview, removed: [
+    removal('a', 'Replaced by this split option.'), removal('b', 'Replaced by this split option.'), removal('c', 'It overlaps "Lab".'),
+  ] };
+  assert.deepEqual(savedWorkChanges(preview), [
+    `Replaces 2 saved ${asm.title} sessions with this split.`,
+    `Moves ${asm.title} (9 AM–9:50 AM, Thu, Nov 5, 2026): It overlaps "Lab".`,
+  ]);
 });

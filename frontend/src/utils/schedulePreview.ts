@@ -4,6 +4,8 @@ import { clock12, longDate } from './calendar.ts';
 import { busyOccurrencesOn, occurrencesOn } from './events.ts';
 
 export const timeRange = (start: number, end: number) => `${clock12(start)}–${clock12(end % 1440)}`;
+/** The engine's reason for a saved session that a split option replaces. */
+const SPLIT_REPLACED = 'Replaced by this split option.';
 const minutesLabel = (minutes: number) => (minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}` : `${minutes} min`);
 
 /** How a session is drawn: saved, a proposal that Apply would add, or a saved session Apply would remove. */
@@ -90,6 +92,17 @@ export function unscheduledLine(task: TaskAllocation) {
   return `${task.title}: ${task.unallocatedMinutes} min not placed. ${reasons || 'No valid slot was found.'}`;
 }
 
+/** What a preview does to saved work. Sessions a split replaces are counted per task instead of listed one by one. */
+export function savedWorkChanges(preview: SchedulePreview) {
+  const replaced = new Map<string, number>();
+  const lines: string[] = [];
+  for (const r of preview.removed.filter(item => item.session.type === 'work')) {
+    if (r.reason === SPLIT_REPLACED) { replaced.set(r.session.title, (replaced.get(r.session.title) ?? 0) + 1); continue; }
+    lines.push(`${r.newEndAt ? 'Shortens' : 'Moves'} ${r.session.title} (${timeRange(r.session.start, r.session.end)}, ${longDate(r.session.date)}): ${r.reason}`);
+  }
+  return [...[...replaced].map(([title, count]) => `Replaces ${count} saved ${title} session${count === 1 ? '' : 's'} with this split.`), ...lines];
+}
+
 const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break', plan: 'Proposed plan with your new items', split: 'Proposed split' };
 
 /** Human summary of a preview: the same sessions the calendar draws, what moves and why, and what did not fit. */
@@ -110,8 +123,7 @@ export function previewText(preview: SchedulePreview) {
   if (!added.length) lines.push('No new sessions.');
   const busyDays = preview.days.filter(d => d.workMinutes > 0);
   if (busyDays.length > 1) lines.push(`Work by day: ${busyDays.map(d => `${longDate(d.date)} ${minutesLabel(d.workMinutes)}`).join('; ')}.`);
-  const moved = preview.removed.filter(r => r.session.type === 'work');
-  for (const r of moved) lines.push(`${r.newEndAt ? 'Shortens' : 'Moves'} ${r.session.title} (${timeRange(r.session.start, r.session.end)}, ${longDate(r.session.date)}): ${r.reason}`);
+  lines.push(...savedWorkChanges(preview));
   for (const c of preview.conflicts) lines.push(`Conflict: ${c.message}`);
   const unscheduled = preview.tasks.filter(t => t.unallocatedMinutes > 0);
   if (unscheduled.length) {
