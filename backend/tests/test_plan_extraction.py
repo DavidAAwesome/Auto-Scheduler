@@ -9,7 +9,9 @@ from fastapi import HTTPException
 from app import plan_extraction
 from app.config import get_settings
 from app.plan_drafts import PlanDraft, draft_task, review_draft
-from app.plan_extraction import Extraction, LlmItem, LlmWindow, _convert_item, apply_answer, parse_text
+from app.plan_extraction import (
+    Extraction, LlmItem, LlmWindow, _convert_item, apply_answer, drafts_from_extraction, parse_text,
+)
 from schedule_fixtures import NOW, setup_user
 
 NY = ZoneInfo('America/New_York')
@@ -290,3 +292,11 @@ def test_an_unnamed_event_takes_the_name_of_its_kind(monkeypatch, kind, expected
     draft = extract(monkeypatch, extraction)
     assert draft.title == expected
     assert ('title' in draft.ambiguous) == (expected is None)
+
+
+def test_an_item_the_model_returns_twice_becomes_one_draft():
+    lab = {**flexible_item([]).model_dump(), 'title': 'Lab report', 'minutes': 180}
+    extraction = Extraction(notes=[], items=[LlmItem(**flexible_item([]).model_dump()), LlmItem(**lab),
+                                             LlmItem(**{**lab, 'title': 'lab report '}), LlmItem(**{**lab, 'minutes': 60})])
+    assert [(d.id, d.title, d.minutes) for d in drafts_from_extraction(extraction)] == [
+        ('d1', 'Essay', 120), ('d2', 'Lab report', 180), ('d3', 'Lab report', 60)]

@@ -233,7 +233,10 @@ def _without_guesses(draft: PlanDraft, now: datetime, zone: ZoneInfo) -> PlanDra
 
 
 def drafts_from_extraction(extraction: Extraction) -> list[PlanDraft]:
-    items = extraction.items[:MAX_ITEMS]
+    # The model sometimes returns the same item twice; saving both would double the work.
+    unique = {(i.kind, (i.title or i.sourceText).strip().lower(), i.minutes, i.deadlineDate, i.date, i.startTime, i.endTime,
+               tuple(i.repeatWeekdays)): i for i in reversed(extraction.items)}
+    items = list(reversed(unique.values()))[:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
     return [_convert_item(item, i, titles) for i, item in enumerate(items)]
 
