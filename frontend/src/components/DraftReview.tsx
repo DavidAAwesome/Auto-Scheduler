@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import { kindPatch } from "../services/planEntry";
+import { kindPatch, tooShortToSplit } from "../services/planEntry";
 import { missingSummary } from "../services/workspaceStore";
 import type { DraftIssue, DraftKind, DraftView, EventKind, FeasibilityResult, FitOption, FitStatus, PlanDraft, Priority } from "../types/models";
 import { clock12 } from "../utils/calendar";
@@ -73,6 +73,8 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
   const d = view.draft;
   const set = (patch: Partial<PlanDraft>) => workspaceService.updateDraft(d.id, patch);
   const fixed = d.kind === "fixed_event";
+  const tooShort = d.minutes != null && tooShortToSplit(d.minutes, d.minSessionMinutes);
+  const canSplit = !tooShort && (d.allowSplit ?? d.kind === "task");
   const blocking = new Set(view.issues.filter(i => i.blocking).map(i => i.field));
   const uncertain = (field: string) => (d.ambiguous.includes(field) || d.unreadable.includes(field) || blocking.has(field) ? "uncertain" : "");
   // Questions are shown next to the field they are about; the rest (links, repeats) under the item.
@@ -138,10 +140,10 @@ function DraftCard({ view, index, others, busy }: { view: DraftView; index: numb
               {at("priority")}
             </label>
             <label>Not before<input type="datetime-local" step={300} className={uncertain("earliestStart")} value={(d.earliestStart ?? "").slice(0, 16)} onChange={e => set({ earliestStart: e.target.value ? `${e.target.value}:00` : null })} />{at("earliestStart")}</label>
-            <label className="draft-check" title={d.kind === "flexible_event" ? "Flexible events stay in one block unless you allow splitting" : "Allow the work to be split into sessions"}>
-              <input type="checkbox" checked={d.allowSplit ?? d.kind === "task"} onChange={e => set({ allowSplit: e.target.checked })} /> Can split
+            <label className="draft-check" title={tooShort ? "Too short to split: it needs at least two sessions of the shortest length" : d.kind === "flexible_event" ? "Flexible events stay in one block unless you allow splitting" : "Allow the work to be split into sessions"}>
+              <input type="checkbox" checked={canSplit} disabled={tooShort} onChange={e => set({ allowSplit: e.target.checked })} /> Can split
             </label>
-            {(d.allowSplit ?? d.kind === "task") && (
+            {canSplit && (
               <>
                 <label>Shortest session<input type="number" min={5} step={5} max={6000} placeholder="15" className={uncertain("minSessionMinutes")} value={d.minSessionMinutes ?? ""} onChange={e => set({ minSessionMinutes: e.target.value ? Number(e.target.value) : null })} /></label>
                 <label>Longest session<input type="number" min={5} step={5} max={6000} placeholder="60" value={d.maxSessionMinutes ?? ""} onChange={e => set({ maxSessionMinutes: e.target.value ? Number(e.target.value) : null })} />{at("minSessionMinutes")}</label>

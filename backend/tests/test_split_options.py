@@ -203,7 +203,7 @@ def test_api_options_sit_around_existing_events_and_other_tasks(environment, mon
 def test_api_explains_when_alternatives_collapse(environment, monkeypatch):
     client, _ = environment
     setup_user(client, monkeypatch)
-    small = add_task(client, 'Quiz', 'Medium', minutes=20, deadline=TOMORROW)
+    small = add_task(client, 'Quiz', 'Medium', minutes=30, deadline=TOMORROW)
     result = options(client, small['id'])
     assert [o['id'] for o in result['options']] == ['front_loaded']
     assert any('same sessions' in note for note in result['notes'])
@@ -336,3 +336,44 @@ def test_api_applying_a_draft_option_saves_the_tasks_with_that_split(transaction
     assert applied.status_code == 200, applied.text
     assert {t['title'] for t in applied.json()['tasks']} == {'Essay', 'Lab'}
     assert rows(applied.json()['schedule']['sessions']) == rows(picked['preview']['sessions'], 'new')
+
+
+# ------------------------------------------------------------------ too short to split
+
+ALONE = "This task is too short to split, so it'll be one 10-minute session."
+
+
+def test_a_short_saved_task_is_not_offered_splits(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    quiz = add_task(client, 'Quiz', 'High', minutes=15, deadline=DUE)
+    response = client.post('/schedule/split-options', json={'taskIds': [quiz['id']]})
+    assert response.status_code == 422
+    assert response.json()['detail'] == "This task is too short to split, so it'll be one 15-minute session."
+
+
+def test_a_short_draft_is_not_offered_splits_and_is_previewed_as_one_session(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    drafts = [{'id': 'a', 'title': 'Read chapter', 'minutes': 10, 'deadline': DUE}]
+    response = client.post('/plan/split-options', json={'drafts': drafts})
+    assert response.status_code == 422 and response.json()['detail'] == ALONE
+    proposal = client.post('/plan/preview', json={'drafts': drafts}).json()
+    assert [s['end'] - s['start'] for s in proposal['sessions'] if s['type'] == 'work'] == [10]
+
+
+def test_a_short_task_among_others_is_named_and_left_out(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    drafts = [{'id': 'a', 'title': 'Essay', 'minutes': 120, 'deadline': DUE}, {'id': 'b', 'title': 'Read', 'minutes': 10, 'deadline': DUE}]
+    result = client.post('/plan/split-options', json={'drafts': drafts}).json()
+    assert result['taskIds'] == ['draft:a']
+    assert '"Read" is too short to split, so it\'ll be one 10-minute session.' in result['notes']
+
+
+def test_what_counts_is_the_work_left(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    task = add_task(client, 'Essay', 'High', minutes=60, completedMinutes=40, deadline=DUE)
+    response = client.post('/schedule/split-options', json={'taskIds': [task['id']]})
+    assert 'one 20-minute session' in response.json()['detail']

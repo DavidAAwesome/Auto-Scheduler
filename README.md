@@ -176,6 +176,12 @@ Automatic breaks are not saved. The engine keeps the gap free, previews show the
 
 Loading the schedule (`GET /schedule`) removes automatic breaks saved by older versions, for the signed-in user. In chat, "delete breaks" lists your saved breaks and deletes them after you confirm (`POST /actions/delete-breaks`); if there are none, it explains the automatic ones.
 
+### What review checks
+
+Questions come from a draft's current values: a field that holds a value is not reported as missing or unreadable, whatever the reader flagged, and its question clears as soon as it is filled in. AM/PM and vague dates are still confirmed, because there the value itself is in doubt. Notes in parentheses that aren't task details, such as "(I'm so tired)", are removed before an item is read; "(2 hours)", "(due Friday)" and "(Room 204)" stay.
+
+A task shorter than two of its shortest sessions (30 minutes with the default 15) can't be split: "Can split" is off, it is planned as one session, and split options aren't offered.
+
 ### Drafts that cannot fit
 
 A task or flexible event whose work can't fit before its deadline is flagged on the draft as soon as it is read or edited, for example "Only 30 min left before the deadline, so 3 h can't fit." The check measures that item alone: time left, your available hours, events, fixed sessions, needed breaks and the daily limit. It is a warning, not a block. The draft offers **Move the deadline** (to the first deadline with enough time), **Shorten**, and **Schedule what fits**, which is a partial preview. Other flexible work can still leave an item short, which "Can this fit?" checks. Neither that check nor a preview ever places work after a deadline.

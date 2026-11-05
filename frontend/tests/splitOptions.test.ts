@@ -195,3 +195,12 @@ test('sessions a split replaces are counted, while real moves stay listed', () =
     `Moves ${asm.title} (9 AM–9:50 AM, Thu, Nov 5, 2026): It overlaps "Lab".`,
   ]);
 });
+
+test('chat: the demo message separates the request and a short task gets a plain answer', async () => {
+  assert.deepEqual(splitFromEntry('Read chapter, 10 minutes, due Friday. Show ways to split it'), { entry: 'Read chapter, 10 minutes, due Friday', wantsSplit: true });
+  const refusal = new Error("This task is too short to split, so it'll be one 10-minute session.");
+  const workspace = { getSnapshot: () => ({ availability: null }), previewDraftSplitOptions: async () => { throw refusal; } } as unknown as Parameters<typeof runAssistantCommand>[1];
+  const message = await runAssistantCommand({ command: 'split_options', target: 'drafts' }, workspace);
+  assert.equal(message.text, refusal.message);
+  assert.deepEqual(message.actions, []);
+});

@@ -484,6 +484,7 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
         const split = req.target === "drafts" ? await workspace.previewDraftSplitOptions() : await workspace.requestSplitOptions(req.target);
         return reply(splitOptionsText(split), ["apply_schedule", "cancel_schedule"]);
       } catch (error) {
+        if (/too short to split/.test(errorText(error))) return reply(errorText(error)); // an answer, not a failure
         return reply(`I couldn’t build split options: ${errorText(error)} Nothing was changed.`);
       }
     }

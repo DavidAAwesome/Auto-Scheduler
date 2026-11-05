@@ -20,7 +20,7 @@ from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
 
 from app.events import blocks_time, event_output, occurs_on
-from app.plan_drafts import DRAFT_PREFIX, PlanDraft, draft_event, draft_event_doc, draft_task
+from app.plan_drafts import DRAFT_PREFIX, PlanDraft, draft_event, draft_event_doc, draft_task, too_short_to_split
 from app.schedule_model import (
     AllocationReason, ConflictChoice, ConflictItem, DaySummary, ProposedEvent, SavedSchedule, ScheduleConflict,
     SchedulePreferences, SchedulePreview, ScheduleSession, SessionRemoval, SplitOption, SplitOptions, TaskAllocation,
@@ -349,12 +349,16 @@ def _split_option(strategy: str, preview: SchedulePreview, task_ids: set[str]) -
         preview=preview)
 
 
-def _split_problem(task: TaskOutput, ctx: Context, now: datetime) -> str | None:
-    """Why this task cannot be split, or None."""
+def _split_problem(task: TaskOutput, ctx: Context, now: datetime, alone: bool = False) -> str | None:
+    """Why this task cannot be split, or None. `alone`: it is the only task asked about, so no name is needed."""
     if task.done or task.minutes <= task.completedMinutes:
         return f'"{task.title}" has no work left to split.'
     if task.kind == 'flexible_event':
         return f'"{task.title}" is a flexible event, so it has no work sessions to split.'
+    remaining = task.minutes - task.completedMinutes
+    if too_short_to_split(remaining, task.minSessionMinutes):
+        name = 'This task' if alone else f'"{task.title}"'
+        return f"{name} is too short to split, so it'll be one {remaining}-minute session."
     if not task.allowSplit:
         return f'Splitting is off for "{task.title}". Turn it on in the task to compare options.'
     if task_due(task, ctx.zone) <= to_abs(now):
@@ -382,7 +386,8 @@ def build_split_options(user, db, now: datetime, task_ids: list[str], drafts: li
         task_ids = [t.id for t in ctx.tasks if t.id.startswith(DRAFT_PREFIX) and t.kind == 'task']
     if any(task_id not in by_id for task_id in task_ids):
         raise HTTPException(404, 'Task not found.')
-    problems = {task_id: _split_problem(by_id[task_id], ctx, now) for task_id in dict.fromkeys(task_ids)}
+    unique_ids = list(dict.fromkeys(task_ids))
+    problems = {task_id: _split_problem(by_id[task_id], ctx, now, len(unique_ids) == 1) for task_id in unique_ids}
     targets = [task_id for task_id, problem in problems.items() if problem is None]
     notes = [problem for problem in problems.values() if problem]
     if not targets:

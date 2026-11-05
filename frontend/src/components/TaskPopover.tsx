@@ -3,6 +3,7 @@ import type { Task, WorkSession } from "../types/models";
 import { useDismiss } from "../hooks/useDismiss";
 import { useAnchoredCard } from "../hooks/useAnchoredCard";
 import { useWorkspace } from "../hooks/useWorkspace";
+import { tooShortToSplit } from "../services/planEntry";
 import { workspaceService } from "../services/workspace";
 import { clock12, longDate } from "../utils/calendar";
 import { endsAfterDue, plannedMinutes } from "../utils/planning";
@@ -77,7 +78,7 @@ export default function TaskPopover({ task, anchor, focusSessionId, onClose, onE
           <Icon name="plus" size={15} /> {planned >= task.remainingMinutes ? "Add another work session" : `Plan work time (${duration(task.remainingMinutes - planned)} unplanned)`}
         </button>
       )}
-      {!task.done && task.allowSplit && task.kind !== "flexible_event" && task.remainingMinutes > 0 && (
+      {!task.done && task.allowSplit && task.kind !== "flexible_event" && task.remainingMinutes > 0 && !tooShortToSplit(task.remainingMinutes, task.minSessionMinutes) && (
         <button className="button secondary small full" disabled={busy} onClick={() => void run(() => workspaceService.requestSplitOptions([task.id]), true)}>
           <Icon name="assistant" size={15} /> Compare ways to split
         </button>

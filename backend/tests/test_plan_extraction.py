@@ -10,7 +10,7 @@ from app import plan_extraction
 from app.config import get_settings
 from app.plan_drafts import PlanDraft, draft_task, review_draft
 from app.plan_extraction import (
-    Extraction, LlmItem, LlmWindow, _convert_item, apply_answer, drafts_from_extraction, parse_text,
+    Extraction, LlmItem, LlmWindow, _convert_item, apply_answer, drafts_from_extraction, parse_text, without_asides,
 )
 from schedule_fixtures import NOW, setup_user
 
@@ -397,3 +397,69 @@ def test_a_fixed_event_is_never_asked_about_fields_it_does_not_have(field, flag)
     draft = PlanDraft(id='d1', kind='fixed_event', title='Gym', date='2026-10-27', start=540, end=600, **{flag: [field]})
     view = review_draft(draft, NOW, NY)
     assert view.ready and view.issues == []
+
+
+# ------------------------------------------------------------------ checks use the current values
+
+@pytest.mark.parametrize('flag', ['unreadable', 'ambiguous'])
+def test_a_field_with_a_value_is_never_asked_about(flag):
+    draft = PlanDraft(id='d1', title='Read chapter', minutes=10, deadline='2026-10-30', location='Library', **{flag: ['title', 'minutes', 'location']})
+    view = review_draft(draft, NOW, NY)
+    assert view.ready and view.issues == []
+    assert (view.draft.unreadable, view.draft.ambiguous) == ([], [])  # the highlight goes too
+
+
+def test_the_ai_flagging_a_name_it_also_returned_needs_no_answer():
+    item = LlmItem(**{**flexible_item([]).model_dump(), 'title': 'Read chapter', 'unreadableFields': ['title']})
+    assert review_draft(_convert_item(item, 0, {}), NOW, NY).ready
+
+
+def test_a_flagged_field_with_no_value_is_still_asked_about():
+    draft = PlanDraft(id='d1', title=None, minutes=None, deadline='2026-10-30', unreadable=['title', 'minutes'])
+    view = review_draft(draft, NOW, NY)
+    assert {i.field for i in view.issues if i.blocking} == {'title', 'minutes'} and not view.ready
+    filled = review_draft(view.draft.model_copy(update={'title': 'Read', 'minutes': 30}), NOW, NY)
+    assert filled.ready and filled.issues == []
+
+
+@pytest.mark.parametrize('field, extra', [
+    ('start', {'kind': 'fixed_event', 'title': 'Class', 'date': '2026-10-27', 'start': 600, 'end': 690}),
+    ('deadline', {'title': 'Essay', 'minutes': 60, 'deadline': '2026-10-30'}),
+])
+def test_a_value_that_is_itself_in_doubt_is_still_confirmed(field, extra):
+    view = review_draft(PlanDraft(id='d1', ambiguous=[field], **extra), NOW, NY)
+    assert any(i.field == field and i.blocking for i in view.issues)
+
+
+# ------------------------------------------------------------------ too short to split
+
+@pytest.mark.parametrize('minutes, shortest, can_split', [(10, None, False), (25, None, False), (30, None, True), (60, 40, False), (80, 40, True)])
+def test_short_tasks_become_one_session(minutes, shortest, can_split):
+    draft = PlanDraft(id='d1', title='Read', minutes=minutes, deadline='2026-10-30', allowSplit=True, minSessionMinutes=shortest)
+    task = draft_task(draft, {'d1'})
+    assert task.allowSplit is can_split
+    if not can_split:
+        assert task.maxSessionMinutes >= minutes
+
+
+# ------------------------------------------------------------------ parenthetical notes
+
+@pytest.mark.parametrize('text, expected', [
+    ("Read chapter, 10 minutes, due Friday (I'm so tired)", 'Read chapter, 10 minutes, due Friday'),
+    ('Essay (ugh) 2 hours due Friday (wish me luck!)', 'Essay 2 hours due Friday'),
+    ('Essay (2 hours) due Friday', 'Essay (2 hours) due Friday'),
+    ('Lab report (due Friday)', 'Lab report (due Friday)'),
+    ('Review (high priority) 1 hour due Monday', 'Review (high priority) 1 hour due Monday'),
+    ('Class 10-11am Tuesday (Room 204)', 'Class 10-11am Tuesday (Room 204)'),
+    ('Essay 2 hours due Friday', 'Essay 2 hours due Friday'),
+])
+def test_notes_in_parentheses_go_unless_they_are_details(text, expected):
+    assert without_asides(text) == expected
+
+
+def test_a_note_never_reaches_the_task_name(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    view = client.post('/plan/interpret', json={'text': "Read chapter, 10 minutes, due Friday (I'm so tired)", 'batchId': 'b'}).json()['drafts'][0]
+    assert (view['draft']['title'], view['draft']['minutes']) == ('Read chapter', 10)
+    assert 'tired' not in view['draft']['sourceText']

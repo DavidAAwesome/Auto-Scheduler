@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, mergeDrafts, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, runAssistantCommand } from '../src/services/assistantCommands.ts';
-import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry } from '../src/services/planEntry.ts';
+import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry, tooShortToSplit } from '../src/services/planEntry.ts';
 import { calendarSessions, previewText, todayAgenda, todayText } from '../src/utils/schedulePreview.ts';
 import type {
   ApplyResult, Availability, CalendarEvent, DraftView, FeasibilityResult, InterpretResult, SchedulePreferences, SchedulePreview,
@@ -219,4 +219,12 @@ test('chat repeats a will-not-fit warning from the draft', () => {
   };
   assert.match(draftsReply([view], 'openai'), /Only 30 min left before the deadline, so 3 h can't fit\. The draft has options for this\./);
   assert.doesNotMatch(draftsReply([{ ...view, issues: [] }], 'openai'), /can't fit/);
+});
+
+test('a task needs two shortest sessions of work to split', () => {
+  assert.equal(tooShortToSplit(10), true);
+  assert.equal(tooShortToSplit(29), true);
+  assert.equal(tooShortToSplit(30), false);
+  assert.equal(tooShortToSplit(60, 40), true);
+  assert.equal(tooShortToSplit(80, 40), false);
 });

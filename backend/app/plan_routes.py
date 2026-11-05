@@ -19,7 +19,9 @@ from app.config import get_settings
 from app.database import get_database
 from app.feasibility import FeasibilityResult, check_feasibility, fit_warnings
 from app.plan_drafts import DraftView, PlanDraft, review_all, review_draft
-from app.plan_extraction import ImageInput, apply_answer, decode_image, extract_with_model, new_batch_id, parse_text
+from app.plan_extraction import (
+    ImageInput, apply_answer, decode_image, extract_with_model, new_batch_id, parse_text, without_asides,
+)
 from app.schedule_model import SchedulePreview, SplitOptions
 from app.scheduling_service import MAX_HORIZON_DAYS, build_preview, build_split_options
 from app.workspace import get_availability
@@ -96,15 +98,16 @@ def interpret(body: InterpretRequest, user=Depends(get_current_user), db=Depends
         raise HTTPException(422, 'Type your tasks and events, or attach an image.')
     image = (body.image.mediaType.lower(), decode_image(body.image)) if body.image else None
     titles = _task_ids(user, db)
+    text = without_asides(body.text)
     notes: list[str] = []
     if get_settings().openai_api_key:
-        drafts, notes = extract_with_model(body.text, image, now, zone, list(titles.values()))
+        drafts, notes = extract_with_model(text, image, now, zone, list(titles.values()))
         provider = 'openai'
     elif image:
         # Developer setup (OPENAI_API_KEY) stays out of the product message.
         raise HTTPException(503, 'Reading images isn’t available right now. Your image was kept; you can type the items instead.')
     else:
-        drafts = parse_text(body.text, now, zone, {title: tid for tid, title in titles.items()})
+        drafts = parse_text(text, now, zone, {title: tid for tid, title in titles.items()})
         provider = 'local'
         notes.append('Read with AutoPlan’s built-in parser (no AI key set). Check each item.')
     if not drafts:

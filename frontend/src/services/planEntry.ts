@@ -35,6 +35,11 @@ export function looksLikePlanEntry(text: string) {
     || (DAY.test(trimmed) && CLOCK_RANGE.test(trimmed));
 }
 
+/** Same rule as the backend: the work cannot make two sessions of the shortest allowed length. */
+export function tooShortToSplit(minutes: number, minSession?: number | null) {
+  return minutes < 2 * (minSession || 15);
+}
+
 /** Changing an item's kind: a fixed event has no length, deadline or "not before", and only a fixed event can repeat. */
 export function kindPatch(kind: DraftKind): Partial<PlanDraft> {
   return kind === "fixed_event" ? { kind, minutes: null, deadline: null, dueTime: null, earliestStart: null } : { kind, repeat: null };

@@ -27,6 +27,8 @@ FIELD_LABELS = {
     'repeat.weekdays': 'weekdays', 'priority': 'priority', 'earliestStart': 'earliest start', 'location': 'location',
     'windows': 'preferred times',
 }
+DEFAULT_MIN_SESSION = 15
+UNCERTAIN_WITH_A_VALUE = {'start', 'end', 'date', 'deadline', 'dueTime', 'repeat.startDate', 'repeat.until'}  # "10" or "next Friday"
 NOT_FOR_FIXED_EVENTS = {'minutes', 'deadline', 'dueTime', 'earliestStart'}  # flagged by the extractor, never asked about
 WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -122,8 +124,29 @@ def parse_local_instant(value: str | None, zone: ZoneInfo) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=zone)
 
 
+def too_short_to_split(minutes: int, min_session: int | None = None) -> bool:
+    """True when the work cannot make two sessions of the shortest allowed length."""
+    return minutes < 2 * (min_session or DEFAULT_MIN_SESSION)
+
+
+def _has_value(draft: PlanDraft, field: str) -> bool:
+    value = draft.repeat and {'repeat.startDate': draft.repeat.startDate, 'repeat.until': draft.repeat.until,
+                              'repeat.weekdays': draft.repeat.weekdays}.get(field) if field.startswith('repeat.') \
+        else getattr(draft, field, None)
+    return value not in (None, '', [])
+
+
+def _settled_flags(draft: PlanDraft) -> PlanDraft:
+    """Flags from reading the text are only a starting point: a field that holds a value was read, whoever filled it
+    in. AM/PM and vague dates stay flagged, because there the value itself is what is in doubt."""
+    unreadable = [f for f in draft.unreadable if not _has_value(draft, f)]
+    ambiguous = [f for f in draft.ambiguous if f in UNCERTAIN_WITH_A_VALUE or not _has_value(draft, f)]
+    return draft.model_copy(update={'unreadable': unreadable, 'ambiguous': ambiguous})
+
+
 def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set[str] | None = None) -> DraftView:
-    """Business rules for one draft. Blocking issues are questions the user must answer first."""
+    """Business rules for one draft, using its current values. Blocking issues are questions the user must answer first."""
+    draft = _settled_flags(draft)
     issues: list[DraftIssue] = []
     name = draft.title or 'this item'
     today = now.astimezone(zone).date()
@@ -240,9 +263,10 @@ def draft_task_id(draft_id: str) -> str:
 def draft_task(draft: PlanDraft, all_draft_ids: set[str]) -> TaskOutput:
     """A ready task / flexible-event draft as a TaskOutput with id `draft:<id>` (never stored as-is)."""
     flexible_event = draft.kind == 'flexible_event'
-    split = draft.allowSplit if draft.allowSplit is not None else not flexible_event
     minutes = draft.minutes or 5
-    min_session = draft.minSessionMinutes or min(15, minutes)
+    split = (draft.allowSplit if draft.allowSplit is not None else not flexible_event) \
+        and not too_short_to_split(minutes, draft.minSessionMinutes)
+    min_session = draft.minSessionMinutes or min(DEFAULT_MIN_SESSION, minutes)
     max_session = draft.maxSessionMinutes or (minutes if (flexible_event or not split) else max(min_session, 60))
     return TaskOutput(
         id=draft_task_id(draft.id), done=False, title=draft.title or 'Untitled', deadline=draft.deadline,

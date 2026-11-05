@@ -114,6 +114,7 @@ Rules:
 - title is the item's name in the user's words, even when short: "class Tue 10-11:30" has the title "Class".
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
 - deadlineTime is the stated time only: noon is 12:00. Leave it null when no time is given (never fill in 23:59).
+- Ignore side remarks in parentheses that are not task details, such as "(I'm so tired)".
 - Never confuse a deadline with a scheduled date. "Essay due Friday" has deadlineDate Friday and no date/startTime.
 - Do not assume an event is movable, and do not invent anything: leave unknown fields null. earliestStart,
   allowSplit and maxSessionMinutes stay null unless the user states them.
@@ -350,6 +351,16 @@ FLEX_CUES = r'\bsome ?time\b|\bwhenever\b|\bflexible\b|\bat some point\b|\banyti
 FLEX_WORDS = r'\b(gym|workout|work out|run|jog|yoga|swim|coffee|hang ?out|walk|grocer(y|ies)|laundry|call (mom|dad|home))\b'
 LEAD = re.compile(r'^\s*(?:please\s+)?(?:(?:add|create|schedule|plan|put)\s+(?:an?\s+)?(?:(?:new\s+)?(?:task|event)s?\s*:?\s*)?|'
                   r'remind me to\s+|i (?:need|have|want|should) to\s+|i have\s+(?:an?\s+)?|(?:task|event)\s*:\s*)', re.I)
+
+
+ASIDE = re.compile(r'\s*\(([^()]*)\)')
+ASIDE_DETAIL = re.compile(rf'{DATE}|{TIME}|\b\d+(?:\.\d+)?\s*(?:h|hrs?|hours?|m|mins?|minutes?)\b|\b(?:due|by|before|after|every|each|weekly|'
+                          r'until|from|priority|high|low|medium|urgent|split|sessions?|room)\b', re.I)
+
+
+def without_asides(text: str) -> str:
+    """Removes parenthetical notes that are not task details: "(I'm so tired)" goes, "(2 hours)" and "(due Friday)" stay."""
+    return ASIDE.sub(lambda match: match[0] if ASIDE_DETAIL.search(match[1]) else '', text)
 
 
 def split_items(text: str) -> list[str]:
