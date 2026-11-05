@@ -9,6 +9,7 @@ export type AssistantIntent =
   | "busy_time"
   | "generate_schedule"
   | "split_options"
+  | "delete_breaks"
   | "explain_unscheduled"
   | "request_break"
   | "replan"
@@ -274,12 +275,6 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
     },
     async deleteTask(id: string) {
       await mutate<void>(`/tasks/${id}`, { method: 'DELETE' }, () => ({ tasks: state.tasks.filter(t => t.id !== id), sessions: state.sessions.filter(s => s.taskId !== id), ...stale() }));
-      // The server also drops scheduler breaks that no longer sit between work; re-read so they disappear here too.
-      const current = generation;
-      try {
-        const schedule = await request<SavedSchedule>('/schedule');
-        if (current === generation) publish({ ...state, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion });
-      } catch { /* The task is deleted; leftover breaks show until the next reload. */ }
     },
     createSession(input: WorkSessionInput) {
       validateSession(input);
@@ -546,6 +541,12 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       publish({ ...state, pendingActions: putAction(action) });
       return action;
     },
+    /** Asks to delete every saved break. Nothing is deleted until the action is confirmed. */
+    async proposeDeleteBreaks() {
+      const action = await request<PendingAction>('/actions/delete-breaks', { method: 'POST' });
+      publish({ ...state, pendingActions: putAction(action) });
+      return action;
+    },
     /**
      * Runs a pending action once. A second call while it runs is refused here, and the server refuses a second
      * run too (it returns the finished action with duplicate: true). Errors are kept on the action for display.
@@ -567,6 +568,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       }
       if (current !== generation) throw new Error('Your account changed. Please try again.');
       const deleted = new Set(result.deletedTaskIds ?? []);
+      const deletedSessions = new Set(result.deletedSessionIds ?? []);
       const created = new Set(result.action.type === 'create_items' ? result.action.targets.map(t => t.id) : []);
       const views = state.planDrafts?.views.filter(v => !created.has(v.draft.id)) ?? [];
       publish({
@@ -574,7 +576,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
         pendingActions: putAction(result.action),
         tasks: [...state.tasks.filter(t => !deleted.has(t.id)), ...(result.tasks ?? []).filter(t => !state.tasks.some(x => x.id === t.id))],
         events: [...state.events, ...(result.events ?? []).filter(e => !state.events.some(x => x.id === e.id))],
-        sessions: state.sessions.filter(s => !s.taskId || !deleted.has(s.taskId)),
+        sessions: state.sessions.filter(s => !deletedSessions.has(s.id) && (!s.taskId || !deleted.has(s.taskId))),
         scheduleVersion: result.scheduleVersion ?? state.scheduleVersion,
         ...(created.size && state.planDrafts ? { planDrafts: views.length ? { ...state.planDrafts, views } : null, feasibility: null } : {}),
         ...(result.duplicate ? {} : stale()),

@@ -7,7 +7,7 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from app.database import initialize_indexes, migrate_session_indexes
 from firebase_tokens import sign_in, sign_out
-from schedule_fixtures import ACCEPTANCE, TODAY, acceptance_tasks, rows, setup_user
+from schedule_fixtures import ACCEPTANCE_SAVED, ACCEPTANCE, TODAY, acceptance_tasks, rows, setup_user
 
 
 def real_transactions(db):
@@ -49,7 +49,7 @@ def test_legacy_index_failure_migration_and_reload(environment, monkeypatch, cap
     response = client.post('/schedule/apply', json={'previewId': proposal['previewId']})
     assert response.status_code == 200, response.text
     saved = client.get('/schedule').json()
-    assert rows(saved['sessions'])[1:] == ACCEPTANCE  # after yesterday's completed session
+    assert rows(saved['sessions'])[1:] == ACCEPTANCE_SAVED  # after yesterday's completed session
     sign_out(client)
     assert client.get('/schedule').status_code == 401
     sign_in(client, uid='sched-user', email='sched-user@example.com', name='Sched')

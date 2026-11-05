@@ -12,6 +12,7 @@ import { endsAfterDue } from "../utils/planning";
 import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
+import { isDerivedBreak } from "../utils/breaks";
 import { calendarSessions, draftsBeforePreview, proposedEventsOn, savedWorkChanges, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
 import DraftReview from "./DraftReview";
 import SplitOptionsPanel from "./SplitOptionsPanel";
@@ -87,9 +88,9 @@ function BreakBlock({ item, place, onOpen }: { item: CalendarItem; place: Placed
     <span className="session-title">{label}</span>
     <span className="session-time">{range(session.start, session.end)}{proposed ? " · proposed" : ""}</span>
   </>;
-  // A proposed break is only part of the preview; a saved one opens its card so it can be deleted.
-  if (proposed) {
-    return <div className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · proposed, not saved`}>{content}</div>;
+  // Only a saved break has a card to delete it. A proposed one is part of the preview; an automatic one follows the work.
+  if (proposed || isDerivedBreak(session)) {
+    return <div className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · ${proposed ? "proposed, not saved" : "automatic, between work sessions"}`}>{content}</div>;
   }
   return (
     <button className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · click to delete`}
@@ -196,7 +197,7 @@ function PreviewBlock({ session, place }: { session: ScheduleSession; place: Pla
 }
 
 function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
-  const { tasks, sessions, events, availability, schedulePreview } = useWorkspace();
+  const { tasks, sessions, events, availability, schedulePreview, preferences } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
   const zone = accountTimeZone(availability);
   const [now, setNow] = useState(() => minutesInZone(zone));
@@ -215,7 +216,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
     return () => observer.disconnect();
   }, []);
   // The same list Today's Tasks and chat read: saved sessions, or the preview's proposed schedule on top of them.
-  const shown = calendarSessions(sessions, schedulePreview);
+  const shown = calendarSessions(sessions, schedulePreview, { preferences, events, tasks });
   useEffect(() => {
     const timer = setInterval(() => setNow(minutesInZone(zone)), 60_000);
     return () => clearInterval(timer);
@@ -378,6 +379,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
   const unscheduled = schedulePreview?.tasks.filter(t => t.unallocatedMinutes > 0) ?? [];
   const added = schedulePreview?.sessions.filter(s => s.change === "new") ?? [];
   const moved = schedulePreview?.removed.filter(r => r.session.type === "work") ?? [];
+  const newBreaks = schedulePreview?.sessions.filter(s => s.type === "break" && (s.change === "new" || s.change === "derived")).length ?? 0;
   const nowIso = new Date().toISOString();
   // Saved flexible work that a newer event now overlaps: offer a local repair instead of moving it silently.
   const clashing = schedulePreview ? [] : sessions.filter(s => s.type === "work" && s.status === "saved" && s.source === "auto" && !s.locked
@@ -469,7 +471,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
           <div className="schedule-preview-details">
             {(schedulePreview.proposedEvents?.length ?? 0) > 0 && <>{schedulePreview.proposedEvents!.length} new event occurrence{schedulePreview.proposedEvents!.length === 1 ? "" : "s"}</>}
-            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && " · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {added.filter(s => s.type === "break").length} break{added.filter(s => s.type === "break").length === 1 ? "" : "s"}
+            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && " · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {newBreaks} break{newBreaks === 1 ? "" : "s"}
             {moved.length > 0 && <>{" · "}{moved.length} saved session{moved.length === 1 ? "" : "s"} move</>}
             {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
               <div className="preview-days" aria-label="Scheduled days">

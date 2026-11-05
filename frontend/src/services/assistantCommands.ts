@@ -38,6 +38,8 @@ export type ParsedRequest =
   | { command: "add_task"; text: string }
   /** Exact task ids; the server shows their names and session count, and deletes only after confirmation. */
   | { command: "delete_task"; taskIds: string[] }
+  /** Saved breaks; the server lists them and deletes only after confirmation. */
+  | { command: "delete_breaks" }
   /** Several tasks fit the request: show a numbered list and resolve the reply against exactly that list. */
   | { command: "pick_tasks"; prompt: string; options: ActionTarget[] }
   | { command: "clarify"; question: string };
@@ -53,6 +55,7 @@ export interface CommandWorkspace {
   /** Reads the user's words into drafts in the review panel; nothing is saved. */
   interpretPlan(text: string): Promise<InterpretResult>;
   proposeDeleteTasks(taskIds: string[]): Promise<PendingAction>;
+  proposeDeleteBreaks(): Promise<PendingAction>;
   proposeCreateItems(): Promise<PendingAction>;
   setChoice(choice: PendingChoice | null): void;
 }
@@ -75,6 +78,7 @@ const SPLIT_OPTIONS = new RegExp([
   String.raw`\bhow (?:should|can|could|would|do|to)\b.*\b${SPLIT_VERB}\b`,
   String.raw`^\s*(?:please\s+|can you\s+|could you\s+)?${SPLIT_VERB}\s+(?:them|it|these|those|this|that|my tasks?|the tasks?)\b`,
 ].join("|"), "i");
+const DELETE_BREAKS = /\b(?:delete|remove|clear|cancel|drop|get rid of)\b.*\bbreaks?\b/i;
 const TRAILING_REQUEST = /(?:[,;.\n]\s*|\s+(?:and|then)\s+)((?:(?:and|then|also|please)\s+)*(?:show|give|compare|list|what|how|can you|could you|split|divide|break)\b[^,;\n]*)[.!?]?\s*$/i;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
@@ -243,6 +247,7 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     const preference = parsePreference(text, { preferences: state.preferences, aiProfile: state.aiProfile ?? DEFAULT_AI_PROFILE });
     if (preference) return preference;
   }
+  if (DELETE_BREAKS.test(text)) return { command: "delete_breaks" };
   // "Add a meeting tomorrow 3-4pm" / "Delete the event called Project sync": confirmed before anything changes.
   if (state.events) {
     const event = parseEventRequest(text, { events: state.events, availability: state.availability });
@@ -317,6 +322,8 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
     }
     case "split_options":
       return splitRequest(userText, state, params.taskId);
+    case "delete_breaks":
+      return { command: "delete_breaks" };
     case "move_task": {
       const task = state.tasks.find(t => t.id === params.taskId && !t.done);
       if (!task) return { command: "clarify", question: "Which task should I move?" };
@@ -430,9 +437,8 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       if (!state.schedulePreview) return reply("There is no proposed schedule to apply. Say “plan my week” to build one.", ["generate_schedule"]);
       try {
         const saved = await workspace.applySchedulePreview();
-        const upcoming = saved.filter(s => s.status === "saved" && new Date(s.endAt) > now);
-        const breaks = upcoming.filter(s => s.type === "break").length;
-        return reply(`Saved. Your schedule now has ${upcoming.length - breaks} upcoming work session(s) and ${breaks} break(s). They will still be there after a refresh.`, ["show_today"]);
+        const upcoming = saved.filter(s => s.status === "saved" && s.type === "work" && new Date(s.endAt) > now);
+        return reply(`Saved. Your schedule now has ${upcoming.length} upcoming work session(s). They will still be there after a refresh.`, ["show_today"]);
       } catch (error) {
         const stillPending = workspace.getSnapshot().schedulePreview !== null;
         return reply(`Not saved: ${errorText(error)}`, stillPending ? ["apply_schedule", "cancel_schedule"] : ["generate_schedule"]);
@@ -447,7 +453,7 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(explainText(state.schedulePreview, state.tasks, state.sessions, now), state.schedulePreview ? [] : ["generate_schedule"]);
     case "show_plan": {
       if (state.schedulePreview) return reply(previewText(state.schedulePreview), previewActions(state.schedulePreview));
-      const upcoming = calendarSessions(state.sessions, null)
+      const upcoming = calendarSessions(state.sessions, null, { preferences: state.preferences, events: state.events, tasks: state.tasks })
         .map(item => item.session)
         .filter(s => s.date >= today && s.date <= endDate && s.status === "saved");
       if (!upcoming.length) return reply("There is no proposed schedule and no saved sessions for the next 7 days.", ["generate_schedule"]);
@@ -462,6 +468,17 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     case "busy_time":
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
     
+    case "delete_breaks": {
+      if (!state.sessions.some(s => s.type === "break" && s.status === "saved")) {
+        return reply("You have no saved breaks to delete. The short breaks between work sessions aren’t saved: AutoPlan draws them from your sessions, and they go away with the work around them.");
+      }
+      try {
+        const action = await workspace.proposeDeleteBreaks();
+        return { ...reply(`${action.summary} Nothing is deleted until you confirm.`), actionId: action.id };
+      } catch (error) {
+        return reply(`I couldn’t do that: ${errorText(error)}`);
+      }
+    }
     case "split_options": {
       try {
         const split = req.target === "drafts" ? await workspace.previewDraftSplitOptions() : await workspace.requestSplitOptions(req.target);

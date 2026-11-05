@@ -16,7 +16,7 @@
       "dependsOn": [],
       "kind": "task",
       "windows": [],
-      "id": "6aec0e79a3d1eabdc86cac6b",
+      "id": "6aec11a0201ee7f86557ce98",
       "done": false
     },
     {
@@ -35,7 +35,7 @@
       "dependsOn": [],
       "kind": "task",
       "windows": [],
-      "id": "6aec0e79a3d1eabdc86cac6c",
+      "id": "6aec11a0201ee7f86557ce99",
       "done": false
     }
   ],
@@ -129,7 +129,7 @@
     "sessions": []
   },
   "preview": {
-    "previewId": "6aec0e79a3d1eabdc86cac6d",
+    "previewId": "6aec11a0201ee7f86557ce9a",
     "status": "proposed",
     "mode": "generate",
     "baseScheduleVersion": 3,
@@ -148,7 +148,7 @@
     "sessions": [
       {
         "id": "proposed-1",
-        "taskId": "6aec0e79a3d1eabdc86cac6b",
+        "taskId": "6aec11a0201ee7f86557ce98",
         "title": "Asm",
         "type": "work",
         "status": "proposed",
@@ -177,12 +177,12 @@
         "date": "2026-10-26",
         "start": 590,
         "end": 600,
-        "change": "new",
+        "change": "derived",
         "reason": "Reserved break after reaching the focus limit"
       },
       {
         "id": "proposed-3",
-        "taskId": "6aec0e79a3d1eabdc86cac6b",
+        "taskId": "6aec11a0201ee7f86557ce98",
         "title": "Asm",
         "type": "work",
         "status": "proposed",
@@ -199,7 +199,7 @@
       },
       {
         "id": "proposed-4",
-        "taskId": "6aec0e79a3d1eabdc86cac6c",
+        "taskId": "6aec11a0201ee7f86557ce99",
         "title": "Test revision",
         "type": "work",
         "status": "proposed",
@@ -228,12 +228,12 @@
         "date": "2026-10-26",
         "start": 650,
         "end": 660,
-        "change": "new",
+        "change": "derived",
         "reason": "Reserved break after reaching the focus limit"
       },
       {
         "id": "proposed-6",
-        "taskId": "6aec0e79a3d1eabdc86cac6c",
+        "taskId": "6aec11a0201ee7f86557ce99",
         "title": "Test revision",
         "type": "work",
         "status": "proposed",
@@ -252,7 +252,7 @@
     "removed": [],
     "tasks": [
       {
-        "taskId": "6aec0e79a3d1eabdc86cac6b",
+        "taskId": "6aec11a0201ee7f86557ce98",
         "title": "Asm",
         "priority": "High",
         "kind": "task",
@@ -271,7 +271,7 @@
         "reasons": []
       },
       {
-        "taskId": "6aec0e79a3d1eabdc86cac6c",
+        "taskId": "6aec11a0201ee7f86557ce99",
         "title": "Test revision",
         "priority": "Medium",
         "kind": "task",
@@ -303,7 +303,7 @@
     "firstProposedDate": "2026-10-26",
     "explanations": [],
     "note": "Work left unplaced means AutoPlan found no place for it under your rules. That is not proof that no schedule exists: changing a deadline, your hours or a priority may make it fit.",
-    "inputFingerprint": "8c8e6820646b44389e678423f4171139c71cbf5df050e66d707ec44c08a2ebe0",
+    "inputFingerprint": "c1c2b383302bd167b5dca38ede973acc36381e0b24d179da673e6f6535c9481f",
     "proposedEvents": [],
     "horizonDays": 1
   }

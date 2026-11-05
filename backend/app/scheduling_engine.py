@@ -30,6 +30,10 @@ materialised at the start of each rest gap that separates two same-day runs whos
 exceeds the focus limit (that is, where the break is what makes continuing legal). No trailing
 break is added when no more work follows.
 
+These breaks are shown in previews with change "derived" and are never saved: the gap between sessions
+is the reservation, and the client draws the same break from the saved sessions (derivedBreaks in
+frontend/src/utils/schedulePreview.ts keeps this rule). Only a break the user asks for is stored.
+
 Priority policy and deterministic tie-breaking: High, then Medium, then Low; within a tier the
 earliest due instant, then the earliest allowed start, then task id. Dependencies are respected with
 this key as tie-break. Deadline risk is reported (`at_risk`, `slack`) but never reorders work: the
@@ -246,7 +250,7 @@ class Placed:
     status: str  # proposed | saved
     locked: bool
     source: str
-    change: str  # retained | kept | new | truncated
+    change: str  # retained | kept | new | truncated | derived (an automatic break, never saved)
     id: str | None = None
     reason: str | None = None
     title: str = ''
@@ -344,7 +348,7 @@ class _Planner:
         self.open_tasks = sorted((t for t in tasks if not t.done), key=lambda t: t.id)
         self.sessions: list[Placed] = []
         self.removals: list[Removal] = []
-        self.saved_breaks: list[Existing] = []  # unlocked future automatic breaks
+        self.saved_breaks: list[Existing] = []  # automatic breaks saved by older versions; removed on Apply
         self.conflicts: list[Conflict] = []
         self.explanations: list[str] = []
         self.work: list[_Work] = []
@@ -454,7 +458,7 @@ class _Planner:
                     self.rest_items.append((item.start, item.end))
                     self.sessions.append(self._retained(item, 'Protected break' if item.locked else 'Break in progress'))
                 else:
-                    self.saved_breaks.append(item)  # recalculated; kept as-is if the new plan needs the same break
+                    self.saved_breaks.append(item)
                 continue
             flexible = item.source == 'auto' and not item.locked
             if in_progress and flexible and requested_break and requested_break[0] < item.end:
@@ -1102,16 +1106,9 @@ class _Planner:
             if stretch is None:
                 continue
             start, end = stretch[0], stretch[0] + self.prefs.brk
-            same = next((b for b in self.saved_breaks if (b.start, b.end) == (start, end)), None)
-            if same:
-                self.saved_breaks.remove(same)
-                placed = self._retained(same, 'Unchanged break')
-                placed.change = 'kept'
-                self.sessions.append(placed)
-            else:
-                self.sessions.append(Placed(None, 'break', start, end, 'proposed', False, 'auto',
-                                            'new', reason='Reserved break after reaching the focus limit', title='Break'))
-        for item in self.saved_breaks:
+            self.sessions.append(Placed(None, 'break', start, end, 'proposed', False, 'auto', 'derived',
+                                        reason='Reserved break after reaching the focus limit', title='Break'))
+        for item in self.saved_breaks:  # saved before automatic breaks stopped being stored
             self.removals.append(Removal(item, 'Breaks are recalculated around the new schedule.'))
         self.saved_breaks = []
 

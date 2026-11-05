@@ -101,9 +101,9 @@ All workspace routes use the Firebase authentication dependency. Owners are take
 - `PUT /tasks/{id}`: edit its fields, preserving completion.
 - `PATCH /tasks/{id}/completion`: `{done: true}` or `{done: false}`.
 - `DELETE /tasks/{id}`: delete owned task and its work sessions; returns 204.
-- `GET /sessions`: the user's sessions in the canonical shape `{id, taskId, title, type, status, locked, source, scheduleVersion, startAt, endAt, date, start, end}`. `type` is `work` or `break` (`taskId` is null for breaks); `status` is `saved`, `completed` or `cancelled` (`proposed` exists only inside previews). `startAt`/`endAt` are UTC instants and are the source of truth; `date`/`start`/`end` are the same instants in the user's time zone, for display.
+- `GET /sessions`: the user's saved sessions in the canonical shape `{id, taskId, title, type, status, locked, source, scheduleVersion, startAt, endAt, date, start, end}`. `type` is `work` or `break` (`taskId` is null for breaks); `status` is `saved`, `completed` or `cancelled` (`proposed` exists only inside previews). `startAt`/`endAt` are UTC instants and are the source of truth; `date`/`start`/`end` are the same instants in the user's time zone, for display.
 - `POST /sessions`: plan work time `{taskId, date, start, end, locked?}` in local wall-clock time; returns 201 with `source: "manual"`. A task can have any number of sessions on different days. Sessions must end by the task's due time (422) and cannot overlap another live session or an event (409).
-- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned work session. Breaks are managed by the scheduler and are not editable here.
+- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned work session.
 - `PATCH /sessions/{id}/status` `{status}`: mark a work session `completed` (its minutes are added to the task's `completedMinutes`), back to `saved`, or `cancelled`.
 - `GET /events`: the user's events. Events are fixed-time commitments you attend (classes, meetings, appointments, meetups); they have no due date.
 - `POST /events`: create `{title, kind, date, start, end, location?, repeat?}`; returns 201 with `{id, ..., skipDates, source}`. `kind` is `Class`, `Meeting`, `Appointment`, `Social`, or `Other`. `repeat` is `{weekdays, until}` (Monday = 0) for a weekly series such as a class schedule, up to one year long.
@@ -170,6 +170,12 @@ For every open task: `remaining = estimated − completed`, and `retained + new 
 - Unlocked automatic future work is flexible: Generate replaces it, Repair keeps it when it is still valid and only moves what must change.
 - Automatic breaks are recalculated.
 
+### Breaks
+
+Automatic breaks are not saved. The engine keeps the gap free, previews show the break, and the client draws it from the saved sessions (`frontend/src/utils/breaks.ts`, the same rule as the engine's `_materialise_breaks`). So a break can't outlive its work: when a session or task is deleted, completed or moved, its break goes with it. Only a break you ask for ("I need a 15-minute break now") is saved, as a protected break.
+
+Loading the schedule (`GET /schedule`) removes automatic breaks saved by older versions, for the signed-in user. In chat, "delete breaks" lists your saved breaks and deletes them after you confirm (`POST /actions/delete-breaks`); if there are none, it explains the automatic ones.
+
 ### Preferred times
 
 An item's preferred times (for example “weekday evenings”) are optional. Without them it can use any time you are available. Times the AI could not read are dropped with a note on the draft; they never block it. When given, they are limits: work is placed only inside them. (In the API and code the field is `windows`.)
@@ -194,7 +200,7 @@ Drafts go through `POST /plan/split-options` (same body as `/plan/preview`) and 
 - `POST /schedule/preview` `{horizonDays?}`: generate a fresh plan.
 - `POST /schedule/repair` (alias `/schedule/replan`) `{horizonDays?, moves?: [{taskId, notBefore}]}`: a local repair. `moves` asks for a task to start no earlier than an instant ("move Asm to tomorrow").
 - `POST /schedule/break` `{minutes}`: a protected break starting now, with the schedule repaired around it. If an event or locked work is in the way the break is shortened or refused, and the preview says why.
-- Each preview returns `{previewId, mode, sessions, removed, tasks, conflicts, days, firstProposedDate, note, ...}`. `sessions` is the complete future schedule in the window if applied, with `change` = `retained`, `kept`, `new` or `truncated`. `removed` lists saved sessions Apply deletes (or shortens, when `newEndAt` is set) with a reason.
+- Each preview returns `{previewId, mode, sessions, removed, tasks, conflicts, days, firstProposedDate, note, ...}`. `sessions` is the complete future schedule in the window if applied, with `change` = `retained`, `kept`, `new`, `truncated` or `derived` (an automatic break, shown but never saved). `removed` lists saved sessions Apply deletes (or shortens, when `newEndAt` is set) with a reason.
 - `POST /schedule/split-options` `{taskIds}` → `{taskIds, title, remainingMinutes, options, notes}`: ways to divide saved tasks' work (see below). Each option carries a complete preview with mode `split`. A task that can't be split (done, past its deadline, splitting off, a flexible event) is listed in `notes`; it is a 422 if none can, or if nothing could be placed.
 - `POST /schedule/apply` `{previewId}` → `{previewId, status, duplicate, schedule}`. Returns 409 for a stale or invalid preview.
 - `GET /schedule/preview/{id}`: a stored preview.

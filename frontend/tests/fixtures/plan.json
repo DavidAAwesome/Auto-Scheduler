@@ -332,7 +332,7 @@
     "savedDataChanged": false
   },
   "preview": {
-    "previewId": "6aec0e79a3d1eabdc86cac70",
+    "previewId": "6aec11a0201ee7f86557ce9d",
     "status": "proposed",
     "mode": "plan",
     "baseScheduleVersion": 1,
@@ -380,7 +380,7 @@
         "date": "2026-10-26",
         "start": 590,
         "end": 600,
-        "change": "new",
+        "change": "derived",
         "reason": "Reserved break after reaching the focus limit"
       },
       {

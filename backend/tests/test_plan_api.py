@@ -204,7 +204,7 @@ def test_preview_calendar_and_chat_read_the_same_proposal(environment, monkeypat
     proposed = [(s['date'], s['start'], s['end'], s['type']) for s in snap['pendingPreview']['sessions']]
     from app.scheduling_service import clock
     assert proposed == [(s['date'], clock(s['start']), clock(s['end']), s['type'])
-                        for s in proposal['sessions'] if s['change'] == 'new']
+                        for s in proposal['sessions'] if s['change'] in {'new', 'derived'}]
     assert snap['pendingPreview']['note'].startswith('PROPOSED, NOT SAVED')
     assert snap['savedSessions'] == []
 
@@ -260,7 +260,7 @@ def test_apply_creates_tasks_events_and_sessions_once(environment, monkeypatch):
     assert [e.title for e in result['events']] == ['Advisor meeting']
     saved = result['schedule'].sessions
     assert {s.taskId for s in saved if s.type == 'work'} <= {t.id for t in tasks.values()}
-    assert len(saved) == len(proposal['sessions'])
+    assert len(saved) == len([s for s in proposal['sessions'] if s['change'] == 'new'])
     assert db.tasks.find_one({'title': 'Lab report'})['completedMinutes'] == 0  # scheduled is not completed
 
     again = apply_logic(db, proposal['previewId'])
@@ -302,7 +302,7 @@ def test_apply_plan_preview_over_http_survives_refresh(transaction_environment, 
     assert len(body['tasks']) == 2 and len(body['events']) == 1
     sign_out(client)
     sign_in(client, uid='sched-user', email='sched-user@example.com', name='Sched')
-    assert len(client.get('/schedule').json()['sessions']) == len(proposal['sessions'])
+    assert len(client.get('/schedule').json()['sessions']) == len([s for s in proposal['sessions'] if s['change'] == 'new'])
     assert {t['title'] for t in client.get('/tasks').json()} == {'Lab report', 'Gym'}
     assert client.post('/schedule/apply', json={'previewId': proposal['previewId']}).json()['duplicate'] is True
     assert db.tasks.count_documents({}) == 2

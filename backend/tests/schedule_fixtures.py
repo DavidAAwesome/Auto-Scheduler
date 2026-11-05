@@ -57,3 +57,4 @@ ACCEPTANCE = [
     (TODAY, '10:50-11:00', 'break', 'Break'),
     (TODAY, '11:00-11:20', 'work', 'Test revision'),
 ]
+ACCEPTANCE_SAVED = [row for row in ACCEPTANCE if row[2] == 'work']  # automatic breaks are drawn, not saved

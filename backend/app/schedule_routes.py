@@ -16,8 +16,8 @@ from app.database import get_database
 from app.openai_interpret import InterpretResult, interpret_request
 from app.schedule_model import SavedSchedule, SchedulePreferences, SchedulePreview, SplitOptions
 from app.scheduling_service import (
-    MAX_HORIZON_DAYS, apply_preview, build_preview, build_split_options, get_preferences, owned_preview, save_preferences, saved_schedule,
-    stored_preview,
+    MAX_HORIZON_DAYS, apply_preview, build_preview, build_split_options, get_preferences, owned_preview,
+    remove_saved_auto_breaks, save_preferences, saved_schedule, stored_preview,
 )
 from app.events import EventOutput
 from app.workspace import TaskOutput, get_availability, list_tasks
@@ -83,7 +83,8 @@ class InterpretResponse(BaseModel):
 
 @router.get('', response_model=SavedSchedule)
 def get_schedule(user=Depends(get_current_user), db=Depends(get_database)):
-    """The authoritative saved schedule: work sessions and breaks with UTC timestamps."""
+    """The authoritative saved schedule: work sessions and requested breaks, with UTC timestamps."""
+    remove_saved_auto_breaks(db, user)
     return saved_schedule(user, db)
 
 

@@ -128,7 +128,7 @@ test('Apply saves, clears the preview, and the saved schedule survives a fresh s
   const workspace = await store(api.request);
   await workspace.previewSchedule(1);
   const message = await runAssistantCommand('apply_schedule', workspace, NOW);
-  assert.match(message.text, /^Saved\. Your schedule now has 4 upcoming work session\(s\) and 2 break\(s\)/);
+  assert.match(message.text, /^Saved\. Your schedule now has 4 upcoming work session\(s\)/);
   const state = workspace.getSnapshot();
   assert.equal(state.schedulePreview, null);
   assert.deepEqual(rows(state.sessions), EXPECTED);
@@ -248,7 +248,7 @@ test('model intents are validated before anything runs', () => {
 });
 
 test('a break request asks the service for a protected break and reports only what it returned', async () => {
-  const brk: ScheduleSession = { ...fixture.preview.sessions[1], id: 'proposed-b', locked: true, start: 480, end: 510, startAt: '2026-10-26T12:00:00Z', endAt: '2026-10-26T12:30:00Z' };
+  const brk: ScheduleSession = { ...fixture.preview.sessions[1], id: 'proposed-b', locked: true, change: 'new', start: 480, end: 510, startAt: '2026-10-26T12:00:00Z', endAt: '2026-10-26T12:30:00Z' };
   const breakPreview: SchedulePreview = { ...fixture.preview, mode: 'break', sessions: [brk, ...fixture.preview.sessions] };
   const api = backend({ handlers: { '/schedule/break': () => breakPreview } });
   const workspace = await store(api.request);

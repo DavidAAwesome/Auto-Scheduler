@@ -10,7 +10,7 @@ from app import schedule_routes
 from app.openai_interpret import InterpretResult
 from firebase_tokens import sign_in, sign_out
 from schedule_fixtures import (
-    ACCEPTANCE, NOW, TODAY, TOMORROW, acceptance_tasks, add_event, add_task, freeze, rows, setup_user,
+    ACCEPTANCE, ACCEPTANCE_SAVED, NOW, TODAY, TOMORROW, acceptance_tasks, add_event, add_task, freeze, rows, setup_user,
 )
 
 
@@ -33,7 +33,7 @@ def test_acceptance_preview_apply_refresh(transaction_environment, monkeypatch):
 
     proposal = preview(client)
     assert rows(proposal['sessions']) == ACCEPTANCE
-    assert all(s['status'] == 'proposed' and s['change'] == 'new' for s in proposal['sessions'])
+    assert {(s['type'], s['status'], s['change']) for s in proposal['sessions']} == {('work', 'proposed', 'new'), ('break', 'proposed', 'derived')}
     assert {s['taskId'] for s in proposal['sessions'] if s['type'] == 'break'} == {None}
     allocation = {t['taskId']: t for t in proposal['tasks']}
     for task in (asm, rev):
@@ -48,7 +48,7 @@ def test_acceptance_preview_apply_refresh(transaction_environment, monkeypatch):
     assert applied.status_code == 200, applied.text
     body = applied.json()
     assert body['duplicate'] is False
-    assert rows(body['schedule']['sessions']) == ACCEPTANCE
+    assert rows(body['schedule']['sessions']) == ACCEPTANCE_SAVED
     assert all(s['status'] == 'saved' for s in body['schedule']['sessions'])
     assert {s['scheduleVersion'] for s in body['schedule']['sessions']} == {body['schedule']['scheduleVersion']}
 
@@ -56,14 +56,14 @@ def test_acceptance_preview_apply_refresh(transaction_environment, monkeypatch):
     sign_out(client)
     sign_in(client, uid='sched-user', email='sched-user@example.com', name='Sched')
     reloaded = client.get('/schedule').json()
-    assert rows(reloaded['sessions']) == ACCEPTANCE
+    assert rows(reloaded['sessions']) == ACCEPTANCE_SAVED
     assert reloaded['sessions'][0]['startAt'] in ('2026-10-26T13:00:00Z', '2026-10-26T13:00:00+00:00')
-    assert db.sessions.count_documents({'type': 'break'}) == 2
+    assert db.sessions.count_documents({'type': 'break'}) == 0
 
     # Applying the same preview again is idempotent: no duplicate sessions.
     again = apply(client, proposal['previewId'])
     assert again.status_code == 200 and again.json()['duplicate'] is True
-    assert len(client.get('/schedule').json()['sessions']) == 6
+    assert len(client.get('/schedule').json()['sessions']) == 4
 
 
 def save_acceptance_plan(db, tasks):
@@ -80,33 +80,30 @@ def save_acceptance_plan(db, tasks):
                                 'date': day, 'start': start, 'end': end, 'schedule_version': 1})
 
 
-def test_deleting_a_task_removes_breaks_left_between_nothing(environment, monkeypatch):
+def test_loading_the_schedule_removes_breaks_saved_by_older_versions(environment, monkeypatch):
     client, db = environment
     setup_user(client, monkeypatch)
     asm, rev = acceptance_tasks(client)
-    save_acceptance_plan(db, (asm, rev))
-    assert rows(client.get('/schedule').json()['sessions']) == ACCEPTANCE
-
-    # 09:50 sits between two Asm sessions and stays; 10:50 sat between two revision sessions and goes with them.
-    assert client.delete(f"/tasks/{rev['id']}").status_code == 204
-    assert rows(client.get('/schedule').json()['sessions']) == ACCEPTANCE[:3]
-
-    assert client.delete(f"/tasks/{asm['id']}").status_code == 204
-    assert client.get('/schedule').json()['sessions'] == []
+    save_acceptance_plan(db, (asm, rev))  # four work sessions and two automatic breaks, as older versions stored them
+    before = client.get('/schedule').json()
+    assert rows(before['sessions']) == ACCEPTANCE_SAVED
+    assert db.sessions.count_documents({'type': 'break'}) == 0
+    assert client.get('/schedule').json()['scheduleVersion'] == before['scheduleVersion']  # nothing left to do
 
 
-def test_breaks_you_asked_for_survive_task_deletion_and_any_break_can_be_deleted(environment, monkeypatch):
+def test_cleanup_keeps_breaks_you_asked_for_and_other_users_breaks(environment, monkeypatch):
     client, db = environment
     setup_user(client, monkeypatch)
     asm, rev = acceptance_tasks(client)
     save_acceptance_plan(db, (asm, rev))
     db.sessions.update_one({'type': 'break', 'start': 10 * 60 + 50}, {'$set': {'locked': True, 'source': 'manual'}})
-    assert client.delete(f"/tasks/{rev['id']}").status_code == 204
+    db.sessions.insert_one({'user_id': 'someone-else', 'type': 'break', 'source': 'auto', 'locked': False, 'status': 'saved',
+                            'date': TODAY, 'start': 600, 'end': 610})
     breaks = [s for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break']
-    assert [(b['start'], b['locked']) for b in breaks] == [(590, False), (650, True)]
-    for brk in breaks:
-        assert client.delete(f"/sessions/{brk['id']}").status_code == 204
-    assert db.sessions.count_documents({'type': 'break'}) == 0
+    assert [(b['start'], b['locked']) for b in breaks] == [(650, True)]
+    assert db.sessions.count_documents({'user_id': 'someone-else'}) == 1
+    assert client.delete(f"/sessions/{breaks[0]['id']}").status_code == 204
+    assert db.sessions.count_documents({'type': 'break', 'user_id': {'$ne': 'someone-else'}}) == 0
 
 
 def test_concurrent_apply_requests_save_once(transaction_environment, monkeypatch):
@@ -118,7 +115,7 @@ def test_concurrent_apply_requests_save_once(transaction_environment, monkeypatc
         results = list(pool.map(lambda _: apply(client, proposal['previewId']), range(2)))
     assert sorted(r.status_code for r in results) == [200, 200]
     assert sorted(r.json()['duplicate'] for r in results) == [False, True]
-    assert db.sessions.count_documents({'preview_id': proposal['previewId']}) == 6
+    assert db.sessions.count_documents({'preview_id': proposal['previewId']}) == 4
 
 
 # ------------------------------------------------------------------ stale and duplicate protection
@@ -143,7 +140,7 @@ def test_older_preview_rejected_after_a_newer_one_is_applied(transaction_environ
     assert apply(client, second['previewId']).status_code == 200
     response = apply(client, first['previewId'])
     assert response.status_code == 409
-    assert len(client.get('/schedule').json()['sessions']) == 6
+    assert len(client.get('/schedule').json()['sessions']) == 4
 
 
 def test_preview_that_starts_in_the_past_by_apply_time_is_rejected(transaction_environment, monkeypatch):
@@ -295,19 +292,17 @@ def test_requested_break_now_previews_protected_break_and_repairs(transaction_en
     assert not [s for s in saved if s['type'] == 'work' and s['start'] < 590 and s['end'] > 560]
 
 
-def test_break_that_moves_no_work_keeps_saved_breaks_unchanged(transaction_environment, monkeypatch):
+def test_break_that_moves_no_work_saves_only_that_break(transaction_environment, monkeypatch):
     client, _ = transaction_environment
     setup_user(client, monkeypatch)
     acceptance_tasks(client)
     assert apply(client, preview(client)['previewId']).status_code == 200
-    saved_breaks = {s['id'] for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break'}
 
     proposal = preview(client, '/schedule/break', minutes=30)  # 8:00-8:30, before any work
     assert proposal['removed'] == []
     assert [(s['start'], s['end']) for s in proposal['sessions'] if s['change'] == 'new'] == [(480, 510)]
-    assert {s['id'] for s in proposal['sessions'] if s['type'] == 'break' and s['change'] == 'kept'} == saved_breaks
     assert apply(client, proposal['previewId']).status_code == 200
-    assert {s['id'] for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break' and not s['locked']} == saved_breaks
+    assert [(s['start'], s['locked']) for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break'] == [(480, True)]
 
 
 def test_move_task_to_tomorrow_repairs_only_that_task(transaction_environment, monkeypatch):
@@ -384,3 +379,27 @@ def test_break_can_start_between_five_minute_marks(environment, monkeypatch):
     add_task(client, 'Asm', 'High')
     proposal = preview(client, '/schedule/break', minutes=15)
     assert [(s['start'], s['end']) for s in proposal['sessions'] if s['type'] == 'break'][0] == (9 * 60 + 3, 9 * 60 + 18)
+
+
+def test_a_repair_with_nothing_to_change_proposes_nothing_new(transaction_environment, monkeypatch):
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    repair = preview(client, '/schedule/repair')
+    assert rows(repair['sessions']) == ACCEPTANCE  # the breaks are still shown
+    assert {s['change'] for s in repair['sessions']} == {'kept', 'derived'}
+    assert repair['removed'] == [] and repair['firstProposedDate'] is None
+
+
+def test_a_preview_stored_before_this_change_does_not_save_its_automatic_breaks(transaction_environment, monkeypatch):
+    client, db = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    proposal = preview(client)
+    stored = db.schedule_previews.find_one({'status': 'proposed'})
+    for session in stored['preview']['sessions']:
+        session['change'] = 'new'
+    db.schedule_previews.update_one({'_id': stored['_id']}, {'$set': {'preview': stored['preview']}})
+    assert apply(client, proposal['previewId']).status_code == 200
+    assert db.sessions.count_documents({'type': 'break'}) == 0

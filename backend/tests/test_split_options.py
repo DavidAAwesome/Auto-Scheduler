@@ -258,7 +258,7 @@ def test_api_apply_saves_the_picked_option_and_makes_the_others_stale(transactio
     applied = client.post('/schedule/apply', json={'previewId': even['preview']['previewId']})
     assert applied.status_code == 200, applied.text
     saved = applied.json()['schedule']['sessions']
-    assert rows(saved) == rows(even['preview']['sessions'])
+    assert rows(saved) == rows(even['preview']['sessions'], 'new')
     assert client.post('/schedule/apply', json={'previewId': even['preview']['previewId']}).json()['duplicate'] is True
     assert client.post('/schedule/apply', json={'previewId': first['preview']['previewId']}).status_code == 409
     assert client.post('/schedule/apply', json={'previewId': third['preview']['previewId']}).status_code == 409
@@ -335,4 +335,4 @@ def test_api_applying_a_draft_option_saves_the_tasks_with_that_split(transaction
     applied = client.post('/schedule/apply', json={'previewId': picked['preview']['previewId']})
     assert applied.status_code == 200, applied.text
     assert {t['title'] for t in applied.json()['tasks']} == {'Essay', 'Lab'}
-    assert rows(applied.json()['schedule']['sessions']) == rows(picked['preview']['sessions'])
+    assert rows(applied.json()['schedule']['sessions']) == rows(picked['preview']['sessions'], 'new')

@@ -199,30 +199,7 @@ def delete_task(task_id: str, user=Depends(get_current_user), db=Depends(get_dat
     if not db.tasks.delete_one(owned_task(task_id, user)).deleted_count:
         raise HTTPException(404, 'Task not found.')
     db.sessions.delete_many({'user_id': str(user['_id']), 'task_id': task_id})
-    prune_orphan_breaks(db, user)
     bump(db, user)
-
-
-def prune_orphan_breaks(db, user):
-    """Deletes scheduler-placed breaks that no longer sit between two pieces of work on the same day.
-
-    The engine only reserves a break between work runs, so once a task (and its sessions) is gone, the breaks
-    around it are left resting between nothing. Breaks the user asked for (locked) are kept."""
-    zone = user_zone(db, user)
-    docs = [doc for doc in list_session_docs(db, user) if doc.get('status') != 'cancelled']
-    spans = []
-    for doc in docs:
-        try:
-            spans.append((doc, session_output(doc, zone)))
-        except (KeyError, TypeError, ValueError):
-            continue  # an incomplete legacy document is left alone
-    work = [s for doc, s in spans if s.type == 'work']
-    orphans = [doc['_id'] for doc, s in spans
-               if s.type == 'break' and s.source == 'auto' and not s.locked
-               and not (any(w.date == s.date and w.end <= s.start for w in work)
-                        and any(w.date == s.date and w.start >= s.end for w in work))]
-    if orphans:
-        db.sessions.delete_many({'_id': {'$in': orphans}, 'user_id': str(user['_id'])})
 
 
 class SessionInput(BaseModel):

@@ -52,8 +52,8 @@ export interface ScheduleSession {
   date: string;
   start: number;
   end: number;
-  /** Previews only: retained (fixed), kept (unchanged saved), new (proposed) or truncated. */
-  change?: "retained" | "kept" | "new" | "truncated" | null;
+  /** Previews only: retained (fixed), kept (unchanged saved), new (proposed), truncated, or derived (an automatic break, never saved). */
+  change?: "retained" | "kept" | "new" | "truncated" | "derived" | null;
   reason?: string | null;
 }
 export type WorkSession = ScheduleSession;
@@ -263,7 +263,7 @@ export interface FeasibilityResult {
  * A change waiting for the user's confirmation, held as structured state (never remembered by the chat model).
  * Server-backed types are stored by the API; "apply_schedule" stands for the pending schedule preview.
  */
-export type PendingActionType = "delete_tasks" | "create_items" | "apply_schedule";
+export type PendingActionType = "delete_tasks" | "delete_breaks" | "create_items" | "apply_schedule";
 export type PendingActionStatus = "awaiting_confirmation" | "processing" | "succeeded" | "cancelled" | "failed";
 export interface ActionTarget { id: string; title: string; detail?: string | null }
 export interface PendingAction {
@@ -277,6 +277,6 @@ export interface PendingAction {
   error: string | null;
   createdAt: string;
 }
-export interface ActionResult { action: PendingAction; duplicate: boolean; deletedTaskIds: string[]; tasks: Task[]; events: CalendarEvent[]; scheduleVersion: number | null }
+export interface ActionResult { action: PendingAction; duplicate: boolean; deletedTaskIds: string[]; deletedSessionIds?: string[]; tasks: Task[]; events: CalendarEvent[]; scheduleVersion: number | null }
 /** A numbered list the chat showed; a reply like "1" or "1 and 3" is resolved against exactly this list. */
 export interface PendingChoice { id: string; purpose: "delete_tasks" | "confirm"; prompt: string; options: ActionTarget[] }

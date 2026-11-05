@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from app import assistant
 from app.config import get_settings
 from firebase_tokens import sign_in
-from schedule_fixtures import ACCEPTANCE, TODAY, TOMORROW, acceptance_tasks, add_event, setup_user
+from schedule_fixtures import ACCEPTANCE, ACCEPTANCE_SAVED, TODAY, TOMORROW, acceptance_tasks, add_event, setup_user
 
 
 class FakeResponses:
@@ -65,7 +65,7 @@ def test_todays_tasks_in_chat_match_the_calendar_preview_then_the_saved_schedule
     captured.clear()
     client.post('/assistant/chat', json={'message': "Today's tasks"})
     snapshot = snapshot_from(captured)
-    assert as_rows(snapshot['todaySavedSessions']) == ACCEPTANCE
+    assert as_rows(snapshot['todaySavedSessions']) == ACCEPTANCE_SAVED
     assert {s['status'] for s in snapshot['todaySavedSessions']} == {'saved'}
     assert snapshot['pendingPreview'] is None
     assert 'DEADLINE' in captured[0]['input'][0]['content']

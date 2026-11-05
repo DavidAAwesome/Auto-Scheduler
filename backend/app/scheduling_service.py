@@ -444,6 +444,17 @@ def stored_preview(doc: dict) -> SchedulePreview:
 
 # ---------------------------------------------------------------- saved schedule / apply
 
+def remove_saved_auto_breaks(db, user) -> int:
+    """One-time cleanup for this user: automatic breaks are no longer stored, and older saved ones go stale as soon as
+    the work around them changes. Breaks the user asked for are kept. Safe to run on every load."""
+    owner = str(user['_id'])
+    removed = db.sessions.delete_many({'user_id': owner, 'type': 'break', 'source': 'auto',
+                                       'locked': {'$ne': True}}).deleted_count
+    if removed:
+        bump_schedule_version(db, owner)
+    return removed
+
+
 def saved_schedule(user, db, session=None) -> SavedSchedule:
     owner = str(user['_id'])
     saved = db.availability.find_one({'user_id': owner}, {'timeZone': 1}, session=session) or {}
@@ -500,8 +511,8 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
             raise HTTPException(409, 'A session this preview replaces has changed. Generate a new preview.')
     created = []
     for proposed in preview.sessions:
-        if proposed.change != 'new':
-            continue
+        if proposed.change != 'new' or (proposed.type == 'break' and proposed.source == 'auto'):
+            continue  # an automatic break in a preview stored before they stopped being saved
         created.append({
             '_id': ObjectId(), 'user_id': owner, 'task_id': id_map.get(proposed.taskId, proposed.taskId),
             'type': proposed.type, 'status': 'saved',
@@ -592,7 +603,7 @@ def schedule_snapshot(user, db, now: datetime, preview_id: str | None = None, da
         'todaySavedSessions': [describe(s) for s in window if s.date == today],
         'pendingPreview': None if preview is None else {
             'note': 'PROPOSED, NOT SAVED. Only Apply saves it.',
-            'sessions': [describe(s) for s in preview.sessions if s.change == 'new'],
+            'sessions': [describe(s) for s in preview.sessions if s.change in {'new', 'derived'}],
             'unallocated': [{'task': a.title, 'minutes': a.unallocatedMinutes, 'reasons': [r.message for r in a.reasons]}
                             for a in preview.tasks if a.unallocatedMinutes],
             'conflicts': [c.message for c in preview.conflicts],

@@ -73,7 +73,7 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
             raise ValidationError('ownership', 'A work session refers to a task that is not yours.')
         if session.type == 'break' and session.taskId is not None:
             raise ValidationError('invalid_data', 'A break cannot belong to a task.')
-        checked = session.change in {'new', 'kept'}
+        checked = session.change in {'new', 'kept', 'derived'}
         if session.change in {'retained', 'kept', 'truncated'}:
             original = saved_by_id.get(session.id)
             if original is None or original.status != 'saved':

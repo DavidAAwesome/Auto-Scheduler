@@ -11,6 +11,7 @@ import { allDayOn, blocksTime, eventIcon } from "../utils/events";
 import { observancesBetween } from "../utils/holidays";
 import { useShowHolidays } from "../services/uiState";
 import { accountTimeZone } from "../utils/timeZones";
+import { isDerivedBreak } from "../utils/breaks";
 import { todayAgenda } from "../utils/schedulePreview";
 import Icon from "./Icon";
 import EventList from "./EventList";
@@ -52,7 +53,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   onOpenSession: (task: Task, rect: DOMRect, sessionId: string) => void;
   onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
 }) {
-  const { tasks, sessions, events, availability, schedulePreview, saving } = useWorkspace();
+  const { tasks, sessions, events, availability, schedulePreview, preferences, saving } = useWorkspace();
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TaskFilter>("open");
@@ -61,7 +62,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   const taskById = new Map(tasks.map(t => [t.id, t]));
   // Today's timeline comes from the same list the calendar and chat use: events, saved and proposed work, and breaks.
   // Deadlines are listed separately below, because a due date is not a work time.
-  const agenda = todayAgenda({ sessions, events, tasks, schedulePreview }, today).items;
+  const agenda = todayAgenda({ sessions, events, tasks, schedulePreview, preferences }, today).items;
   const open = sorted.filter(t => !t.done);
   const done = sorted.filter(t => t.done);
   // Search/filter from the old Planner page. "Open" keeps completed tasks tucked under their own toggle.
@@ -143,7 +144,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                 </>;
                 return (
                   <li key={s.id}>
-                    {proposed || s.type !== "break"
+                    {proposed || s.type !== "break" || isDerivedBreak(s)
                       ? <span className={`today-break ${proposed ? "proposed" : ""}`}>{content}</span>
                       : <button className="today-break" onClick={e => onOpenBreak(s, e.currentTarget.getBoundingClientRect())}>{content}</button>}
                   </li>

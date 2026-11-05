@@ -12,7 +12,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 SessionType = Literal['work', 'break']
 SessionStatus = Literal['proposed', 'saved', 'completed', 'cancelled']
-SessionChange = Literal['retained', 'kept', 'new', 'truncated']
+SessionChange = Literal['retained', 'kept', 'new', 'truncated', 'derived']  # derived: an automatic break, never saved
 
 
 class LunchWindow(BaseModel):

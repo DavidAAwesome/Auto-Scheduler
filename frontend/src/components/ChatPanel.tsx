@@ -40,11 +40,11 @@ function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string
   const labels = BUTTONS[action.type];
   return (
     <div className="chat-actions" role="group" aria-label={action.summary}>
-      {action.targets.length > 0 && action.type === "delete_tasks" && (
+      {action.targets.length > 0 && action.type !== "create_items" && (
         <ul className="chat-action-targets">{action.targets.map(t => <li key={t.id}>{t.title}{t.detail ? ` · ${t.detail}` : ""}</li>)}</ul>
       )}
       {action.status === "failed" && action.error && <p role="alert" className="form-error">{action.error}</p>}
-      <button className={`button small ${action.type === "delete_tasks" ? "danger" : ""}`} disabled={busy || action.status === "processing"} onClick={() => onConfirm(action)}>
+      <button className={`button small ${action.type === "delete_tasks" || action.type === "delete_breaks" ? "danger" : ""}`} disabled={busy || action.status === "processing"} onClick={() => onConfirm(action)}>
         {action.status === "processing" ? "Working…" : action.status === "failed" ? `Try again: ${labels.confirm(action)}` : labels.confirm(action)}
       </button>
       <button className="button small secondary" disabled={busy || action.status === "processing"} onClick={() => onDecline(action)}>{labels.other}</button>
@@ -55,7 +55,7 @@ function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const { user } = useAuth();
-  const { tasks, sessions, events, connections, availability, schedulePreview, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
+  const { tasks, sessions, events, connections, availability, schedulePreview, preferences, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   /** An image waiting to be sent with the next message (e.g. a class timetable). */
@@ -71,7 +71,7 @@ export default function ChatPanel() {
   const nextId = useRef(0);
   /** A message asked for split options after its items; shown once those drafts are ready. */
   const splitAfterDrafts = useRef(false);
-  const context = { tasks, sessions, events, availability, connections, schedulePreview };
+  const context = { tasks, sessions, events, availability, connections, schedulePreview, preferences };
   const welcome = buildWelcome(context);
   const busy = thinking || working !== null || saving || reading || planBusy;
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working]);
@@ -101,7 +101,9 @@ export default function ChatPanel() {
       const names = result.action.targets.map(t => `“${t.title}”`).join(", ");
       append({ id, role: "assistant", text: result.duplicate
         ? "That was already done, so nothing else changed."
-        : result.action.type === "delete_tasks"
+        : result.action.type === "delete_breaks"
+          ? `Deleted ${result.action.targets.length === 1 ? "your saved break" : `your ${result.action.targets.length} saved breaks`}. Work can be planned there now.`
+          : result.action.type === "delete_tasks"
           ? `Deleted ${names}${result.action.sessionCount ? ` and ${result.action.sessionCount} scheduled session${result.action.sessionCount === 1 ? "" : "s"}` : ""}.`
           : `Saved ${names} as ${result.tasks.length + result.events.length === 1 ? "an item" : "items"} on your list. They are not scheduled yet: say “plan my week” or use Generate Schedule.` });
     } catch (e) {

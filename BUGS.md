@@ -27,6 +27,7 @@ Priority: **P1** crash or wrong data, **P2** blocked flow, **P3** confusing text
 | B15 | P3 | Open | On a phone, the chat sheet covers split options and the calendar |
 | B16 | P3 | Fixed (85f8148) | Replaced sessions are listed one by one as "Moves" in a split preview |
 | B17 | P1 | Fixed (7fdee1c) | The AI can return one item twice, and both copies are saved |
+| B18 | P1 | Fixed | Saved breaks stay on the calendar after their work is gone |
 
 Open: B15 only.
 
@@ -126,3 +127,11 @@ Found while retesting B6.
 
 Expected: one "Lab report". Actual: "I read 4 items", with both copies under review and both would be saved, doubling the
 work. Items that match on kind, name, length and dates are now merged.
+
+### B18. Saved breaks stay on the calendar after their work is gone (P1)
+Reported after the bug bash.
+1. Apply a schedule, then complete or delete all its tasks.
+
+Expected: no breaks. Actual: "Break" blocks stayed (Thu to Sat at 9:50, 10:50, 11:50, 12:50). Cleanup ran only for
+`DELETE /tasks/{id}`, not for completing a task, deleting a session or deleting through chat. Automatic breaks are no
+longer saved, older ones are removed on load, and chat "delete breaks" now works with confirmation.

@@ -1,6 +1,8 @@
-import type { CalendarEvent, ProposedEvent, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task, TaskAllocation } from '../types/models.ts';
+import type { CalendarEvent, ProposedEvent, SchedulePreferences, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task, TaskAllocation } from '../types/models.ts';
 import { addDays } from './dates.ts';
+import { DEFAULT_PREFERENCES } from '../types/models.ts';
 import { clock12, longDate } from './calendar.ts';
+import { derivedBreaks, type BreakContext } from './breaks.ts';
 import { busyOccurrencesOn, occurrencesOn } from './events.ts';
 
 export const timeRange = (start: number, end: number) => `${clock12(start)}–${clock12(end % 1440)}`;
@@ -12,24 +14,30 @@ const minutesLabel = (minutes: number) => (minutes >= 60 ? `${Math.floor(minutes
 export type CalendarItemKind = 'saved' | 'proposed' | 'removed';
 export interface CalendarItem { session: ScheduleSession; kind: CalendarItemKind; reason?: string }
 
+/** New in a preview: sessions Apply saves, and the automatic breaks that go with them (which it does not). */
+const isProposal = (s: ScheduleSession) => s.change === 'new' || s.change === 'derived';
+const byTime = (a: ScheduleSession, b: ScheduleSession) => a.startAt.localeCompare(b.startAt) || a.endAt.localeCompare(b.endAt);
+
 /**
  * The single list of sessions that the calendar, Today's Tasks and chat show.
  * Without a preview it is the saved schedule. With one, the preview's complete future schedule replaces the saved
  * sessions it covers, and saved sessions it would delete are kept as "removed" ghosts so nothing changes silently.
+ * With `breaks`, automatic breaks are added from the sessions shown (they are not saved).
  */
-export function calendarSessions(sessions: ScheduleSession[], preview: SchedulePreview | null): CalendarItem[] {
+export function calendarSessions(sessions: ScheduleSession[], preview: SchedulePreview | null, breaks?: BreakContext): CalendarItem[] {
   const live = sessions.filter(s => s.status !== 'cancelled');
-  if (!preview) return live.map(session => ({ session, kind: 'saved' }));
+  const withBreaks = (shown: ScheduleSession[]) => (breaks ? [...shown, ...derivedBreaks(shown, breaks)] : shown);
+  if (!preview) {
+    return withBreaks(live).sort(byTime).map(session => ({ session, kind: 'saved' }));
+  }
   const covered = new Set(preview.sessions.filter(s => s.change !== 'new').map(s => s.id));
   const removed = new Map(preview.removed.filter(r => !r.newEndAt).map(r => [r.session.id, r.reason]));
   const items: CalendarItem[] = [];
-  for (const session of live) {
-    if (covered.has(session.id)) continue;
-    if (removed.has(session.id)) items.push({ session, kind: 'removed', reason: removed.get(session.id) });
-    else items.push({ session, kind: 'saved' });
-  }
-  for (const session of preview.sessions) items.push({ session, kind: session.change === 'new' ? 'proposed' : 'saved', reason: session.reason ?? undefined });
-  return items.sort((a, b) => a.session.startAt.localeCompare(b.session.startAt) || a.session.endAt.localeCompare(b.session.endAt));
+  const staying = live.filter(s => !covered.has(s.id) && !removed.has(s.id));
+  for (const session of live) if (removed.has(session.id)) items.push({ session, kind: 'removed', reason: removed.get(session.id) });
+  for (const session of withBreaks(staying)) items.push({ session, kind: 'saved' });
+  for (const session of preview.sessions) items.push({ session, kind: isProposal(session) ? 'proposed' : 'saved', reason: session.reason ?? undefined });
+  return items.sort((a, b) => byTime(a.session, b.session));
 }
 
 export type AgendaItem =
@@ -43,11 +51,11 @@ export function proposedEventsOn(preview: SchedulePreview | null, date: string):
 }
 
 /** Today's plan: events and sessions happening today, with deadlines kept separate from work times. */
-export function todayAgenda(state: { sessions: ScheduleSession[]; events: CalendarEvent[]; tasks: Task[]; schedulePreview: SchedulePreview | null }, today: string) {
+export function todayAgenda(state: { sessions: ScheduleSession[]; events: CalendarEvent[]; tasks: Task[]; schedulePreview: SchedulePreview | null; preferences?: SchedulePreferences }, today: string) {
   const items: AgendaItem[] = [
     ...occurrencesOn(state.events, today).map(({ event }) => ({ kind: 'event' as const, start: event.start, end: event.end, event })),
     ...proposedEventsOn(state.schedulePreview, today).map(proposed => ({ kind: 'proposedEvent' as const, start: proposed.start, end: proposed.end, proposed })),
-    ...calendarSessions(state.sessions, state.schedulePreview)
+    ...calendarSessions(state.sessions, state.schedulePreview, { preferences: state.preferences ?? DEFAULT_PREFERENCES, events: state.events, tasks: state.tasks })
       .filter(item => item.session.date === today && item.kind !== 'removed')
       .map(item => ({ kind: 'session' as const, start: item.session.start, end: item.session.end, item })),
   ].sort((a, b) => a.start - b.start || a.end - b.end);
@@ -107,7 +115,7 @@ const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Propose
 
 /** Human summary of a preview: the same sessions the calendar draws, what moves and why, and what did not fit. */
 export function previewText(preview: SchedulePreview) {
-  const added = preview.sessions.filter(s => s.change === 'new');
+  const added = preview.sessions.some(s => s.change === 'new') ? preview.sessions.filter(isProposal) : [];
   const lines = [`${MODE_LABEL[preview.mode]}, ${longDate(preview.startDate)} – ${longDate(preview.endDate)}. Not saved yet.`];
   const byDay = new Map<string, ScheduleSession[]>();
   for (const s of added) byDay.set(s.date, [...(byDay.get(s.date) ?? []), s]);
