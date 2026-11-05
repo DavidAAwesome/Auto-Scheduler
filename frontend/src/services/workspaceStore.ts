@@ -1,4 +1,4 @@
-import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, DRAFT_PREFIX, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type FeasibilityResult, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SplitOptions, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
+import { DEFAULT_AI_PROFILE, DEFAULT_PREFERENCES, DRAFT_PREFIX, type ActionResult, type AIProfile, type ApplyResult, type PendingAction, type PendingChoice, type DraftView, type InterpretResult, type PlanDraft, type Availability, type CalendarConnection, type CalendarEvent, type CalendarEventInput, type CalendarProvider, type ImportedEvent, type PreferenceChange, type SavedSchedule, type SchedulePreferences, type SchedulePreview, type SplitOptions, type SessionStatus, type Task, type TaskInput, type WorkSession, type WorkSessionInput } from '../types/models.ts';
 import { normalizeAvailability } from '../utils/availability.ts';
 import { browserTimeZone } from '../utils/timeZones.ts';
 import { validateEvent, validateSession, validateTask } from './taskRules.ts';
@@ -72,8 +72,6 @@ export interface WorkspaceState {
   previewStale: boolean;
   /** Items read from chat text or an image, waiting for review. Never saved until a plan preview is applied. */
   planDrafts: PlanDrafts | null;
-  /** Result of the last "Can this fit?" check for the current drafts (changes no saved data). */
-  feasibility: FeasibilityResult | null;
   /** A plan request (reading, checking, previewing drafts) is running. */
   planBusy: boolean;
   /** Changes waiting for confirmation (deletions, saving drafts), as stored by the API, plus their latest outcome. */
@@ -85,7 +83,7 @@ export interface WorkspaceState {
 }
 export interface PlanDrafts { batchId: string; provider: InterpretResult['provider'] | 'chat'; notes: string[]; views: DraftView[]; horizonDays: number }
 export interface ImageAttachment { mediaType: string; dataBase64: string; name: string }
-const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, splitOptions: null, previewStale: false, planDrafts: null, feasibility: null, planBusy: false, pendingActions: [], pendingChoice: null, error: '', saving: false });
+const empty = (): WorkspaceState => ({ status: 'idle', tasks: [], sessions: [], events: [], connections: [], availability: null, preferences: DEFAULT_PREFERENCES, aiProfile: DEFAULT_AI_PROFILE, scheduleVersion: 0, schedulePreview: null, splitOptions: null, previewStale: false, planDrafts: null, planBusy: false, pendingActions: [], pendingChoice: null, error: '', saving: false });
 const newBatchId = () => `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 /** Gives incoming drafts ids that do not clash with drafts already under review, keeping their links. */
@@ -148,6 +146,8 @@ export const FIELD_WORDS: Record<string, string> = {
   'repeat.until': 'last date', 'repeat.startDate': 'first date', 'repeat.weekdays': 'weekdays', repeat: 'weekly repeat',
   priority: 'priority', earliestStart: 'earliest start', location: 'location', dependsOn: 'depends on', minSessionMinutes: 'session lengths',
 };
+/** Drafts are planned over the longest window, so a later deadline is never cut short. */
+const PLAN_HORIZON_DAYS = 21;
 export type PreviewRequest = { kind: 'generate'; horizonDays?: number } | { kind: 'repair'; horizonDays?: number; moves?: { taskId: string; notBefore: string }[] } | { kind: 'break'; minutes: number };
 
 // Injectable transport lets tests exercise request failures and account-change races.
@@ -204,7 +204,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       // The AI profile is optional: if it cannot load, the workspace still opens with default personalization.
       const profile = request<AIProfile>('/assistant/profile').then(normalizeProfile, () => DEFAULT_AI_PROFILE);
       const [tasks, schedule, events, connections, availability, preferences, aiProfile] = await Promise.all([request<Task[]>('/tasks'), request<SavedSchedule>('/schedule'), request<CalendarEvent[]>('/events'), request<CalendarConnection[]>('/calendar/connections'), request<LoadedAvailability>('/availability').then(firstTimeZone), request<SchedulePreferences>('/schedule/preferences'), profile]);
-      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, splitOptions: null, previewStale: false, planDrafts: state.planDrafts, feasibility: null, planBusy: false, pendingActions: state.pendingActions, pendingChoice: null, error: '', saving: false });
+      if (current === generation) publish({ status: 'ready', tasks, sessions: schedule.sessions, scheduleVersion: schedule.scheduleVersion, events, connections, availability: normalizeAvailability(availability), preferences: preferences ?? DEFAULT_PREFERENCES, aiProfile, schedulePreview: null, splitOptions: null, previewStale: false, planDrafts: state.planDrafts, planBusy: false, pendingActions: state.pendingActions, pendingChoice: null, error: '', saving: false });
         void refreshActions(current);
     } catch (error) {
       if (current === generation) publish({ ...empty(), status: 'error', error: (error as Error).message });
@@ -242,7 +242,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
     }
   }
   /** Re-checks the drafts as they are now, and refuses with exactly what is missing from the selected ones. */
-  async function reviewed(what: 'check' | 'preview' | 'save') {
+  async function reviewed(what: 'preview' | 'save') {
     if (!state.planDrafts) throw new Error(`There is nothing to ${what} yet.`);
     const views = await api.reviewDrafts();
     const plan = state.planDrafts;
@@ -435,7 +435,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
             // Tasks and events created from drafts by this Apply join the shared state; the drafts are done.
             tasks: [...state.tasks, ...(saved.tasks ?? []).filter(t => !state.tasks.some(x => x.id === t.id))],
             events: [...state.events, ...(saved.events ?? []).filter(e => !state.events.some(x => x.id === e.id))],
-            ...(preview.mode === 'plan' ? { planDrafts: null, feasibility: null, ...dropCreateActions('These items were saved with the schedule.') } : {}),
+            ...(preview.mode === 'plan' ? { planDrafts: null, ...dropCreateActions('These items were saved with the schedule.') } : {}),
           }),
         );
       } catch (error) {
@@ -456,14 +456,14 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       const batch = state.planDrafts?.batchId ?? newBatchId();
       const result = await planCall<InterpretResult>('/plan/interpret', { text, image: image ?? null, batchId: batch });
       const views = mergeDrafts(state.planDrafts?.views ?? [], result.drafts);
-      publish({ ...state, planDrafts: { batchId: batch, provider: result.provider, notes: result.notes, views, horizonDays: state.planDrafts?.horizonDays ?? 7 }, feasibility: null, ...draftsChanged() });
+      publish({ ...state, planDrafts: { batchId: batch, provider: result.provider, notes: result.notes, views, horizonDays: PLAN_HORIZON_DAYS }, ...draftsChanged() });
       return { ...result, drafts: views.slice(views.length - result.drafts.length) };
     },
     /** Adds structured drafts (e.g. a chat "add task" request) to the review panel instead of saving them directly. */
     async addDrafts(drafts: PlanDraft[]) {
       const batch = state.planDrafts?.batchId ?? newBatchId();
       const merged = mergeDrafts(state.planDrafts?.views ?? [], drafts.map(draft => ({ draft, issues: [], ready: false })));
-      publish({ ...state, planDrafts: { batchId: batch, provider: 'chat', notes: [], views: merged, horizonDays: state.planDrafts?.horizonDays ?? 7 }, feasibility: null, ...draftsChanged() });
+      publish({ ...state, planDrafts: { batchId: batch, provider: 'chat', notes: [], views: merged, horizonDays: PLAN_HORIZON_DAYS }, ...draftsChanged() });
       await api.reviewDrafts();
       return state.planDrafts!.views.slice(merged.length - drafts.length);
     },
@@ -474,21 +474,17 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
     updateDraft(id: string, patch: Partial<PlanDraft>) {
       if (!state.planDrafts) return;
       const views = state.planDrafts.views.map(v => (v.draft.id === id ? editedView(v, patch) : v));
-      publish({ ...state, planDrafts: { ...state.planDrafts, views }, feasibility: null, ...draftsChanged() });
+      publish({ ...state, planDrafts: { ...state.planDrafts, views }, ...draftsChanged() });
     },
     removeDraft(id: string) {
       if (!state.planDrafts) return;
       const views = state.planDrafts.views.filter(v => v.draft.id !== id)
         .map(v => ({ ...v, draft: { ...v.draft, dependsOn: v.draft.dependsOn.filter(d => d !== id) } }));
-      publish({ ...state, planDrafts: views.length ? { ...state.planDrafts, views } : null, feasibility: null, ...draftsChanged() });
-    },
-    setPlanHorizon(days: number) {
-      if (!state.planDrafts) return;
-      publish({ ...state, planDrafts: { ...state.planDrafts, horizonDays: days }, feasibility: null, ...draftsChanged() });
+      publish({ ...state, planDrafts: views.length ? { ...state.planDrafts, views } : null, ...draftsChanged() });
     },
     clearDrafts() {
       const plan = state.schedulePreview?.mode === 'plan';
-      publish({ ...state, planDrafts: null, feasibility: null, ...(plan ? { schedulePreview: null, previewStale: false } : {}) });
+      publish({ ...state, planDrafts: null, ...(plan ? { schedulePreview: null, previewStale: false } : {}) });
     },
     /** Business-rule review of every draft by the backend: questions for anything missing or ambiguous. */
     async reviewDrafts() {
@@ -508,15 +504,8 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       const view = plan?.views.find(v => v.draft.id === id);
       if (!plan || !view) throw new Error('That item is no longer in the review list.');
       const updated = await planCall<DraftView>('/plan/clarify', { draft: view.draft, field, answer, otherDraftIds: plan.views.map(v => v.draft.id) });
-      if (state.planDrafts) publish({ ...state, planDrafts: { ...state.planDrafts, views: state.planDrafts.views.map(v => (v.draft.id === id ? updated : v)) }, feasibility: null, ...draftsChanged() });
+      if (state.planDrafts) publish({ ...state, planDrafts: { ...state.planDrafts, views: state.planDrafts.views.map(v => (v.draft.id === id ? updated : v)) }, ...draftsChanged() });
       return updated;
-    },
-    /** "Can this fit?": the backend reads only; nothing is saved, not even a proposal. */
-    async checkFit() {
-      const plan = await reviewed('check');
-      const result = await planCall<FeasibilityResult>('/plan/feasibility', { drafts: plan.views.map(v => v.draft), horizonDays: plan.horizonDays, batchId: plan.batchId });
-      publish({ ...state, feasibility: result });
-      return result;
     },
     /** Complete calendar preview with the drafts added. Apply saves tasks, events and sessions together. */
     async previewDrafts() {
@@ -578,7 +567,7 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
         events: [...state.events, ...(result.events ?? []).filter(e => !state.events.some(x => x.id === e.id))],
         sessions: state.sessions.filter(s => !deletedSessions.has(s.id) && (!s.taskId || !deleted.has(s.taskId))),
         scheduleVersion: result.scheduleVersion ?? state.scheduleVersion,
-        ...(created.size && state.planDrafts ? { planDrafts: views.length ? { ...state.planDrafts, views } : null, feasibility: null } : {}),
+        ...(created.size && state.planDrafts ? { planDrafts: views.length ? { ...state.planDrafts, views } : null } : {}),
         ...(result.duplicate ? {} : stale()),
       });
       return result;

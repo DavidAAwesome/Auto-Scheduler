@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, mergeDrafts, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, runAssistantCommand } from '../src/services/assistantCommands.ts';
-import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry, tooShortToSplit } from '../src/services/planEntry.ts';
+import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry, needsMoreOptions, shortHint, tooShortToSplit, visibleRows } from '../src/services/planEntry.ts';
 import { calendarSessions, previewText, todayAgenda, todayText } from '../src/utils/schedulePreview.ts';
 import type {
   ApplyResult, Availability, CalendarEvent, DraftView, FeasibilityResult, InterpretResult, SchedulePreferences, SchedulePreview,
@@ -89,7 +89,7 @@ test('chat recognises several tasks in one message, but not questions', () => {
   assert.ok(!looksLikePlanEntry('thanks!'));
 });
 
-test('bulk message: drafts → “Can this fit?” → preview → Apply, and preview, calendar, Today and chat agree', async () => {
+test('bulk message: drafts → preview → Apply, and preview, calendar, Today and chat agree', async () => {
   const api = backend();
   const workspace = await store(api.request);
   const before = api.counts();
@@ -100,11 +100,6 @@ test('bulk message: drafts → “Can this fit?” → preview → Apply, and pr
   assert.match(reply, /Nothing is saved yet/);
   assert.doesNotMatch(reply, /\bsaved\b(?! yet)|created|added to your calendar/i, 'chat never claims a save after reading');
   assert.equal(workspace.getSnapshot().planDrafts?.views.length, 3);
-
-  const fit = await workspace.checkFit();
-  assert.equal(fit.status, 'fits_without_moving');
-  assert.equal(fit.savedDataChanged, false);
-  assert.deepEqual(api.counts(), before, 'the check changes no saved data');
 
   const preview = await workspace.previewDrafts();
   assert.equal(preview.mode, 'plan');
@@ -227,4 +222,55 @@ test('a task needs two shortest sessions of work to split', () => {
   assert.equal(tooShortToSplit(30), false);
   assert.equal(tooShortToSplit(60, 40), true);
   assert.equal(tooShortToSplit(80, 40), false);
+});
+
+const row = (id: string, issue?: { field: string; code: DraftView['issues'][number]['code'] }, include = true): DraftView => ({
+  draft: emptyDraft(id, { title: id, include }), ready: !issue,
+  issues: issue ? [{ ...issue, question: 'A long question for chat.', blocking: true }] : [],
+});
+
+test('blocking fields get a few words, and AM/PM asks just that', () => {
+  const hint = (field: string, code: DraftView['issues'][number]['code']) => shortHint({ field, code, question: 'long', blocking: true });
+  assert.equal(hint('title', 'missing'), 'Add a name');
+  assert.equal(hint('deadline', 'missing'), 'Add a due date');
+  assert.equal(hint('title', 'unreadable'), 'Add a name');
+  assert.equal(hint('start', 'ambiguous'), 'AM or PM?');
+  assert.equal(hint('deadline', 'ambiguous'), 'Is this right?');
+  assert.equal(hint('end', 'invalid'), 'Must end after it starts');
+  assert.equal(hint('anything', 'invalid'), 'Check this');
+});
+
+test('at most three rows show, and blocked items are never behind "+N more"', () => {
+  const views = [row('a'), row('b'), row('c'), row('d'), row('e', { field: 'title', code: 'missing' })];
+  const { rows, hidden } = visibleRows(views, false);
+  assert.deepEqual(rows.map(v => v.draft.id), ['e', 'a', 'b']);
+  assert.equal(hidden, 2);
+  assert.deepEqual(visibleRows(views, true), { rows: visibleRows(views, true).rows, hidden: 0 });
+  assert.equal(visibleRows(views, true).rows.length, 5);
+  assert.equal(visibleRows(views.slice(0, 3), false).hidden, 0);
+});
+
+test('an unticked item does not count as blocked', () => {
+  const views = [row('a'), row('b'), row('c'), row('d', { field: 'title', code: 'missing' }, false)];
+  assert.deepEqual(visibleRows(views, false).rows.map(v => v.draft.id), ['a', 'b', 'c']);
+});
+
+test('a row knows when the field to fix is behind More options', () => {
+  assert.equal(needsMoreOptions(row('a', { field: 'repeat.until', code: 'missing' })), true);
+  assert.equal(needsMoreOptions(row('a', { field: 'start', code: 'ambiguous' })), true);
+  assert.equal(needsMoreOptions(row('a', { field: 'title', code: 'missing' })), false);
+  assert.equal(needsMoreOptions(row('a')), false);
+});
+
+test('drafts are planned over the longest window, so a later deadline is not cut short', async () => {
+  const bodies: Record<string, { horizonDays?: number }> = {};
+  const api = backend();
+  const request = (async <T>(path: string, init?: RequestInit) => {
+    if (init?.body) bodies[path] = JSON.parse(String(init.body));
+    return api.request<T>(path, init);
+  }) as Requester;
+  const workspace = await store(request);
+  await workspace.interpretPlan(BULK);
+  await workspace.previewDrafts();
+  assert.equal(bodies['/plan/preview'].horizonDays, 21);
 });

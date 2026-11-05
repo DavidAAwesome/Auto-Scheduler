@@ -154,7 +154,7 @@ Work is placed in this order: **priority tier first** (High, Medium, Low), then 
 
 After the earliest-fit pass, a bounded **local repair** looks at each task that is still short, in priority order. It may move unlocked, automatic, future sessions of the same or lower tier (at most 4 victims per attempt, 20 attempts in total, 6 per task), re-places the victims afterwards, and keeps the change only when the lexicographic score strictly improves: for each tier from High to Low, (number of fully scheduled tasks, which tasks are fully scheduled in deadline order, scheduled minutes). So a repair can never trade a High task for Medium work, or an earlier deadline for more total minutes. Locked, manual and in-progress sessions and all events are never moved. Displaced work keeps its task; its lost minutes are listed as unscheduled with the reason `displaced_by_priority`.
 
-Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, `displaced_by_priority`, and others). This is a heuristic: an unplaced task is **not** proof that no schedule exists. “Can this fit?” separates what is proven from what is not (below).
+Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, `displaced_by_priority`, and others). This is a heuristic: an unplaced task is **not** proof that no schedule exists. The fit check API separates what is proven from what is not (below).
 
 **Why not a solver?** OR-Tools is in `requirements.txt` but unused. At this project's scale (a student's week: tens of tasks, a few hundred five-minute slots per day) the deterministic heuristic plus bounded repair finishes in milliseconds and its decisions can be explained line by line. The focus/break rules (a run may cross task boundaries, a free gap counts as rest but a meeting does not, breaks are reserved during allocation) are awkward to express in CP-SAT, and an optimal-but-opaque answer would be harder to explain in chat. The cost is that the result is not guaranteed optimal; that is why only input-based facts are ever called proof.
 
@@ -184,7 +184,7 @@ A task shorter than two of its shortest sessions (30 minutes with the default 15
 
 ### Drafts that cannot fit
 
-A task or flexible event whose work can't fit before its deadline is flagged on the draft as soon as it is read or edited, for example "Only 30 min left before the deadline, so 3 h can't fit." The check measures that item alone: time left, your available hours, events, fixed sessions, needed breaks and the daily limit. It is a warning, not a block. The draft offers **Move the deadline** (to the first deadline with enough time), **Shorten**, and **Schedule what fits**, which is a partial preview. Other flexible work can still leave an item short, which "Can this fit?" checks. Neither that check nor a preview ever places work after a deadline.
+A task or flexible event whose work can't fit before its deadline is flagged on the draft as soon as it is read or edited, for example "Only 30 min left before the deadline, so 3 h can't fit." The check measures that item alone: time left, your available hours, events, fixed sessions, needed breaks and the daily limit. It is a warning, not a block. The draft offers **Move the deadline** (to the first deadline with enough time), **Shorten**, and **Schedule what fits**, which is a partial preview. Other flexible work can still leave an item short, which the preview shows. Nothing is ever placed after a deadline.
 
 ### Fixed or flexible
 
@@ -241,7 +241,9 @@ The composer in the chat takes multi-line text (Enter sends, Shift+Enter adds a 
 3. **Scheduling and validation**: drafts go through the same service, engine and independent validator as Generate/Repair. Draft tasks appear as `draft:<id>` and draft fixed events as busy time.
 4. **Preview and Apply**: the preview (mode `plan`) shows new sessions, reserved breaks, proposed events, moves, removals and unscheduled minutes. Apply creates the tasks, events and sessions in one transaction, after the usual staleness check. Each draft gets a unique `draft_key` (`owner:batch:draft`), so a double submit cannot save it twice.
 
-### Can this fit?
+### Fit check API
+
+`POST /plan/feasibility` is the check below. The app no longer has a button for it, because Preview shows what doesn't fit.
 
 `POST /plan/feasibility` changes no saved data (not even a stored proposal; the response says `savedDataChanged: false`). It runs the engine three times on one snapshot: saved work alone, the drafts with no displacement, and the drafts with bounded displacement. The status is one of:
 
@@ -260,7 +262,7 @@ Each item lists its causes marked proven or not proven. The planning horizon and
 - `POST /plan/feasibility` `{drafts, horizonDays}` → the result above
 - `POST /plan/preview` `{drafts, horizonDays, batchId}` → a schedule preview (mode `plan`), applied with `POST /schedule/apply`
 
-Drafts with open questions are refused with 422 by feasibility and preview. Only selected (ticked) items are checked: an unticked incomplete item never blocks the others, but a selected item may not depend on an unticked one. In the review panel, editing a field makes its value the answer: its "unclear" flag and question are cleared at once and the backend re-checks; an answer for drafts that changed meanwhile is ignored. Questions appear next to their fields, a summary links to each item that still needs something, and disabled buttons say what is missing. Not enough time is a scheduling result (a partial plan with its unscheduled minutes listed, which can be applied), not a question.
+Drafts with open questions are refused with 422 by feasibility and preview. Only selected (ticked) items are checked: an unticked incomplete item never blocks the others, but a selected item may not depend on an unticked one. In the review panel, editing a field makes its value the answer: its "unclear" flag and question are cleared at once and the backend re-checks; an answer for drafts that changed meanwhile is ignored. The panel shows one compact row per item (at most three, then "+N more", with anything blocked first). Other fields are under **More options**, a field that blocks scheduling turns red with a short hint, and the panel collapses so a preview has the calendar to itself. Drafts are always planned over 21 days. Not enough time is a scheduling result (a partial plan with its unscheduled minutes listed, which can be applied), not a question.
 
 ### Manual check (the acceptance scenario)
 
@@ -280,10 +282,10 @@ In the app (MongoDB replica set needed for Apply):
 
 1. Set availability to 9 AM–12 PM every day in America/New_York.
 2. In the chat, type three lines and press Enter: `Lab report 90 min due tomorrow high priority`, `Advisor meeting today 11-11:30am`, `Gym 30 min sometime today, low priority`. The review panel above the calendar shows a task, a fixed event and a flexible event; nothing is saved.
-3. Press **Can this fit?** (“fits without moving existing work”), then **Preview on calendar**. The calendar shows the dashed proposed sessions, the reserved break and the proposed meeting; ask the chat “Today’s tasks” to see the same items.
+3. Press **Preview on calendar**. The calendar shows the dashed proposed sessions, the reserved break and the proposed meeting; ask the chat “Today’s tasks” to see the same items.
 4. **Apply**, refresh, sign out and in: the tasks, the event and the sessions are still there. Pressing Apply twice writes nothing extra.
 5. With `OPENAI_API_KEY` set, attach a timetable photo. Check that each class is weekly, that unclear times and missing semester dates are asked about, answer in the chat, then preview.
-6. Add `Problem set 100 min due today 12pm high priority` on a day already planned with Low work, press **Can this fit?**, and see which sessions would move and how many minutes the Low task loses.
+6. Add `Problem set 100 min due today 12pm high priority` on a day already planned with Low work, press **Preview on calendar**, and see which sessions would move and how many minutes the Low task loses.
 
 ### Known limitations
 

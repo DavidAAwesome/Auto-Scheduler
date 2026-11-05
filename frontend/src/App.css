@@ -619,41 +619,59 @@ main:focus { outline: none; }
 .today-sessions .today-break { width: 100%; display: flex; align-items: center; gap: 8px; border-left: 3px solid var(--muted); border-radius: 7px; background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(127,127,127,0.08) 6px 12px); padding: 6px 9px; color: var(--muted); font-size: 12px; }
 .today-sessions .proposed { border-left-style: dashed; opacity: 0.9; }
 
-/* ---------- Plan entry: draft review, “Can this fit?”, proposed items ---------- */
-.draft-review { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); margin: 10px 0; padding: 10px 14px; }
-.draft-review-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
-.draft-toggle { border: 0; background: none; color: var(--text); font-weight: 700; font-size: 14px; padding: 4px 0; text-align: left; }
-.draft-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
-.draft-card { border: 1px solid var(--border-strong); border-left: 4px solid var(--available-line); border-radius: 10px; padding: 8px 10px; background: var(--surface-2); }
-.draft-card.needs-answer { border-left-color: var(--cat-work); }
-.draft-card.skipped { opacity: 0.55; }
-.draft-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.draft-include { display: flex; align-items: center; }
-.draft-title { flex: 1; min-width: 140px; font-weight: 700; }
-.draft-review input, .draft-review select { min-width: 0; min-height: 30px; padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 12.5px; }
-.draft-review input[type="checkbox"] { min-height: 0; }
-.draft-review input.uncertain, .draft-review select.uncertain { border-color: var(--cat-work); background: var(--cat-work-bg); }
-.draft-source { margin: 4px 0; font-size: 12px; color: var(--muted); font-style: italic; }
-.draft-fields { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-top: 6px; }
-.draft-fields label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; font-weight: 700; color: var(--muted); }
-.draft-fields label.draft-check { flex-direction: row; align-items: center; gap: 5px; }
-.draft-weekdays { display: flex; gap: 4px; flex-wrap: wrap; }
-.draft-weekdays .chip { padding: 3px 8px; }
+/* ---------- Plan entry: draft review, one compact row per item, and proposed items ---------- */
+.draft-review { display: flex; flex-direction: column; max-height: 33vh; flex-shrink: 0; border: 1px solid var(--lavender); border-radius: 14px; background: var(--surface); padding: 6px 12px 8px; }
+.draft-toggle { display: flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--text); font-size: 13.5px; padding: 3px 0; text-align: left; }
+.draft-list { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.draft-item { padding: 3px 0; scroll-margin: 8px; }
+.draft-item + .draft-item { border-top: 1px solid var(--border); }
+.draft-item.skipped .draft-line > :not(.draft-tick) { opacity: .5; }
+.draft-line { display: grid; grid-template-columns: 18px minmax(120px, 1fr) 84px 88px 136px 84px auto 28px; align-items: center; gap: 2px 6px; }
+.draft-review input, .draft-review select { min-width: 0; width: 100%; min-height: 30px; padding: 3px 7px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 12.5px; }
+.draft-review input[type="checkbox"] { width: auto; min-height: 0; accent-color: var(--primary); }
+.draft-title { font-weight: 600; }
+.draft-review select.draft-chip { border: 0; border-radius: 999px; background-color: var(--lavender); color: var(--primary); font-weight: 700; padding-left: 10px; }
+.draft-review select.draft-chip.priority-high { color: var(--prio-high); }
+.draft-review select.draft-chip.priority-low { color: var(--muted); }
+.draft-minutes { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.draft-value { min-height: 30px; padding: 3px 7px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.draft-link { border: 0; background: none; padding: 0; color: var(--primary); font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.draft-link:hover { text-decoration: underline; }
+.draft-link.is-blocking { color: var(--danger); }
+.draft-link:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+.draft-review input.is-blocking, .draft-review select.is-blocking, .draft-value.is-blocking { border-color: var(--danger); background: var(--danger-bg); }
+.draft-weekdays.is-blocking { outline: 1px solid var(--danger); border-radius: 8px; padding: 2px; }
+.draft-hint { grid-column: 2 / -1; width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; margin: 0; color: var(--danger); font-size: 12px; }
+.draft-more { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 4px 0 2px 24px; padding: 6px 8px; border-radius: 8px; background: var(--lavender); }
+.draft-more label { display: flex; flex-direction: column; gap: 2px; width: 118px; font-size: 11px; font-weight: 700; color: var(--muted); }
+.draft-more label.draft-check { flex-direction: row; align-items: center; gap: 5px; width: auto; min-height: 30px; color: var(--text); }
+.draft-weekdays { display: flex; gap: 3px; flex-wrap: wrap; }
+.draft-weekdays .chip { padding: 3px 7px; }
+.draft-meta { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.draft-actions { display: flex; align-items: center; gap: 12px; }
+@media (max-width: 760px) {
+  /* Two lines an item: tick, name, More options and X, then the values. */
+  .draft-line { display: flex; flex-wrap: wrap; gap: 4px 5px; }
+  .draft-line > .draft-title { flex: 1 1 calc(100% - 150px); order: 1; }
+  .draft-line > .draft-tick { order: 0; }
+  .draft-line > .draft-more-link { order: 2; }
+  .draft-line > .icon-button { order: 3; width: 24px; height: 24px; }
+  .draft-line > .draft-chip { order: 4; flex: 0 0 66px; }
+  .draft-line > .draft-chip[aria-label="Priority"] { flex-basis: 84px; }
+  .draft-line > .draft-minutes { order: 5; flex: 0 0 46px; }
+  .draft-line > .draft-value { order: 5; flex: 1 1 0; min-width: 0; }
+  .draft-line > .draft-date { order: 6; flex: 1 1 0; }
+  .draft-line > .draft-chip[aria-label="Priority"] { order: 7; }
+  .draft-line > .draft-chip-space { display: none; }
+  .draft-line > .draft-hint { order: 8; }
+  .draft-minutes span { display: none; }
+  .draft-review input, .draft-review select { font-size: 12px; padding: 3px 5px; }
+  .draft-review select.draft-chip { padding-left: 7px; }
+  .draft-review { max-height: 40vh; }
+  .draft-hint, .draft-more { margin-left: 0; }
+}
 .chip.on { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
-.draft-meta { font-size: 11.5px; color: var(--muted); }
-.draft-issues { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
-.draft-issue { padding: 5px 8px; border-radius: 7px; background: var(--hover); }
-.draft-issue.blocking { background: var(--notice-bg); color: var(--notice-text); }
-.draft-answer { display: flex; gap: 6px; margin-top: 4px; }
-.draft-answer input { flex: 1; }
-.draft-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-.draft-actions label { display: flex; align-items: center; gap: 6px; }
-.fit-report { border-radius: 10px; padding: 8px 12px; margin: 8px 0; border: 1px solid var(--border); background: var(--surface-2); font-size: 13px; }
-.fit-report.status-fits_without_moving { background: var(--available-bg); color: var(--available-text); }
-.fit-report.status-fits_after_changes { background: var(--notice-bg); color: var(--notice-text); }
-.fit-report.status-proven_infeasible { background: var(--danger-bg); color: var(--danger); }
-.fit-report ul { margin: 4px 0; padding-left: 18px; }
-.fit-alternatives, .conflict-choices { display: inline-flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0 6px; }
+.conflict-choices { display: inline-flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0 6px; }
 .event-block.preview { outline: 2px dashed var(--event-strong); outline-offset: -2px; opacity: 0.85; }
 .event-line.proposed, .today-event.proposed, .today-break.proposed { opacity: 0.85; font-style: italic; }
 
@@ -661,16 +679,6 @@ main:focus { outline: none; }
 .chat-action-status { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
 .chat-action-targets { margin: 0 0 6px; padding-left: 18px; font-size: 12.5px; width: 100%; }
 .chat-actions { flex-wrap: wrap; }
-.draft-card { scroll-margin: 12px; }
-.draft-issues.field { margin: 3px 0 0; max-width: 260px; font-weight: 500; color: var(--text); }
-.draft-issue.inline { padding: 4px 7px; font-size: 12px; }
-.draft-default { font-weight: 500; color: var(--muted); }
-.draft-summary { border-radius: 10px; padding: 8px 12px; margin: 6px 0; background: var(--notice-bg); color: var(--notice-text); font-size: 12.5px; }
-.draft-summary ul { margin: 4px 0; padding-left: 18px; }
-.draft-summary a { color: inherit; font-weight: 700; }
-.draft-link { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
-.draft-weekdays.uncertain { outline: 1px dashed var(--cat-work); border-radius: 8px; padding: 2px; }
-.draft-actions { position: static; }
 
 /* ---------- Sidebar: all events (mirrors the task list) ---------- */
 .all-events { padding-top: 14px; border-top: 1px solid var(--border); }
@@ -785,11 +793,6 @@ main:focus { outline: none; }
 }
 .schedule-preview-details { min-width: 0; }
 /* Draft review: its own list no longer scrolls separately; the action row stays pinned while the area scrolls. */
-.calendar-review .draft-list { max-height: none; overflow: visible; }
-.calendar-review .draft-actions {
-  position: sticky; bottom: 0; z-index: 2; margin: 0 -14px -10px; padding: 10px 14px;
-  background: var(--surface); border-top: 1px solid var(--border); border-radius: 0 0 14px 14px;
-}
 @media (max-width: 760px) { .calendar-review { max-height: none; overflow: visible; } }
 .avatar-status { margin-top: -6px; min-height: 0; }
 /* Split options: one card per option, side by side when there is room. */

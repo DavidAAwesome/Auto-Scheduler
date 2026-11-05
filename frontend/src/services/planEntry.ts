@@ -1,4 +1,4 @@
-import type { DraftKind, DraftView, PlanDraft } from "../types/models.ts";
+import type { DraftIssue, DraftKind, DraftView, PlanDraft } from "../types/models.ts";
 import { clock12, longDate } from "../utils/calendar.ts";
 
 /** Same limits as the backend (plan_extraction.MAX_IMAGE_BYTES / IMAGE_SIGNATURES). */
@@ -33,6 +33,30 @@ export function looksLikePlanEntry(text: string) {
   if (lines.length > 1) return lines.filter(l => DURATION.test(l) || WHEN.test(l)).length >= 1;
   return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed))
     || (DAY.test(trimmed) && CLOCK_RANGE.test(trimmed));
+}
+
+const ADD_HINT: Record<string, string> = {
+  title: "Add a name", minutes: "Add a length", deadline: "Add a due date", date: "Add a date", start: "Add a start time", end: "Add an end time",
+  "repeat.startDate": "Add a first date", "repeat.until": "Add a last date", "repeat.weekdays": "Pick the days", earliestStart: "Check this date",
+};
+const INVALID_HINT: Record<string, string> = { end: "Must end after it starts", start: "Check the times", "repeat.until": "Check the last date", deadline: "Check the due date", minutes: "Use 5-minute steps" };
+
+/** The few words shown beside a field that blocks scheduling. The full question stays in chat. */
+export function shortHint(issue: DraftIssue) {
+  if (issue.code === "ambiguous") return issue.field === "start" || issue.field === "end" ? "AM or PM?" : "Is this right?";
+  if (issue.code === "invalid") return INVALID_HINT[issue.field] ?? "Check this";
+  return ADD_HINT[issue.field] ?? "Check this";
+}
+
+const MORE_FIELDS = new Set(["start", "end", "location", "repeat", "repeat.startDate", "repeat.until", "repeat.weekdays", "dueTime", "earliestStart", "minSessionMinutes", "dependsOn"]);
+/** Whether a blocking field sits behind "More options", so the row has to point there. */
+export const needsMoreOptions = (view: DraftView) => view.issues.some(i => i.blocking && MORE_FIELDS.has(i.field));
+
+/** Rows to show: anything blocking first, so it is never hidden behind "+N more". */
+export function visibleRows(views: DraftView[], showAll: boolean, limit = 3) {
+  const blocked = views.filter(v => v.draft.include && !v.ready);
+  const ordered = [...blocked, ...views.filter(v => !blocked.includes(v))];
+  return { rows: showAll ? ordered : ordered.slice(0, limit), hidden: showAll ? 0 : Math.max(0, ordered.length - limit) };
 }
 
 /** Same rule as the backend: the work cannot make two sessions of the shortest allowed length. */
@@ -72,7 +96,7 @@ export function draftsReply(views: DraftView[], provider: string, notes: string[
   }
   const open = views.flatMap(v => v.issues.filter(i => i.blocking).map(i => i.question));
   if (open.length) lines.push(`First question: ${open[0]} (Answer here or in the panel.)`);
-  else lines.push("Use “Can this fit?” or “Preview on calendar”, then Apply to save.");
+  else lines.push("Use “Preview on calendar”, then Apply to save.");
   lines.push(...notes);
   return lines.join("\n");
 }

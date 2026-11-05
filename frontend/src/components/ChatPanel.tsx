@@ -219,7 +219,7 @@ export default function ChatPanel() {
       }
       append({ id: `${id}-a`, role: "assistant", text: next
         ? `Updated “${title}”. Next: ${next.question}`
-        : `Updated “${title}”. Every draft has what it needs. Use “Can this fit?” or “Preview on calendar”; nothing is saved until you Apply.` });
+        : `Updated “${title}”. Every draft has what it needs. Use “Preview on calendar”; nothing is saved until you Apply.` });
     } catch (e) {
       setInput(text);
       setError((e as Error).message);

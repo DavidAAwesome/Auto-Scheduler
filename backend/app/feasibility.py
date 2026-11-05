@@ -139,7 +139,7 @@ def _move_deadline(need: int, spans: list[tuple[int, int]], split: bool, zone) -
 
 def fit_issue(task, planner, prefs, zone, fixed, now_min: int) -> DraftIssue | None:
     """A warning when the work cannot fit before the deadline, or None. Measured for this item alone, so a warning is
-    certain, while other flexible work can still leave it short ("Can this fit?" checks that)."""
+    certain, while other flexible work can still leave it short (a preview shows that)."""
     need = task.remaining
     if task.due > planner.window_end or (task.is_work and not task.allow_split and need > prefs.focus):
         return None  # past the window nothing is certain, and a one-piece task over the limit has its own conflict
