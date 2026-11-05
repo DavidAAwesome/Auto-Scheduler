@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { longDate } from "../utils/calendar";
@@ -7,11 +8,14 @@ import { activeSplitOptions, splitOptionSessions, splitOptionSummary, splitOptio
 export default function SplitOptionsPanel({ onError }: { onError: (message: string) => void }) {
   const { splitOptions, schedulePreview, previewStale, saving } = useWorkspace();
   const split = activeSplitOptions(splitOptions, schedulePreview);
+  const panel = useRef<HTMLDivElement>(null);
+  // The review area may be scrolled down to the drafts when new options arrive.
+  useEffect(() => { panel.current?.scrollIntoView({ block: "nearest" }); }, [split]);
   if (!split || !schedulePreview) return null;
   const selected = schedulePreview.previewId;
   const recalculate = () => workspaceService.refreshSplitOptions().catch(e => onError((e as Error).message));
   return (
-    <div className="schedule-preview-bar split-options" role="region" aria-label={`Split options for ${split.title}`}>
+    <div ref={panel} className="schedule-preview-bar split-options" role="region" aria-label={`Split options for ${split.title}`}>
       <div className="schedule-preview-head">
         <strong>Ways to split {split.title}</strong>
         {previewStale && <button className="button secondary small" disabled={saving} onClick={() => void recalculate()}>Recalculate options</button>}

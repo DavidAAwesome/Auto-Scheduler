@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, type AssistantReply, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, requestFromIntent, runAssistantCommand, splitFromEntry } from '../src/services/assistantCommands.ts';
-import { activeSplitOptions, calendarSessions, previewText, splitOptionSessions, splitOptionSummary, splitOptionWarnings } from '../src/utils/schedulePreview.ts';
+import { activeSplitOptions, calendarSessions, draftsBeforePreview, previewText, splitOptionSessions, splitOptionSummary, splitOptionWarnings } from '../src/utils/schedulePreview.ts';
 import type { Availability, DraftView, PlanDraft, SavedSchedule, SchedulePreferences, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task } from '../src/types/models.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/acceptance.json', import.meta.url), 'utf8')) as {
@@ -172,4 +172,15 @@ test('items that only mention splitting or showing stay whole', () => {
   for (const text of ['Essay 2h due Friday', 'Show and tell prep 1h due Friday', 'Lab, split the work with Sam 2h due Fri', 'show me different ways to split them']) {
     assert.deepEqual(splitFromEntry(text), { entry: text, wantsSplit: false });
   }
+});
+
+test('split options and Apply come before the drafts in the review area', async () => {
+  const workspace = await store(backend().request);
+  assert.equal(draftsBeforePreview(null, null), true);
+  await workspace.requestSplitOptions([asm.id]);
+  const state = workspace.getSnapshot();
+  assert.equal(draftsBeforePreview(state.splitOptions, state.schedulePreview), false);
+  await workspace.previewSchedule(7);
+  const after = workspace.getSnapshot();
+  assert.equal(draftsBeforePreview(after.splitOptions, after.schedulePreview), true);
 });

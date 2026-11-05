@@ -12,7 +12,7 @@ import { endsAfterDue } from "../utils/planning";
 import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
-import { calendarSessions, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
+import { calendarSessions, draftsBeforePreview, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
 import DraftReview from "./DraftReview";
 import SplitOptionsPanel from "./SplitOptionsPanel";
 import { accountTimeZone } from "../utils/timeZones";
@@ -367,7 +367,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
 
 export default function CalendarPane({ today, ...handlers }: CalendarHandlers & { today: string }) {
   const view = useCalendarView();
-  const { connections, schedulePreview, previewStale, sessions, events, saving, error } = useWorkspace();
+  const { connections, schedulePreview, splitOptions, previewStale, sessions, events, saving, error } = useWorkspace();
   const [scheduleError, setScheduleError] = useState("");
   const lastPreview = useRef<string | null>(null);
   const dates = visibleDates(view.mode, view.anchor);
@@ -448,7 +448,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
       {/* Review area: drafts, conflicts and the schedule preview scroll here, so the calendar keeps its space and
           the Apply buttons are never pushed out of reach. */}
       <div className="calendar-review">
-      <DraftReview />
+      {draftsBeforePreview(splitOptions, schedulePreview) && <DraftReview />}
       {clashing.length > 0 && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule conflicts">
           <div><strong>{clashing.length} saved session{clashing.length === 1 ? "" : "s"} now overlap{clashing.length === 1 ? "s" : ""} an event.</strong> Nothing was moved yet.</div>
@@ -511,6 +511,7 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
         </div>
       )}
+      {!draftsBeforePreview(splitOptions, schedulePreview) && <DraftReview />}
       {(scheduleError || error) && <p role="alert" className="form-error">{scheduleError || error}</p>}
       </div>
       {view.mode === "month"

@@ -129,6 +129,11 @@ export function activeSplitOptions(split: SplitOptions | null, preview: Schedule
   return split?.options.some(o => o.preview.previewId === preview?.previewId) ? split : null;
 }
 
+/** Drafts usually come first in the review area, but they would push split options and Apply out of sight. */
+export function draftsBeforePreview(split: SplitOptions | null, preview: SchedulePreview | null) {
+  return activeSplitOptions(split, preview) === null;
+}
+
 /** The split tasks' sessions in an option, including any fixed ones the option works around. */
 export function splitOptionSessions(option: SplitOption, taskIds: string[]) {
   return option.preview.sessions.filter(s => s.taskId !== null && taskIds.includes(s.taskId) && s.type === 'work');
