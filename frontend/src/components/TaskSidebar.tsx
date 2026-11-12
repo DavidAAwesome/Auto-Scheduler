@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { DEFAULT_DUE_TIME, type CalendarEvent, type ScheduleSession, type Task } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
@@ -9,7 +9,9 @@ import { plannedMinutes } from "../utils/planning";
 import { selectTasks, type TaskFilter } from "../services/taskRules";
 import { allDayOn, blocksTime, eventIcon } from "../utils/events";
 import { observancesBetween } from "../utils/holidays";
-import { sidebarStore, useShowHolidays, useSidebarOpen } from "../services/uiState";
+import { SIDEBAR_WIDTH, sidebarStore, sidebarWidthStore, useShowHolidays, useSidebarOpen, useSidebarWidth } from "../services/uiState";
+import ResizeHandle from "./ResizeHandle";
+import { dockedWidth } from "../utils/layout";
 import { accountTimeZone } from "../utils/timeZones";
 import { isDerivedBreak } from "../utils/breaks";
 import { todayAgenda } from "../utils/schedulePreview";
@@ -54,6 +56,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
 }) {
   const sidebarOpen = useSidebarOpen();
+  const sidebarWidth = useSidebarWidth();
   const { tasks, sessions, events, availability, schedulePreview, preferences, saving } = useWorkspace();
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -81,7 +84,8 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
       </button>
     );
   return (
-    <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving}>
+    <>
+    <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving} style={{ "--sidebar-w": `${sidebarWidth}px` } as CSSProperties}>
       <section className="today-card">
         <div className="today-head">
           <h2>Today’s Tasks</h2>
@@ -206,5 +210,8 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
       </section>
       <EventList today={today} onOpen={onOpenEvent} />
     </aside>
+    <ResizeHandle label="Resize today's tasks" side="left" width={sidebarWidth} limits={SIDEBAR_WIDTH}
+      otherPanelWidth={() => dockedWidth(".chat-panel, .chat-tab")} onChange={w => sidebarWidthStore.set(w)} />
+    </>
   );
 }

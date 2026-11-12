@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent } from "react";
 import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
@@ -8,7 +8,9 @@ import type { PendingAction, PreferenceChange } from "../types/models";
 import { BUTTONS, CANCEL, CONFIRM, chosen, openActions, parseSelection, resolveConfirm } from "../services/pendingActions";
 import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
-import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
+import { CHAT_WIDTH, chatFullscreenStore, chatPanelStore, chatWidthStore, useChatFullscreen, useChatPanelOpen, useChatWidth } from "../services/uiState";
+import ResizeHandle from "./ResizeHandle";
+import { dockedWidth } from "../utils/layout";
 import { draftsReply, firstOpenQuestion, IMAGE_TYPES, isChatter, looksLikePlanEntry, readImage } from "../services/planEntry";
 import type { ImageAttachment } from "../services/workspaceStore";
 import Icon from "./Icon";
@@ -54,6 +56,14 @@ function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string
 
 export default function ChatPanel() {
   const open = useChatPanelOpen();
+  const fullscreen = useChatFullscreen() && open;
+  const chatWidth = useChatWidth();
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) chatFullscreenStore.set(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
   const { user } = useAuth();
   const { tasks, sessions, events, connections, availability, schedulePreview, preferences, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
@@ -362,10 +372,21 @@ export default function ChatPanel() {
   // Only the newest message with buttons offers them, so an old Apply cannot be pressed after a newer result.
   const actionMessageId = [...messages].reverse().find(m => m.actions?.length)?.id;
   return (
-    <aside className="chat-panel" aria-label="AI chatbox">
+    <>
+    {!fullscreen && (
+      <ResizeHandle label="Resize AI chatbox" side="right" width={chatWidth} limits={CHAT_WIDTH}
+        otherPanelWidth={() => dockedWidth(".task-sidebar, .sidebar-tab")} onChange={w => chatWidthStore.set(w)} />
+    )}
+    <aside className={`chat-panel ${fullscreen ? "fullscreen" : ""}`} aria-label="AI chatbox" style={{ "--chat-w": `${chatWidth}px` } as CSSProperties}>
       <div className="chat-head">
         <h2><Icon name="assistant" size={18} /> AI Chatbox</h2>
-        <button className="icon-button ghost small" aria-label="Hide AI chatbox" onClick={() => chatPanelStore.set(false)}><Icon name="panel" size={17} /></button>
+        <div className="chat-head-actions">
+          <button className="icon-button ghost small" aria-label={fullscreen ? "Exit full screen" : "Full screen"} title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+            aria-pressed={fullscreen} onClick={() => chatFullscreenStore.set(!fullscreen)}>
+            <Icon name={fullscreen ? "shrink" : "expand"} size={16} />
+          </button>
+          <button className="icon-button ghost small" aria-label="Hide AI chatbox" title="Hide AI chatbox" onClick={() => { chatFullscreenStore.set(false); chatPanelStore.set(false); }}><Icon name="panel" size={17} /></button>
+        </div>
       </div>
       <div className="chat-messages" ref={log} role="log" aria-live="polite" aria-label="Planning conversation">
         <p className="bubble assistant">Hi{user?.name ? ` ${user.name.split(" ")[0]}` : ""}! {welcome.text}</p>
@@ -437,5 +458,6 @@ export default function ChatPanel() {
         </div>
       </form>
     </aside>
+    </>
   );
 }

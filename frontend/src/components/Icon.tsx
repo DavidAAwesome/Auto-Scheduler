@@ -34,8 +34,12 @@ export type IconName =
   | "users"
   | "coffee"
   | "pin"
-  | "repeat";
+  | "repeat"
+  | "expand"
+  | "shrink";
 const paths: Record<IconName, string> = {
+  expand: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7",
+  shrink: "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7",
   home: "M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z",
   planner: "M4 5h16v16H4ZM4 10h16M8 3v4m8-4v4M8 14h3m2 0h3m-8 4h8",
   tasks: "M8 3h8M8 5H5v16h14V5h-3M8 12l3 3 5-6",
