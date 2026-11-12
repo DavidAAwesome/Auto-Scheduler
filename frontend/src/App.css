@@ -61,7 +61,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .app-shell { height: 100%; display: flex; flex-direction: column; }
 .topbar {
   flex-shrink: 0; height: 60px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
-  padding: 0 14px; background: var(--surface); border-bottom: 1px solid var(--border); position: relative; z-index: 20;
+  padding: 0 14px; background: var(--surface); border-bottom: 1px solid var(--border); position: relative; z-index: 50; /* above the side panels (30-35) so its menus open over the chat */
 }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 6px; }
 .topbar-right { justify-content: flex-end; }
