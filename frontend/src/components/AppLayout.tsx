@@ -11,6 +11,8 @@ import { categoryIcon } from "../utils/taskDisplay";
 import { eventIcon, occurrencesOn } from "../utils/events";
 import { initials } from "../services/avatarUpload";
 import { accountToday } from "../utils/timeZones";
+import { leadLabel } from "../utils/reminders";
+import ReminderToasts from "./ReminderToasts";
 
 const pageTitles: Record<string, string> = {
   calendars: "Connected calendars",
@@ -109,7 +111,12 @@ function Reminders() {
           {group("Due today", dueToday)}
           {group(`Due tomorrow · ${formatDate(tomorrow)}`, dueTomorrow)}
           {!eventsToday.length && !overdue.length && !dueToday.length && !dueTomorrow.length && <p className="muted">Nothing today or due tomorrow. 🎉</p>}
-          <p className="popover-foot">Push reminders arrive in Sprint 3.</p>
+          <p className="popover-foot">
+            {availability?.reminders
+              ? `Reminders on: ${leadLabel(availability.reminderMinutes)}. `
+              : "Reminders are off. "}
+            <a href="#/settings" onClick={close}>{availability?.reminders ? "Change" : "Turn on"}</a>
+          </p>
         </div>
       )}
     </div>
@@ -181,6 +188,7 @@ export default function AppLayout({ route, children }: { route: string; children
           <UserMenu />
         </div>
       </header>
+      <ReminderToasts />
       <MenuDrawer open={menuOpen} onClose={closeMenu} route={route} />
       <main id="main-content" tabIndex={-1} className={route === "home" ? "main-home" : "main-page"} inert={menuOpen ? true : undefined}>
         {route === "home" ? children : (
