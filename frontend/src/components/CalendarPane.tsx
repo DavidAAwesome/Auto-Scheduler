@@ -429,18 +429,18 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
     <section className="calendar-pane" aria-label="Calendar">
       <div className="calendar-toolbar">
         <div className="calendar-nav">
-          <button className="today-label" onClick={() => calendarViewStore.set({ ...view, anchor: today })} disabled={showsToday && view.anchor === today}>
-            Today, {longDate(today)}
+          <button className="today-label" title={`Today, ${longDate(today)}`} onClick={() => calendarViewStore.set({ ...view, anchor: today })} disabled={showsToday && view.anchor === today}>
+            Today<span className="today-date-long">, {longDate(today)}</span>
           </button>
           <button className="icon-button ghost small" aria-label="Previous" onClick={() => step(-1)}><Icon name="chevronLeft" size={18} /></button>
           <button className="icon-button ghost small" aria-label="Next" onClick={() => step(1)}><Icon name="chevronRight" size={18} /></button>
           {view.mode === "day" && <span className="range-label">{longDate(view.anchor)}</span>}
         </div>
         <div className="calendar-actions">
-          <button className="button small" disabled={saving} onClick={() => void generateSchedule()} aria-label="Generate schedule">
+          <button className="button small" disabled={saving} onClick={() => void generateSchedule()} aria-label="Generate schedule" title="Generate schedule">
             <Icon name="assistant" size={15} /> <span>{saving ? "Scheduling…" : "Generate Schedule"}</span>
           </button>
-          <button className="button secondary small" onClick={() => handlers.onPlan(focusDate)} aria-label="Plan work time">
+          <button className="button secondary small" onClick={() => handlers.onPlan(focusDate)} aria-label="Plan work time" title="Plan work time">
             <Icon name="clock" size={15} /> <span>Plan work time</span>
           </button>
           <div className="segmented" role="group" aria-label="Calendar view">

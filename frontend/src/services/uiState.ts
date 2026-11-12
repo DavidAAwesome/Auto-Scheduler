@@ -46,9 +46,13 @@ export function useCalendarView() { return useSyncExternalStore(calendarViewStor
 
 // The chat panel overlays the calendar on narrow screens, so it starts closed there unless the user opened it before.
 const savedChat = read('autoplan.chatOpen');
-const wide = typeof innerWidth === 'undefined' || innerWidth > 1180;
+const wide = typeof innerWidth === 'undefined' || innerWidth > 999;
 export const chatPanelStore = createStore<boolean>(savedChat === null ? wide : savedChat === 'true', open => write('autoplan.chatOpen', String(open)));
 export function useChatPanelOpen() { return useSyncExternalStore(chatPanelStore.subscribe, chatPanelStore.get); }
+
+/** The left Today's Tasks panel. Open by default; hiding it gives the calendar the full width. */
+export const sidebarStore = createStore<boolean>(read('autoplan.sidebarOpen') !== 'false', open => write('autoplan.sidebarOpen', String(open)));
+export function useSidebarOpen() { return useSyncExternalStore(sidebarStore.subscribe, sidebarStore.get); }
 
 /** Show built-in holidays, observances and daylight-saving changes on the calendar (on by default). */
 export const holidaysStore = createStore<boolean>(read('autoplan.holidays') !== 'false', on => write('autoplan.holidays', String(on)));

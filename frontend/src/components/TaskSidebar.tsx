@@ -9,7 +9,7 @@ import { plannedMinutes } from "../utils/planning";
 import { selectTasks, type TaskFilter } from "../services/taskRules";
 import { allDayOn, blocksTime, eventIcon } from "../utils/events";
 import { observancesBetween } from "../utils/holidays";
-import { useShowHolidays } from "../services/uiState";
+import { sidebarStore, useShowHolidays, useSidebarOpen } from "../services/uiState";
 import { accountTimeZone } from "../utils/timeZones";
 import { isDerivedBreak } from "../utils/breaks";
 import { todayAgenda } from "../utils/schedulePreview";
@@ -53,6 +53,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   onOpenSession: (task: Task, rect: DOMRect, sessionId: string) => void;
   onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
 }) {
+  const sidebarOpen = useSidebarOpen();
   const { tasks, sessions, events, availability, schedulePreview, preferences, saving } = useWorkspace();
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -73,10 +74,21 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   const marks = showHolidays ? observancesBetween(today, today, accountTimeZone(availability)) : [];
   const allDayToday = allDayOn(events, today);
   const row = (task: Task) => <TaskRow key={task.id} task={task} today={today} planned={plannedMinutes(task.id, sessions)} onOpen={onOpen} onError={setError} />;
+  if (!sidebarOpen)
+    return (
+      <button className="sidebar-tab" onClick={() => sidebarStore.set(true)} aria-label="Show today's tasks" title="Show today's tasks">
+        <Icon name="tasks" size={18} /> <span>Tasks</span>
+      </button>
+    );
   return (
     <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving}>
       <section className="today-card">
-        <h2>Today’s Tasks</h2>
+        <div className="today-head">
+          <h2>Today’s Tasks</h2>
+          <button className="icon-button ghost small sidebar-hide" aria-label="Hide today's tasks" title="Hide today's tasks" onClick={() => sidebarStore.set(false)}>
+            <Icon name="panel" size={17} />
+          </button>
+        </div>
         <p className="today-date">{longDate(today)}</p>
         {(marks.length > 0 || allDayToday.length > 0) && (
           <ul className="today-marks" aria-label="All day today">
