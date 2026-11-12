@@ -16,7 +16,7 @@ import ReminderToasts from "./ReminderToasts";
 
 const pageTitles: Record<string, string> = {
   calendars: "Connected calendars",
-  settings: "Availability & settings",
+  settings: "Settings",
   profile: "Account details",
   analytics: "Analytics",
 };

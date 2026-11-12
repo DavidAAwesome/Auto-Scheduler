@@ -17,6 +17,8 @@ import {
 } from "../utils/availability";
 import { WEEKDAYS, clock12, dateInZone, parseClock } from "../utils/calendar";
 import { normalizeTimeZone, timeZoneChoices, timeZoneLabel } from "../utils/timeZones";
+import { REMINDER_LEADS, leadLabel } from "../utils/reminders";
+import { notificationState, requestNotifications, type NotificationState } from "../hooks/useReminders";
 import "./Planning.css";
 
 type DraftDay = {
@@ -127,7 +129,6 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
     toDraftDays(seed.days),
   );
   const [timeZone, setTimeZone] = useState(normalizeTimeZone(seed.timeZone));
-  const [reminders, setReminders] = useState(seed.reminders);
   const today = dateInZone(timeZone);
   const [addWeekDate, setAddWeekDate] = useState(today);
   const [notice, setNotice] = useState("");
@@ -139,9 +140,11 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
       days: activeWeek === "default" ? days : defaultDays,
       weekOverrides: activeWeek === "default" ? overrides : upsertWeekOverride(overrides, activeWeek, days),
       timeZone: normalizeTimeZone(timeZone),
-      reminders,
+      // Reminders have their own section and Save button; keep whatever is saved for them.
+      reminders: saved.reminders,
+      reminderMinutes: saved.reminderMinutes,
     });
-  }, [draftDays, activeWeek, defaultDays, overrides, timeZone, reminders]);
+  }, [draftDays, activeWeek, defaultDays, overrides, timeZone, saved.reminders, saved.reminderMinutes]);
   const dirty = JSON.stringify(current) !== JSON.stringify(saved);
   const zoneChanged = normalizeTimeZone(timeZone) !== saved.timeZone;
 
@@ -278,14 +281,17 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
     const issue = validateDays(fromDraftDays(draftDays));
     if (issue) return save.fail(issue);
     await save.run(async () => {
-      const result = normalizeAvailability(await workspaceService.saveAvailability(current));
+      // Send the latest saved reminder settings, in case they were saved in their own section since this form loaded.
+      const live = workspaceService.getSnapshot().availability;
+      const result = normalizeAvailability(await workspaceService.saveAvailability(
+        live ? { ...current, reminders: live.reminders, reminderMinutes: live.reminderMinutes } : current,
+      ));
       setSaved(result);
       setDefaultDays(cloneDays(result.days));
       setOverrides(result.weekOverrides.map((week) => ({ weekStart: week.weekStart, days: cloneDays(week.days) })));
       const shown = activeWeek === "default" ? result.days : result.weekOverrides.find((week) => week.weekStart === activeWeek)?.days;
       setDraftDays(toDraftDays(shown ?? emptyWeekDays()));
       setTimeZone(normalizeTimeZone(result.timeZone));
-      setReminders(result.reminders);
       setNotice("");
     });
   }
@@ -400,14 +406,66 @@ function AvailabilityForm({ initial }: { initial: Availability }) {
         ))}
       </fieldset>
 
-      <Switch
-        label="Reminders"
-        checked={reminders}
-        onChange={(on) => { setReminders(on); edited(); }}
-      />
       <SaveBar status={save.status} error={save.error} dirty={dirty} label="Save availability" />
     </SettingsSection>
   );
+}
+
+/** Saved with availability on the server, but edited and saved here on its own. */
+function ReminderForm({ initial }: { initial: Availability }) {
+  const [saved, setSaved] = useState({ reminders: initial.reminders, reminderMinutes: initial.reminderMinutes });
+  const [reminders, setReminders] = useState(saved.reminders);
+  const [reminderMinutes, setReminderMinutes] = useState(saved.reminderMinutes);
+  const [permission, setPermission] = useState(notificationState);
+  const save = useSaveStatus();
+  const dirty = reminders !== saved.reminders || reminderMinutes !== saved.reminderMinutes;
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const live = workspaceService.getSnapshot().availability;
+    if (!live) return save.fail("Your settings are still loading. Try again in a moment.");
+    await save.run(async () => {
+      // Only the reminder fields change; hours and time zone stay as last saved.
+      const result = await workspaceService.saveAvailability({ ...live, reminders, reminderMinutes });
+      setSaved({ reminders: result.reminders, reminderMinutes: result.reminderMinutes });
+    });
+  }
+
+  return (
+    <SettingsSection title="Reminders" description="When AutoPlan reminds you about what's coming up." onSubmit={submit}>
+      <Switch
+        label="Reminders"
+        description="Before work sessions and events, and on the day a task is due."
+        checked={reminders}
+        onChange={(on) => {
+          setReminders(on);
+          save.edited();
+          // Ask while handling the click; browsers ignore permission requests made later.
+          if (on) void requestNotifications().then(setPermission);
+        }}
+      />
+      {reminders && (
+        <div className="settings-grid two">
+          <SelectField
+            label="Remind me"
+            value={String(reminderMinutes)}
+            onChange={value => { setReminderMinutes(Number(value)); save.edited(); }}
+            hint={permissionHint(permission)}
+          >
+            {REMINDER_LEADS.map(minutes => <option key={minutes} value={minutes}>{minutes ? leadLabel(minutes) : "When it starts"}</option>)}
+          </SelectField>
+        </div>
+      )}
+      <SaveBar status={save.status} error={save.error} dirty={dirty} label="Save reminders" />
+    </SettingsSection>
+  );
+}
+
+function permissionHint(permission: NotificationState) {
+  if (permission === "granted") return "You'll also get system notifications while AutoPlan is open in a tab.";
+  if (permission === "denied") return "Notifications are blocked for this site, so reminders show inside AutoPlan only. Allow them in your browser's site settings to get them in the background.";
+  if (permission === "unsupported") return "This browser can't show system notifications, so reminders show inside AutoPlan only.";
+  return "Reminders show inside AutoPlan. Allow notifications when your browser asks to get them in the background too.";
 }
 
 const asNumber = (value: string) => (value.trim() === "" ? NaN : Number(value));
@@ -533,6 +591,7 @@ export default function Settings() {
     <div className="settings-page">
       <ScreenHeading eyebrow="SETTINGS" title="Planning, on your terms." />
       {availability && <AvailabilityForm initial={normalizeAvailability(availability)} />}
+      {availability && <ReminderForm initial={normalizeAvailability(availability)} />}
       <PreferencesForm initial={preferences} />
       <AIProfileForm initial={aiProfile} />
     </div>
