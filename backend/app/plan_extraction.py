@@ -508,6 +508,26 @@ def parse_time(expr: str) -> tuple[int | None, bool]:
 
 def parse_duration(text: str) -> tuple[int | None, tuple[int, int] | None]:
     lower = text.lower()
+    spoken_hours = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+
+    spoken = re.search(
+        r"\b(one|two|three|four|five|six|seven|eight|nine|ten)\s+hours?\b",
+        lower,
+    )
+
+    if spoken:
+        return spoken_hours[spoken.group(1)] * 60, spoken.span()
     match = re.search(r'(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b(?:\s*(?:and\s*)?(\d+)\s*(?:m|min|mins|minutes?)\b)?', lower)
     if match:
         return round(float(match[1]) * 60) + int(match[2] or 0), match.span()
@@ -598,8 +618,9 @@ def parse_item(text: str, index: int, today: date, now: datetime | None = None) 
     flex = re.search(FLEX_CUES, lower) is not None or (re.search(FLEX_WORDS, lower) is not None and not due)
     has_day = bool(weekdays) or (on is not None and not due)
 
-    if (time_range and (has_day or is_event)) or (at_time and has_day and is_event and duration and not due) \
-            or (weekdays and is_class):
+    if (time_range and (has_day or is_event)) or (
+        at_time and has_day and duration is not None and not due
+    ) or (weekdays and is_class):
         draft['kind'] = 'fixed_event'
         draft['eventKind'] = _event_kind(lower)
         if not time_range and at_time:
