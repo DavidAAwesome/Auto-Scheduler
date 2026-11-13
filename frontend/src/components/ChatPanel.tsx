@@ -16,6 +16,32 @@ import type { ImageAttachment } from "../services/workspaceStore";
 import Icon from "./Icon";
 
 /** The composer grows with its text up to this height (about 8 lines), then scrolls. */
+interface SpeechRecognitionResult {
+  isFinal: boolean;
+  transcript: string;
+}
+
+interface SpeechRecognitionInstance {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+
+  onresult: ((event: {
+    results: ArrayLike<{
+      isFinal: boolean;
+      [index: number]: SpeechRecognitionResult;
+    }>;
+  }) => void) | null;
+
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+
+  start(): void;
+  stop(): void;
+}
+
+type SpeechRecognitionConstructor =
+  new () => SpeechRecognitionInstance;
 const COMPOSER_MAX_HEIGHT = 168;
 const PROMPTS = ["Show my plan", "Plan my week", "Busy time", "Today’s tasks"];
 const ACTION_LABEL: Partial<Record<AssistantCommand, string>> = {
@@ -53,7 +79,25 @@ function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string
     </div>
   );
 }
+function parseRescheduleTime(text: string): number | null {
+  const match = text.match(
+    /\b(?:move|change|reschedule|shift)\b.*?\b(?:to|for|at)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i
+  );
 
+  if (!match) return null;
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? 0);
+  const period = match[3].toLowerCase().replace(/\./g, "");
+
+  if (hour < 1 || hour > 12 || minute > 59) {
+    return null;
+  }
+
+  hour = (hour % 12) + (period === "pm" ? 12 : 0);
+
+  return hour * 60 + minute;
+}
 export default function ChatPanel() {
   const open = useChatPanelOpen();
   const fullscreen = useChatFullscreen() && open;
@@ -68,6 +112,60 @@ export default function ChatPanel() {
   const { tasks, sessions, events, connections, availability, schedulePreview, preferences, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  function toggleListening() {
+    if (isListening) {
+    recognitionRef.current?.stop();
+    setIsListening(false);
+    return;
+    }
+
+    const speechWindow = window as Window & {
+      SpeechRecognition?: SpeechRecognitionConstructor;
+      webkitSpeechRecognition?: SpeechRecognitionConstructor;
+    };
+
+    const SpeechRecognitionAPI =
+      speechWindow.SpeechRecognition ||
+      speechWindow.webkitSpeechRecognition;
+
+    if (!SpeechRecognitionAPI) {
+      setError("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognitionAPI();
+
+    recognition.lang = "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput(transcript);
+    };
+
+    recognition.onerror = (event) => {
+      setError(`Microphone error: ${event.error}`);
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+      setIsListening(true);
+      setError("");
+    } catch {
+      setIsListening(false);
+      setError("Unable to start speech recognition.");
+    }
+  }
   /** An image waiting to be sent with the next message (e.g. a class timetable). */
   const [image, setImage] = useState<(ImageAttachment & { url: string }) | null>(null);
   const [reading, setReading] = useState(false);
@@ -195,6 +293,27 @@ export default function ChatPanel() {
       const result = await workspaceService.interpretPlan(text, attachment ? { mediaType: attachment.mediaType, dataBase64: attachment.dataBase64, name: attachment.name } : null);
       if (attachment) URL.revokeObjectURL(attachment.url);
       append({ id: `${id}-a`, role: "assistant", text: draftsReply(result.drafts, result.provider, result.notes) });
+      if (
+        result.drafts.length > 0 &&
+        result.drafts.every(view => !view.draft.include || view.ready)
+      ) {
+        const preview = await workspaceService.previewDrafts();
+
+        const conflicts = preview.conflicts.filter(
+          conflict => conflict.code === "fixed_overlap"
+        );
+
+        if (conflicts.length > 0) {
+          append({
+            id: `${id}-conflict`,
+            role: "assistant",
+            text:
+              "I found a scheduling conflict:\n" +
+              conflicts.map(conflict => conflict.message).join("\n") +
+              "\n\nWould you like to choose another day or time?"
+          });
+        }
+      }
       if (splitAfterDrafts.current) {
         if (firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? [])) {
           append({ id: `${id}-s`, role: "assistant", text: "I’ll show the ways to split them as soon as that’s answered." });
@@ -248,7 +367,77 @@ export default function ChatPanel() {
     setInput("");
     setImage(null);
     setError("");
+    const requestedTime = parseRescheduleTime(text);
 
+    if (requestedTime !== null && !attachment) {
+      const drafts = workspaceService.getSnapshot().planDrafts?.views ?? [];
+
+      const meetings = drafts.filter(
+        (view) =>
+          view.draft.include &&
+          view.draft.kind === "fixed_event" &&
+          view.draft.start !== null &&
+          view.draft.end !== null
+      );
+
+      if (meetings.length === 1) {
+        const meeting = meetings[0].draft;
+
+        const duration = meeting.end! - meeting.start!;
+        const newEnd = requestedTime + duration;
+
+        if (newEnd > 1440) {
+          append({
+            id: `${id}-a`,
+            role: "assistant",
+            text: "That meeting would finish after midnight. Please choose another time.",
+          });
+          return;
+        }
+
+        workspaceService.updateDraft(meeting.id, {
+          start: requestedTime,
+          end: newEnd,
+          ambiguous: meeting.ambiguous.filter(
+            (field) => field !== "start" && field !== "end"
+          ),
+        });
+
+        append({
+          id: `${id}-a`,
+          role: "assistant",
+          text: `I've moved the proposed "${meeting.title}" to the new time. Let me check for scheduling conflicts.`,
+        });
+
+        try {
+          await workspaceService.reviewDrafts();
+          await workspaceService.previewDrafts();
+
+          append({
+            id: `${id}-preview`,
+            role: "assistant",
+            text: "The updated schedule preview is ready. Check the calendar for any conflicts before applying it.",
+          });
+        } catch (error) {
+          append({
+            id: `${id}-error`,
+            role: "assistant",
+            text: `The proposed time was updated, but the schedule could not be previewed: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+
+        return;
+      }
+
+      if (meetings.length > 1) {
+        append({
+          id: `${id}-a`,
+          role: "assistant",
+          text: "Which proposed meeting would you like to reschedule? Please mention its name.",
+        });
+        return;
+      }
+    }
     if (!attachment && await typedReply(text, id)) return;
     if (!workspaceService.getSnapshot().planDrafts) splitAfterDrafts.current = false;
     // "Essay 2h due Fri, show me ways to split it": read the items, then show the options once they are ready.
@@ -452,6 +641,18 @@ export default function ChatPanel() {
           aria-describedby="composer-hint" />
         <div className="composer-bar">
           <button type="button" className="icon-button ghost small" disabled={busy} aria-label="Attach an image, such as a timetable" title="Attach an image (JPG, PNG or WebP, up to 5 MB)" onClick={() => fileInput.current?.click()}><Icon name="image" size={17} /></button>
+          <button
+            type="button"
+            className="icon-button ghost small"
+            onClick={toggleListening}
+            disabled={busy}
+            aria-label={isListening ? "Stop listening" : "Start voice input"}
+            aria-pressed={isListening}
+            title={isListening ? "Stop listening" : "Speak to AI"}
+            style={{ color: isListening ? "#dc2626" : undefined }}
+          >
+            {isListening ? "■" : "🎤"}
+          </button>
           <span id="composer-hint" className="composer-hint">{busy ? "Working… you can keep typing" : "Shift + Enter for a new line"}</span>
           {input.length > 7000 && <span className="composer-count">{8000 - input.length}</span>}
           <button className="composer-send" disabled={(!input.trim() && !image) || busy} aria-label={busy ? "Wait for the assistant to finish" : "Send"} title="Send (Enter)"><Icon name="send" size={16} /></button>
