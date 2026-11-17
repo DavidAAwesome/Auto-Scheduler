@@ -96,6 +96,11 @@ def _iso(value: str | None) -> date | None:
     return parsed if parsed.isoformat() == value else None
 
 
+def short_date(value: date | None) -> str:
+    """"Fri, Nov 20" for questions and notes."""
+    return value.strftime('%a, %b %-d') if value else 'that date'
+
+
 def clock(minute: int) -> str:
     minute %= 1440
     return f"{(minute // 60) % 12 or 12}:{minute % 60:02d} {'AM' if minute < 720 else 'PM'}"
@@ -128,6 +133,18 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
             value = draft.start if field == 'start' else draft.end
             shown = f'{(value // 60) % 12 or 12}:{value % 60:02d}' if value is not None else 'the time'
             ask(field, f'Is the {FIELD_LABELS[field]} of "{name}" ({shown}) AM or PM?', 'ambiguous')
+        elif field in {'deadline', 'date'} and _iso(getattr(draft, field)):
+            # A best reading exists ("next Friday", "3/4"): say which day it is instead of blocking on it.
+            ask(field, f'I read the {FIELD_LABELS[field]} of "{name}" as {short_date(_iso(getattr(draft, field)))}. '
+                'Change it if you meant another day.', 'ambiguous', blocking=False)
+        elif field == 'dueTime' and draft.dueTime is not None:
+            hour = f'{(draft.dueTime // 60) % 12 or 12}' + (f':{draft.dueTime % 60:02d}' if draft.dueTime % 60 else '')
+            ask(field, f'Is "{name}" due at {hour} AM or {hour} PM?', 'ambiguous')
+        elif field == 'earliestStart' and not draft.earliestStart:
+            after = re.search(r'\bafter\s+(?:the\s+|my\s+)?([\w\' -]{2,40}?)\s*(?:,|$|\bdue\b|\bby\b)', (draft.sourceText or '').lower())
+            what = f' ({after[1].strip()})' if after else ''
+            ask(field, f'"{name}" comes after something that isn\'t on your list{what}. When can it start? '
+                'For example "Friday 2pm".', 'ambiguous')
         else:
             ask(field, f'Please confirm the {FIELD_LABELS.get(field, field)} of "{name}".', 'ambiguous')
     if not draft.title:
@@ -193,6 +210,12 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
         if known_ids is not None and dep not in known_ids:
             ask('dependsOn', f'"{name}" depends on an item that is not selected or saved. Remove the link or select that '
                 'item too.', 'invalid')
+    if 'dueTime' in draft.assumed and draft.dueTime is not None:
+        ask('dueTime', f'"{name}" is due by {clock(draft.dueTime)}: you gave only a part of the day, so I used its start. '
+            'Change the due time if it\'s later.', 'warning', blocking=False)
+    if 'earliestStart' in draft.assumed and draft.earliestStart:
+        ask('earliestStart', f'"{name}" starts no earlier than {draft.earliestStart[11:16]} on '
+            f'{short_date(_iso(draft.earliestStart[:10]))}. Change it if you meant AM.', 'warning', blocking=False)
     if 'priority' in draft.assumed:
         ask('priority', f'Priority of "{name}" was not stated, so it is Medium. Change it if needed.', 'warning', False)
     ready = not any(i.blocking for i in issues)

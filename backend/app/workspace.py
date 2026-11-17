@@ -568,11 +568,27 @@ def save_availability(data: Availability, user=Depends(get_current_user), db=Dep
     """The saved timezone is the account's only timezone. Changing it keeps events at the same real time."""
     from datetime import datetime, timezone
     from app.timezone_change import preserve_event_times
+    from pymongo.read_concern import ReadConcern
+    from pymongo.write_concern import WriteConcern
+    from app.schedule_version import bump_schedule_version
     user_id = str(user['_id'])
     previous = db.availability.find_one({'user_id': user_id}, {'timeZone': 1})
     if previous and previous.get('timeZone') and previous['timeZone'] != data.timeZone:
+        # Events and the new zone are saved together, so a failure can't leave events converted to a zone the
+        # account doesn't have (a replica set is required, as for schedule Apply).
         today = datetime.now(timezone.utc).astimezone(ZoneInfo(previous['timeZone'])).date()
-        preserve_event_times(db, user_id, previous['timeZone'], data.timeZone, today)
+
+        def change(session):
+            current = db.availability.find_one({'user_id': user_id}, {'timeZone': 1}, session=session)
+            if (current or {}).get('timeZone') != previous['timeZone']:
+                raise HTTPException(409, 'Your timezone was changed somewhere else. Reload and try again.')
+            preserve_event_times(db, user_id, previous['timeZone'], data.timeZone, today, session=session)
+            db.availability.update_one({'user_id': user_id}, {'$set': data.model_dump()}, session=session)
+            bump_schedule_version(db, user_id, session=session)
+
+        with db.client.start_session() as session:
+            session.with_transaction(change, read_concern=ReadConcern('snapshot'), write_concern=WriteConcern('majority'))
+        return AvailabilityView(**data.model_dump())
     db.availability.update_one({'user_id': user_id}, {'$set': data.model_dump()}, upsert=True)
     bump(db, user)
     return AvailabilityView(**data.model_dump())

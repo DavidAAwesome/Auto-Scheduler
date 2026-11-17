@@ -69,7 +69,7 @@ class LlmWindow(BaseModel):
 class LlmItem(BaseModel):
     model_config = ConfigDict(extra='forbid')
     kind: Literal['task', 'fixed_event', 'flexible_event']
-    title: str | None
+    title: str
     sourceText: str
     minutes: int | None
     deadlineDate: str | None
@@ -109,19 +109,30 @@ Item kinds:
   the user explicitly allows splitting (then allowSplit=true). Give its allowed period with earliestStart/deadlineDate or windows.
 
 Rules:
+- title is always the item's short name as the user wrote it ("Lab report", "Advisor meeting", "Gym"), without dates,
+  times, lengths or priority words. Use "" only when the name cannot be read, and then list "title" in unreadableFields.
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
+  "Friday" is the coming Friday; "next Friday" is the Friday of the following Monday-Sunday week (never tomorrow).
+- A deadline with only a part of the day ("due tomorrow morning") gets the start of that part as deadlineTime
+  (morning 08:00, afternoon 12:00, evening 17:00, night 19:00) and "deadlineTime" in ambiguousFields.
+- A stated time to WORK on a task ("work on the essay tomorrow at 3pm") is a preferred start: put it in
+  earliestStart (YYYY-MM-DDTHH:MM:00). It is not the deadline and not a fixed event.
+- Only when the text literally says "after <something>" (e.g. "after class") and that something is not another item in
+  the message: leave earliestStart null and list "earliestStart" in ambiguousFields. Never list earliestStart otherwise.
+- Return exactly one item per task or event the user mentions. Never return empty or duplicate items.
 - deadlineTime is the stated time only: noon is 12:00. Leave it null when no time is given (never fill in 23:59).
 - Never confuse a deadline with a scheduled date. "Essay due Friday" has deadlineDate Friday and no date/startTime.
 - Do not assume an event is movable, and do not invent anything: leave unknown fields null.
 - If AM/PM is not stated and not clear from context, give your best reading in startTime/endTime AND list the field
   ("startTime", "endTime") in ambiguousFields.
-- A weekly timetable is recurring: set repeatWeekdays (Monday=0). Never turn it into one-time events. Only fill
+- A weekly timetable is recurring: set repeatWeekdays with Monday=0, Tuesday=1, Wednesday=2,
+  Thursday=3, Friday=4, Saturday=5, Sunday=6 (Sunday is 6, never 0). Never turn it into one-time events. Only fill
   repeatStartDate/repeatUntil when they are visible or stated; otherwise leave them null (the app will ask).
 - For images, extract only what is visible. Put the original wording of each row in sourceText. List fields you
   cannot read in unreadableFields. Do not fill priority unless it is stated.
 - dependsOnTitles: only when the user explicitly says one item must come after another.
 - Field names for ambiguousFields/unreadableFields: title, minutes, deadlineDate, deadlineTime, date, startTime, endTime,
-  repeatWeekdays, repeatStartDate, repeatUntil, location.
+  repeatWeekdays, repeatStartDate, repeatUntil, location, earliestStart.
 """
 
 FIELD_MAP = {'deadlineDate': 'deadline', 'deadlineTime': 'dueTime', 'startTime': 'start', 'endTime': 'end',
@@ -150,6 +161,8 @@ def _date(value: str | None) -> str | None:
 def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraft:
     unreadable = [FIELD_MAP.get(f, f) for f in item.unreadableFields]
     ambiguous = [FIELD_MAP.get(f, f) for f in item.ambiguousFields]
+    if not re.search(r'\bafter\b', item.sourceText or '', re.I):
+        ambiguous = [f for f in ambiguous if f != 'earliestStart']  # the "after …" question needs an "after"
 
     def safe(field: str, fn, value):
         try:
@@ -163,7 +176,9 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
     windows = []
     for w in item.windows:
         try:
-            windows.append(TimeWindow(weekdays=[d for d in w.weekdays if 0 <= d <= 6], start=_hhmm(w.start), end=_hhmm(w.end)))
+            # Snap to the 5-minute grid: the model writes "23:59" for the end of the day.
+            start_m, end_m = _hhmm(w.start) // 5 * 5, min(1440, -(-_hhmm(w.end) // 5) * 5)
+            windows.append(TimeWindow(weekdays=[d for d in w.weekdays if 0 <= d <= 6], start=start_m, end=end_m))
         except (ValueError, ValidationError):
             unreadable.append('windows')
     repeat = None
@@ -175,6 +190,13 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
     if item.minutes and minutes is None:
         unreadable.append('minutes')
     start, end = safe('start', _hhmm, item.startTime), safe('end', _hhmm, item.endTime)
+    # An AM/PM question needs a time to ask about; the model sometimes flags times the text never gave.
+    given = {'start': start, 'end': end, 'dueTime': due_time}
+    ambiguous = [f for f in ambiguous if f not in given or given[f] is not None]
+    # "noon" and "midnight" are never AM/PM questions.
+    said = (item.sourceText or '').lower()
+    clear_times = ({720} if 'noon' in said else set()) | ({0, 1439, 1440} if 'midnight' in said else set())
+    ambiguous = [f for f in ambiguous if f not in given or given[f] not in clear_times]
     if item.kind == 'fixed_event' and start is not None and end is not None and minutes is None:
         minutes = end - start if end > start else None
     title = (item.title or '').strip()[:80] or None
@@ -191,9 +213,83 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
         assumed=['priority'] if item.priority is None and item.kind != 'fixed_event' else [])
 
 
-def drafts_from_extraction(extraction: Extraction) -> list[PlanDraft]:
-    items = extraction.items[:MAX_ITEMS]
+def _is_empty(item: LlmItem) -> bool:
+    """A phantom item the model sometimes adds: no name, length, date or time to act on."""
+    return not (item.title or '').strip() and not item.minutes and not item.date and not item.startTime \
+        and not item.repeatWeekdays
+
+
+def _hm(value: str | None) -> int | None:
+    try:
+        return _hhmm(value)
+    except ValueError:
+        return None
+
+
+def _fill_from_text(item: LlmItem, today: date) -> tuple[LlmItem, str | None]:
+    """Cross-checks one model item against the built-in parser reading the same text.
+
+    gpt-4o-mini often leaves out a name or a plain day it was given, counts weekdays from Sunday, asks AM/PM
+    about "11-11:30am", or allows splitting nobody asked for. Where the parser reads a field clearly, its reading
+    fills the gap or clears the stray flag; anything the model marked unreadable is still asked about.
+    Returns the item and the parser's "after <x>" text, if any."""
+    if not (item.sourceText or '').strip():
+        return item, None
+    flagged = set(item.ambiguousFields) | set(item.unreadableFields)
+    parsed, after = parse_item(item.sourceText, 0, today)
+    update: dict = {}
+    if not (item.title or '').strip() and 'title' not in flagged and parsed.title:
+        update['title'] = parsed.title
+    date_field = 'date' if item.kind == 'fixed_event' else 'deadlineDate'
+    parsed_date = parsed.date if item.kind == 'fixed_event' else parsed.deadline
+    parser_field = 'date' if item.kind == 'fixed_event' else 'deadline'
+    if getattr(item, date_field) is None and date_field not in flagged and not item.repeatWeekdays and parsed_date \
+            and parsed.kind == item.kind and parser_field not in parsed.ambiguous and not parsed.repeat:
+        update[date_field] = parsed_date
+    if item.repeatWeekdays and parsed.repeat and parsed.repeat.weekdays \
+            and sorted(parsed.repeat.weekdays) != sorted(item.repeatWeekdays):
+        # Day names are unambiguous; the model sometimes counts from Sunday ("Sat and Sun" as [0, 6]).
+        update['repeatWeekdays'] = parsed.repeat.weekdays
+    # "11-11:30am": the parser applies the am to both ends; when it agrees with the model, there is nothing to ask.
+    clear = {'startTime': ('start', item.startTime), 'endTime': ('end', item.endTime)}
+    settled = {f for f, (pf, value) in clear.items()
+               if value is not None and pf not in parsed.ambiguous and getattr(parsed, pf) == _hm(value)}
+    if settled & set(item.ambiguousFields):
+        update['ambiguousFields'] = [f for f in item.ambiguousFields if f not in settled]
+    if parsed.allowSplit is not None and item.allowSplit is not parsed.allowSplit:
+        update['allowSplit'] = parsed.allowSplit  # "in one sitting" / "can be split" were said explicitly
+    elif item.kind == 'flexible_event' and item.allowSplit and parsed.allowSplit is not True:
+        update['allowSplit'] = None  # one contiguous block unless the user said it can be split
+    return (item.model_copy(update=update) if update else item), after
+
+
+def drafts_from_extraction(extraction: Extraction, today: date | None = None) -> list[PlanDraft]:
+    today = today or date.today()
+    items, seen, afters = [], set(), {}
+    for raw in extraction.items:
+        item, after = _fill_from_text(raw, today)
+        key = ((item.title or '').strip().lower(), item.kind, item.minutes, item.deadlineDate, item.date, item.startTime)
+        if _is_empty(item) or key in seen:
+            continue  # phantom or repeated item: the user named it once
+        seen.add(key)
+        items.append(item)
+        afters[id(item)] = after
+    # The model sometimes splits one line into fragments ("30 min", "low priority") that repeat the title:
+    # keep the item whose text contains the others.
+    def fragment(item: LlmItem) -> bool:
+        name, text = (item.title or '').strip().lower(), (item.sourceText or '').strip().lower()
+        return any(other is not item and (other.title or '').strip().lower() == name
+                   and text in (other.sourceText or '').lower() and len(text) < len((other.sourceText or '').strip())
+                   for other in items)
+    items = [item for item in items if not fragment(item)][:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
+    for i, item in enumerate(items):
+        # "Lab slides … after Lab report": link it when the model didn't, as the built-in parser does.
+        after = afters.get(id(item))
+        key = next((t for t in titles if t and after and (t == after or after in t or t in after)), None)
+        if key and titles[key] != f'd{i + 1}' and not item.dependsOnTitles:
+            items[i] = item.model_copy(update={
+                'dependsOnTitles': [key], 'ambiguousFields': [f for f in item.ambiguousFields if f != 'earliestStart']})
     return [_convert_item(item, i, titles) for i, item in enumerate(items)]
 
 
@@ -241,7 +337,7 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
         raise
     except Exception as exc:  # anything unexpected from the SDK is a provider failure, not a server crash
         raise HTTPException(502, 'The AI provider request failed. Your input was kept; try again.') from exc
-    return drafts_from_extraction(extraction), extraction.notes[:5]
+    return drafts_from_extraction(extraction, local.date()), extraction.notes[:5]
 
 
 # ---------------------------------------------------------------- deterministic local parser (typed text)
@@ -257,6 +353,9 @@ MONTH = r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?'
 DATE = (rf'(?:today|tonight|tomorrow|day after tomorrow|(?:next |this )?{WD}\b|\d{{4}}-\d{{2}}-\d{{2}}|'
         rf'{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+20\d\d\b)?|\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?:,?\s+20\d\d\b)?|\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?)')
 TIME = r'(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\d{1,2}:\d{2}|noon|midnight)'
+# After "at"/"@" a bare hour is a clock time too ("due Friday at 5"), but never a length ("at 5 hours").
+TIME_AT = rf'(?:{TIME}|\d{{1,2}}(?![\d:])(?!\s*(?:h|hr|hrs|hours?|m|min|mins|minutes?)\b))'
+PART_OF_DAY_START = {'m': 8 * 60, 'a': 12 * 60, 'e': 17 * 60, 'n': 19 * 60}  # earliest reading, so work is done in time
 RANGE = re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|to|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b', re.I)
 CLASS_WORDS = r'class|lecture|lab|seminar|tutorial|recitation|studio|section'
 EVENT_WORDS = (rf'{CLASS_WORDS}|meeting|standup|stand-up|sync|appointment|dentist|doctor|interview|call|exam|'
@@ -291,7 +390,8 @@ def resolve_date(expr: str, today: date) -> tuple[date | None, bool]:
         target = WEEKDAYS.get(match[2]) if match[2] in WEEKDAYS else WEEKDAYS.get(match[2][:3])
         ahead = (target - today.weekday()) % 7
         if match[1] == 'next ':
-            return today + timedelta(days=ahead or 7), True
+            # The named day in the following Monday-Sunday week: on a Thursday, "next Friday" is 8 days away.
+            return today + timedelta(days=7 - today.weekday() + target), True
         return today + timedelta(days=ahead), False
     try:
         if re.fullmatch(r'\d{4}-\d{2}-\d{2}', e):
@@ -331,7 +431,8 @@ class _TimeFirst:
         return cls(match) if match else None
 
     def __getitem__(self, index: int):
-        return self.match[{1: 2, 2: 1}.get(index, index)]
+        index = {1: 2, 2: 1}.get(index, index)
+        return self.match[index] if index <= (self.match.re.groups or 0) else None
 
     def span(self):
         return self.match.span()
@@ -399,6 +500,7 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
     lower = body.lower()
     cut: list[tuple[int, int]] = []
     ambiguous: list[str] = []
+    assumed: list[str] = []  # defaults filled in; review states each one
     draft: dict = {'id': f'd{index + 1}', 'sourceText': source}
 
     def take(match):
@@ -431,7 +533,7 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         if start_amb or end_amb:
             ambiguous += ['start', 'end']
 
-    due = re.search(rf'\b(?:due|by|before|deadline)\s*(?:on\s+|is\s+)?({DATE})(?:\s*(?:at|@|,)?\s*({TIME}))?', lower) or \
+    due = re.search(rf'\b(?:due|by|before|deadline)\s*(?:on\s+|is\s+)?({DATE})(?:\s*,?\s*(?:at|@)\s*({TIME_AT})|\s*,?\s*({TIME}))?', lower) or \
         _TimeFirst.search(rf'\b(?:due|by|before)\s*(?:at\s+)?({TIME})\s*,?\s*(?:on\s+)?({DATE})', lower)  # "by noon tomorrow"
     on = re.search(rf'\b(?:on\s+)?({DATE})(?:\s*(?:at|@)\s*({TIME}))?', lower)
     at_time = re.search(rf'\b(?:at|@)\s*({TIME})', lower)
@@ -487,9 +589,12 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
             draft['deadline'] = value.isoformat() if value else None
             if amb:
                 ambiguous.append('deadline')
-            if target is due and due[2]:
-                minute, amb = parse_time(due[2])
+            due_text = (due[2] or due[3]) if target is due else None
+            if due_text:
+                minute, amb = parse_time(due_text)
                 if minute is not None:
+                    if amb and minute < 8 * 60:
+                        minute += 12 * 60  # "due at 5" is most likely 5 PM; it is confirmed below
                     draft['dueTime'] = min(minute, 1439)
                 if amb:
                     ambiguous.append('dueTime')
@@ -498,6 +603,9 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         part = re.search(r'\b(?:weekdays?\s+|weekends?\s+)?(mornings?|afternoons?|evenings?|nights?)\b', lower)
         if part and due and 0 <= part.start() - due.end() <= 3:
             take(part)  # "due tomorrow evening" describes the deadline, not when to work
+            if 'dueTime' not in draft:
+                draft['dueTime'] = PART_OF_DAY_START[part[1][0]]
+                assumed.append('dueTime')
             part = None
         if part:
             span = {'m': (8 * 60, 12 * 60), 'a': (12 * 60, 17 * 60), 'e': (17 * 60, 21 * 60), 'n': (19 * 60, 23 * 60)}[part[1][0]]
@@ -509,6 +617,21 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         if after and not re.fullmatch(DATE, after[1].strip()):
             draft['_after'] = after[1].strip()
             take(after)
+        # "work on the essay tomorrow at 3pm for 2 hours": a preferred start, not a deadline or an appointment.
+        if draft['kind'] == 'task' and duration and 'earliestStart' not in draft:
+            for m in re.finditer(rf'\b(?:on\s+)?({DATE})\s*(?:at|@)\s*({TIME_AT})|\b(?:at|@)\s*({TIME_AT})\s*(?:on\s+)?({DATE})', lower):
+                if due and m.start() < due.end() and m.end() > due.start():
+                    continue
+                value, _ = resolve_date(m[1] or m[4], today)
+                minute, amb = parse_time(m[2] or m[3])
+                if value and minute is not None and minute < 1440:
+                    if amb and minute < 8 * 60:
+                        minute += 12 * 60
+                    draft['earliestStart'] = f'{value.isoformat()}T{minute // 60:02d}:{minute % 60:02d}:00'
+                    if amb:
+                        assumed.append('earliestStart')
+                    take(m)
+                break
         no_split = re.search(r"\b(in one (?:go|sitting|block|session)|no split(?:ting)?|don'?t split|without (?:a )?breaks?|unsplit)\b", lower)
         can_split = re.search(r'\b((?:it )?can be split|split(?:ting)? (?:is )?ok|split it|in (?:chunks|pieces))\b', lower)
         if no_split:
@@ -529,7 +652,9 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         draft['priority'] = 'High' if word in {'high', 'urgent', 'important', 'asap', 'top'} else \
             'Low' if word == 'low' else 'Medium'
     elif draft['kind'] != 'fixed_event':
-        draft['assumed'] = ['priority']
+        assumed.append('priority')
+    if assumed:
+        draft['assumed'] = assumed
     location = re.search(r'\b(?:in|at)\s+(room\s+\w+|[A-Z][\w-]*\s*\d+\w*)', body)
     if location and draft['kind'] == 'fixed_event':
         draft['location'] = location[1]
@@ -564,6 +689,9 @@ def parse_text(text: str, now: datetime, zone: ZoneInfo, saved_titles: dict[str,
                 draft.dependsOn = [titles[key]]
             elif after in saved:
                 draft.dependsOn = [saved[after]]
+            elif not draft.earliestStart:
+                # "after class" names something that is not on the list: ask when it ends instead of dropping it.
+                draft.ambiguous = sorted(set(draft.ambiguous) | {'earliestStart'})
         out.append(draft)
     return out
 
@@ -631,6 +759,11 @@ def apply_answer(draft: PlanDraft, field: str, answer: str, now: datetime, zone:
             minute, amb = parse_time(moment[1])
             if minute is not None and not amb:
                 data['dueTime'] = min(minute, 1439)
+    elif field == 'dueTime' and re.fullmatch(r'(am|pm|a\.m\.|p\.m\.|morning|afternoon|evening)', lower.replace(' ', '')) \
+            and data['dueTime'] is not None:
+        pm = lower.replace('.', '').strip()[0] == 'p' or lower.strip() in {'afternoon', 'evening'}
+        data['dueTime'] = ((data['dueTime'] // 60) % 12 + (12 if pm else 0)) * 60 + data['dueTime'] % 60
+        clear('dueTime')
     elif field == 'dueTime':
         value, amb = parse_time(lower)
         if value is None or amb:
@@ -669,7 +802,20 @@ def apply_answer(draft: PlanDraft, field: str, answer: str, now: datetime, zone:
         data['location'] = text[:120] or None
         clear('location')
     elif field == 'earliestStart':
-        data['earliestStart'] = f'{a_date()}T00:00:00'
+        found = re.search(TIME_AT if re.search(r'\d|noon|midnight', lower) else r'(?!x)x', re.sub(DATE, ' ', lower))
+        minute, amb = parse_time(found[0]) if found else (0, False)
+        if minute is None or minute >= 1440:
+            raise ValueError('Give a day and time, such as "Friday 2pm".')
+        if amb and minute < 8 * 60:
+            minute += 12 * 60
+        if re.search(DATE, lower):
+            day = a_date()
+        elif found:  # a time alone: the next time it comes round
+            local = now.astimezone(zone)
+            day = (today if minute > local.hour * 60 + local.minute else today + timedelta(days=1)).isoformat()
+        else:
+            raise ValueError('Give a day and time, such as "Friday 2pm".')
+        data['earliestStart'] = f'{day}T{minute // 60:02d}:{minute % 60:02d}:00'
         clear('earliestStart')
     else:
         raise ValueError('That detail cannot be answered here; edit the draft directly.')

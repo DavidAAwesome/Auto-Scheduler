@@ -17,6 +17,8 @@ def environment(request, monkeypatch):
     monkeypatch.setenv('FIREBASE_PROJECT_ID', PROJECT_ID)
     monkeypatch.setenv('MONGODB_URI', 'mongodb://127.0.0.1:27019')
     monkeypatch.setenv('ALLOWED_ORIGINS', 'http://localhost:5173')
+    # backend/.env may hold a real key; tests never call OpenAI unless a test sets a key and stubs the client.
+    monkeypatch.setenv('OPENAI_API_KEY', '')
     # Use the test key instead of fetching Google's public keys.
     monkeypatch.setattr(auth, 'signing_key_for', lambda token: PUBLIC_KEY)
     get_settings.cache_clear()

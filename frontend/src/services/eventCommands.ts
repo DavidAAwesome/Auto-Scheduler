@@ -68,7 +68,7 @@ function guessMeridiem(hour: number): "am" | "pm" {
 /** Start and end in minutes, from "from 3 to 4pm", "3-4:30pm", "at 2pm for 90 minutes" or "at 10am" (1 hour). */
 export function parseTimes(raw: string): { start: number; end: number; assumed: string[] } | null {
   const assumed: string[] = [];
-  const text = stripDates(raw);
+  const text = withClockWords(stripDates(raw));
   const range = text.match(new RegExp(`(?:\\bfrom\\s+|\\bat\\s+|\\b)${TIME}\\s*(?:-|–|to|until|till)\\s*${TIME}`, "i"));
   if (range) {
     const [, h1, m1, a1, h2, m2, a2] = range;
@@ -116,13 +116,34 @@ export function parseDate(text: string, today: string): string | null {
   if (named) return pick(MONTHS.indexOf(named[1].slice(0, 3)) + 1, Number(named[2]), named[3] ? Number(named[3]) : undefined);
   const slash = lower.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?\b/);
   if (slash) return pick(Number(slash[1]), Number(slash[2]), slash[3] ? Number(slash[3]) : undefined);
-  const day = WEEKDAY_NAMES.findIndex(name => new RegExp(`\\b${name}\\b|\\b${name.slice(0, 3)}\\b`).test(lower));
+  const day = WEEKDAY_NAMES.findIndex(name => new RegExp(`\\b${name}s?\\b|\\b${name.slice(0, 3)}\\b`).test(lower));
   if (day >= 0) {
-    const ahead = (day - weekdayIndex(today) + 7) % 7;
-    const next = /\bnext\s+\w+day\b/.test(lower) && ahead === 0 ? 7 : ahead;
-    return addDays(today, next);
+    const current = weekdayIndex(today);
+    // "next Friday" is the Friday of next week (Monday–Sunday), never tomorrow; "Friday" is the coming one.
+    if (nextWeekday(lower)) return addDays(today, 7 - current + day);
+    return addDays(today, (day - current + 7) % 7);
   }
   return null;
+}
+
+/** "noon" and "midnight" as clock times the patterns below understand. */
+export function withClockWords(text: string) {
+  return text.replace(/\bnoon\b/gi, "12pm").replace(/\bmidnight\b/gi, "12am");
+}
+
+/** True when the text says "next <weekday>", which people mean as that day in the following week. */
+export function nextWeekday(text: string) {
+  return /\bnext\s+(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day|nesday|sday|rsday|urday)?\b/i.test(text);
+}
+
+/** Weekdays (Monday = 0) named after "every"/"each" or as plurals ("Mondays and Wednesdays"), else []. */
+export function repeatWeekdays(text: string): number[] {
+  const lower = text.toLowerCase();
+  const phrase = lower.match(/\b(?:every|each)\s+((?:(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*(?:\s*(?:,|and|&|\/)\s*)?)+)/)?.[1]
+    ?? lower.match(/\b((?:(?:mon|tues|wednes|thurs|fri|satur|sun)days)(?:\s*(?:,|and|&|\/)\s*(?:mon|tues|wednes|thurs|fri|satur|sun)days)*)\b/)?.[1];
+  if (!phrase) return [];
+  const days = (phrase.match(/(mon|tue|wed|thu|fri|sat|sun)/g) ?? []).map(d => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].indexOf(d));
+  return [...new Set(days)].sort((a, b) => a - b);
 }
 
 /** Removes calendar dates so "2026-10-30" or "10/30" is never read as a time range. */
@@ -134,14 +155,16 @@ function stripDates(text: string) {
 
 /** Strips date/time phrases so what remains can be used as (or to find) a title. */
 function stripWhen(text: string) {
-  return text
+  return withClockWords(text)
     .replace(new RegExp(`\\b(?:from|at|@)?\\s*${TIME}\\s*(?:-|–|to|until|till)\\s*${TIME}`, "gi"), " ")
     .replace(new RegExp(`\\b(?:at|@)\\s*${TIME}`, "gi"), " ")
     .replace(/\bfor\s+\d+(?:\.\d+)?\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/gi, " ")
-    .replace(/\b(on\s+)?(next\s+)?(today|tonight|tomorrow|this\s+\w+|(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?)\b/gi, " ")
+    .replace(/\b(on\s+|every\s+|each\s+)?(next\s+)?(today|tonight|tomorrow|this\s+\w+|(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?s?)\b/gi, " ")
+    .replace(/\b(every week|weekly)\b/gi, " ")
     .replace(/\b(on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(st|nd|rd|th)?(,?\s*\d{4})?\b/gi, " ")
     .replace(/\b(on\s+)?\d{4}-\d{2}-\d{2}\b|\b(on\s+)?\d{1,2}\/\d{1,2}(\/\d{4})?\b/gi, " ")
     .replace(/\s+/g, " ")
+    .replace(/[\s,]+(and|&)[\s,]*$/i, "")
     .replace(/^[\s,.-]+|[\s,.-]+$/g, "");
 }
 
@@ -249,12 +272,19 @@ export function parseEventRequest(text: string, state: EventState, now = new Dat
     if (!title) return { action: null, question: `What should the event be called? ${ADD_EXAMPLE}` };
     if (!date) return { action: null, question: `Which day is “${title}” on? ${ADD_EXAMPLE}` };
     if (!times) return { action: null, question: `What time is “${title}”? ${ADD_EXAMPLE}` };
-    const repeat = /\b(every|each)\s+week\b|\bweekly\b/i.test(text)
-      ? { weekdays: [weekdayIndex(date)], until: addDays(date, 7 * 15) }
-      : null;
+    const named = repeatWeekdays(text);
+    const repeat = named.length
+      ? { weekdays: named, until: addDays(date, 7 * 15) }
+      : /\b(every|each)\s+week\b|\bweekly\b/i.test(text) ? { weekdays: [weekdayIndex(date)], until: addDays(date, 7 * 15) } : null;
+    const assumed = [...times.assumed];
+    if (nextWeekday(text)) assumed.push(`“next ${capitalize(WEEKDAY_NAMES[weekdayIndex(date)])}” means ${longDate(date)}`);
+    if (repeat) assumed.push(`it repeats for 15 weeks`);
     const input: CalendarEventInput = { title, kind: kindFrom(text), date, start: times.start, end: times.end, location: null, repeat };
-    const proposal = proposeAddEvent(input, state, times.assumed);
-    if (proposal.action && repeat) proposal.summary = proposal.summary.replace("\n• ", `\n• Repeats every ${WEEKDAY_NAMES[weekdayIndex(date)][0].toUpperCase()}${WEEKDAY_NAMES[weekdayIndex(date)].slice(1)} until ${longDate(repeat.until)}\n• `);
+    const proposal = proposeAddEvent(input, state, assumed);
+    if (proposal.action && repeat) {
+      const days = repeat.weekdays.map(d => capitalize(WEEKDAY_NAMES[d])).join(" and ");
+      proposal.summary = proposal.summary.replace(/(\n• [^\n]+\n• [^\n]+)/, `$1\n• Repeats every ${days} until ${longDate(repeat.until)}`);
+    }
     return proposal;
   }
   return null;

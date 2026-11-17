@@ -243,7 +243,7 @@ test('model intents are validated before anything runs', () => {
   assert.equal(requestFromIntent(answer('move_task', { taskId: 'not-a-task', notBefore: '2026-10-27T04:00:00Z' }), state)?.command, 'clarify');
   assert.equal(requestFromIntent(answer('move_task', { taskId: revision.id }), state)?.command, 'clarify');
   assert.deepEqual(requestFromIntent(answer('move_task', { taskId: revision.id, notBefore: '2026-10-27T04:00:00Z' }), state),
-    { command: 'move_task', taskId: revision.id, notBefore: '2026-10-27T04:00:00Z', label: 'Test revision' });
+    { command: 'move_task', taskId: revision.id, notBefore: '2026-10-27T04:00:00Z', label: 'Test revision to Tue, Oct 27, 2026 at 12 AM' });
   assert.deepEqual(requestFromIntent(answer('clarify'), state), { command: 'clarify', question: 'Which one?' });
 });
 

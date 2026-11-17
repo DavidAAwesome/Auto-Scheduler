@@ -3,8 +3,8 @@ import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
 import { draftsReply } from "./planEntry.ts";
-import { eventFromIntent, parseEventRequest, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
-import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
+import { eventFromIntent, nextWeekday, parseDate, parseEventRequest, parseTimes, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
+import { clock12, dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
 import { busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
@@ -56,18 +56,32 @@ export interface CommandWorkspace {
 export const PLAN_DAYS = 7;
 
 const BREAK = /\b(take|need|want|give me|start|have)\b.*\bbreak\b|\bbreak\b.*\bnow\b|\d+\s*-?\s*(min|minute)s?\s+break/i;
-const MOVE = /\b(move|push|postpone|shift|reschedule)\b/i;
+/** A break described for some other time ("after class", "at 3pm") is not a break starting now. */
+const BREAK_LATER = /\b(at \d|at noon|\d\s*(am|pm)|tomorrow|later|tonight|this (afternoon|evening)|after|before|when|once|until|in \d+ (min|minute|hour)s?)\b/i;
+/** Habits ("I usually take a break around noon") are preferences or chat, not a request for a break now. */
+const HABIT = /\b(usually|always|normally|often|sometimes|every day|daily|tend to|like to)\b/i;
+const MOVE = /\b(move|push|postpone|shift|reschedule|delay)\b/i;
 const REPLAN = /\breplan\b|\bre-plan\b|\brepair\b|\bfix (my |the )?(plan|schedule)\b|\breschedule (my|the|this)? ?(plan|schedule|week|work)\b/i;
-const EXPLAIN = /\bwhy\b|didn.?t fit|doesn.?t fit|unscheduled|not scheduled|couldn.?t (fit|schedule)|unallocated|what.*\bleft\b/i;
+const EXPLAIN = /\bwhy\b.*\b(fit|scheduled|planned|placed|unscheduled|left out|missing)\b|didn.?t fit|doesn.?t fit|unscheduled|not scheduled|couldn.?t (fit|schedule)|unallocated|what.*\bleft\b.*\b(schedule|plan|fit)\b/i;
 const TODAY = /\btoday.?s\s+(tasks?|plan|schedule|agenda)\b|\b(what|anything).*\b(today|my day)\b|\bplan for today\b|^\s*today\s*\??\s*$/i;
-const SHOW_PLAN = /\b(show|see|display|view)\b.*\b(plan|schedule)\b|\bmy (plan|schedule)\b/i;
-const BUSY = /\bbusy\b|my calendar|what'?s on|free time|events? (today|tomorrow|this week|next week)/i;
-const GENERATE = /\bgenerate\b|\bplan (my|the|this|next)\b|\bschedule (my|the|this|next)\b|\b(make|build|create)\b.*\b(plan|schedule)\b/i;
+const SHOW_PLAN = /\b(show|see|display|view)\b.*\b(plan|schedule)\b|^\s*(what'?s|what is)?\s*my (plan|schedule)\s*\??\s*$/i;
+const BUSY = /^\s*busy( time)?\s*\??\s*$|\b(when|am) i (busy|free)\b|\bbusy (time|today|tomorrow|this week|next week)\b|\bmy calendar\b|what'?s on (my|the) (calendar|schedule)|what'?s on (today|tomorrow)|\bfree time\b|events? (today|tomorrow|this week|next week)/i;
+const GENERATE = /\bgenerate\b|\b(plan|schedule) (my|the|this|next) (week|days?|schedule|plan|tasks|work)\b|^\s*(plan|schedule) my\b|\b(make|build|create)\b.*\b(plan|schedule)\b/i;
+/** Extra conditions on a whole-week plan that chat cannot apply ("but keep Friday free"). */
+const PLAN_CONDITION = /\b(but|except|without|only|keep\b.*\bfree|leave\b.*\bfree|not on|no work on|avoid)\b/i;
+/** Asking for a task at a chosen time: "schedule my essay for tomorrow at 3pm", "do Asm Friday afternoon". */
+const SCHEDULE_TASK = /\b(schedule|plan|do|work on|start|put)\b/i;
+const EVENT_WORDS = /\b(meeting|class|lecture|appointment|appt|event|lunch|dinner|call|party)\b/i;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
 function durationMinutes(text: string): number | null {
+  const compact = text.match(/(\d+)\s*h\s*(\d{1,2})\b/i); // "1h30"
+  if (compact) return Number(compact[1]) * 60 + Number(compact[2]);
+  if (/\bhalf (an )?hour\b/i.test(text)) return 30;
+  if (/\b(an|one) hour and a half\b|\bhour and a half\b/i.test(text)) return 90;
   const hours = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(h|hr|hrs|hour|hours)\b/i);
   if (hours) return Math.round(Number(hours[1]) * 60);
+  if (/\b(an|one) hour\b/i.test(text)) return 60;
   const minutes = text.match(/(\d+)\s*-?\s*(m|min|mins|minute|minutes)\b/i);
   return minutes ? Number(minutes[1]) : null;
 }
@@ -78,24 +92,71 @@ function namedTask(text: string, tasks: Task[]) {
   return tasks.filter(t => !t.done && lower.includes(t.title.toLowerCase())).sort((a, b) => b.title.length - a.title.length)[0] ?? null;
 }
 
-/** Local start time a move request refers to, as a UTC instant, or null when no target is given. */
-function moveTarget(text: string, zone: string, now: Date): { at: string; label: string } | null {
+/** The task's next saved work session that has not started yet, if any. */
+function nextSession(task: Task, sessions: WorkSession[] | undefined, now: Date) {
+  return (sessions ?? []).filter(s => s.taskId === task.id && s.type === "work" && s.status === "saved" && new Date(s.startAt) > now)
+    .sort((a, b) => a.startAt.localeCompare(b.startAt))[0] ?? null;
+}
+
+/** How a local date reads in a reply: "today", "tomorrow" or "Fri, Nov 20, 2026". */
+function dayWord(date: string, today: string) {
+  return date === today ? "today" : date === addDays(today, 1) ? "tomorrow" : longDate(date);
+}
+
+/**
+ * The earliest start a move request asks for, as a UTC instant, or null when no target is given.
+ * Reads a day and a clock time together ("3pm tomorrow", "next Friday at 10"), relative shifts
+ * ("back a day", "2 hours later"), and parts of the day. `assumed` says what was filled in.
+ */
+export function moveTarget(text: string, zone: string, now: Date, task?: Task, sessions?: WorkSession[]): { at: string; label: string; assumed?: string } | null {
   const today = dateInZone(zone, now);
   const lower = text.toLowerCase();
-  const at = (date: string, minute: number, label: string) => ({ at: zonedInstant(date, minute, zone), label });
-  if (/\btomorrow\b/.test(lower)) return at(addDays(today, 1), 0, "tomorrow");
+  const at = (date: string, minute: number, label: string, assumed?: string) => ({ at: zonedInstant(date, minute, zone), label, ...(assumed ? { assumed } : {}) });
+
+  // "push it back a day", "2 hours later": relative to the task's next saved session (or now).
+  const shift = lower.match(/\b(?:back|forward|later|by)\b.*?\b(a|an|one|two|three|\d+)\s+(day|days|hour|hours)\b|\b(a|an|one|two|three|\d+)\s+(day|days|hour|hours)\s+(later|back)\b/);
+  if (shift) {
+    const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3 };
+    const raw = shift[1] ?? shift[3];
+    const amount = words[raw] ?? Number(raw);
+    const unit = (shift[2] ?? shift[4]).startsWith("day") ? 24 * 60 : 60;
+    const session = task ? nextSession(task, sessions, now) : null;
+    const base = session ? new Date(session.startAt) : now;
+    const moved = new Date(base.getTime() + amount * unit * 60_000);
+    const label = `${dayWord(dateInZone(zone, moved), today)} at ${clock12(minutesInZone(zone, moved))}`;
+    return { at: moved.toISOString(), label, ...(session ? {} : { assumed: "it has no upcoming session, so I counted from now" }) };
+  }
+
+  // A clock time, with or without a day.
+  const clock = /\d\s*(am|pm|a\.m\.|p\.m\.)|\b(at|@)\s*\d|\bnoon\b|\bmidnight\b/i.test(text) ? parseTimes(text) : null;
+  const named = parseDate(text, today);
+  if (clock) {
+    const minute = clock.start % 1440;
+    let date = named;
+    let assumed: string | undefined;
+    if (!date) {
+      date = minute > minutesInZone(zone, now) ? today : addDays(today, 1);
+      if (date !== today) assumed = `${clock12(minute)} has passed today`;
+    }
+    if (clock.assumed.includes("am/pm")) assumed = [assumed, `I read it as ${clock12(minute)}`].filter(Boolean).join("; ");
+    if (nextWeekday(text)) assumed = [assumed, `“next” means the week after this one`].filter(Boolean).join("; ");
+    return at(date, minute, `${dayWord(date, today)} at ${clock12(minute)}`, assumed);
+  }
+
+  if (/\btomorrow\b/.test(lower)) {
+    const evening = /\b(evening|night)\b/.test(lower) ? 17 * 60 : /\bafternoon\b/.test(lower) ? 12 * 60 : /\bmorning\b/.test(lower) ? 8 * 60 : 0;
+    return at(addDays(today, 1), evening, evening ? `tomorrow ${evening === 17 * 60 ? "evening" : evening === 12 * 60 ? "afternoon" : "morning"}` : "tomorrow");
+  }
   if (/\bnext week\b/.test(lower)) {
     const weekday = (new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7;
     return at(addDays(today, 7 - weekday), 0, "next week");
   }
-  if (/\b(this )?evening|tonight\b/.test(lower)) return at(today, 17 * 60, "this evening");
+  if (/\b(this )?evening\b|\btonight\b/.test(lower)) return at(today, 17 * 60, "this evening");
   if (/\b(this )?afternoon\b/.test(lower)) return at(today, 12 * 60, "this afternoon");
   if (/\blater( today)?\b/.test(lower)) return at(today, Math.min(1439, minutesInZone(zone, now) + 60), "later today");
-  const day = WEEKDAYS.findIndex(name => lower.includes(name));
-  if (day >= 0) {
-    const current = new Date(`${today}T12:00:00Z`).getUTCDay();
-    const ahead = ((day - current + 7) % 7) || 7;
-    return at(addDays(today, ahead), 0, WEEKDAYS[day][0].toUpperCase() + WEEKDAYS[day].slice(1));
+  if (named && named !== today) {
+    const label = nextWeekday(text) ? longDate(named) : WEEKDAYS.some(name => lower.includes(name)) ? WEEKDAYS[(new Date(`${named}T12:00:00Z`).getUTCDay())].replace(/^./, c => c.toUpperCase()) : longDate(named);
+    return at(named, 0, label, nextWeekday(text) ? `“next” means the week after this one` : undefined);
   }
   return null;
 }
@@ -118,7 +179,7 @@ function preferenceNumbers(text: string): PreferenceChange {
   const focus = text.match(/(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\s+(?:of\s+)?(?:focus|focused|work|study)?\s*(?:blocks?|sessions?|sprints?|chunks?|stretches?|focus)\b/i)
     ?? text.match(/\b(?:focus|work|study)\s*(?:blocks?|sessions?|length)?\b[^\d]{0,20}(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\b/i);
   if (focus && !/breaks?/i.test(focus[0])) change.focusMinutes = Number(focus[1]);
-  const daily = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b[^.]{0,25}\b(?:a|per|each)\s+day\b/i);
+  const daily = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b[^.]{0,25}(?:\b(?:a|per|each)\s+|\/\s*)day\b/i);
   if (daily) change.maxDailyWorkMinutes = Math.round(Number(daily[1]) * 60);
   if (/\b(short(er)?|brief(er)?|concise)\b.{0,20}\b(answers?|repl(y|ies)|responses?|messages?)\b|\bkeep (it|them|answers|replies) (short|brief)\b/i.test(text)) change.replyStyle = "concise";
   else if (/\b(more detail(ed)?|detailed|longer)\b.{0,20}\b(answers?|repl(y|ies)|responses?|explanations?)\b|\bexplain more\b/i.test(text)) change.replyStyle = "detailed";
@@ -200,7 +261,7 @@ export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
   return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
 }
 
-export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events">>, now = new Date()): ParsedRequest | null {
+export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "sessions">>, now = new Date()): ParsedRequest | null {
   const zone = accountTimeZone(state.availability);
   const open = state.tasks.filter(t => !t.done);
   // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
@@ -213,25 +274,39 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     const event = parseEventRequest(text, { events: state.events, availability: state.availability });
     if (event) return fromEventProposal(event);
   }
-  if (BREAK.test(text)) {
+  if (BREAK.test(text) && !(HABIT.test(text) && !/\bnow\b/i.test(text))) {
     const minutes = durationMinutes(text);
+    const later = BREAK_LATER.test(text) && !/\bnow\b/i.test(text);
+    if (later) {
+      return { command: "clarify", question: `I can only start a protected break right now. For a break ${/\bafter\b/i.test(text) ? "after that" : "later"}, add an event at that time and repair your schedule. To start one now, say “${minutes ?? 15}-minute break now”.` };
+    }
     if (minutes === null) return { command: "clarify", question: "How long a break do you need? For example: “I need a 15-minute break now.”" };
     if (minutes < 5 || minutes > 240) return { command: "clarify", question: "Breaks can be 5 minutes to 4 hours. How long should this one be?" };
-    if (/\b(at \d|tomorrow|later|tonight|this (afternoon|evening))\b/i.test(text) && !/\bnow\b/i.test(text)) {
-      return { command: "clarify", question: "I can start a protected break right now. For a break later, add an event at that time and replan. Start one now?" };
-    }
     return { command: "request_break", minutes };
   }
   if (REPLAN.test(text) && !namedTask(text, open)) return { command: "replan" };
   if (MOVE.test(text)) {
-    const task = namedTask(text, open) ?? (open.length === 1 ? open[0] : null);
+    const task = namedTask(text, open);
+    const target = moveTarget(text, zone, now, task ?? undefined, state.sessions);
     if (!task) {
+      // Events are fixed: chat can't move them, and a meeting is never mistaken for a task.
+      const event = (state.events ?? []).find(e => text.toLowerCase().includes(e.title.toLowerCase()));
+      if (event || EVENT_WORDS.test(text)) {
+        return { command: "clarify", question: `I can't move ${event ? `“${event.title}”` : "events"} from chat yet. Events stay where you put them: change it on the calendar, or delete it and add it again at the new time.` };
+      }
+      // "shift my focus", "move on": not a move unless it names a target or refers to a task.
+      if (!target && !/\b(it|this|that|task)\b/i.test(text)) return null;
       const names = open.slice(0, 5).map(t => `“${t.title}”`).join(", ");
       return { command: "clarify", question: open.length ? `Which task should I move? ${names}` : "You have no open tasks to move." };
     }
-    const target = moveTarget(text, zone, now);
-    if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow” or “this afternoon”.` };
-    return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}` };
+    if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow at 3pm” or “this afternoon”.` };
+    return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
+  }
+  // "Schedule my essay for tomorrow at 3pm": a preferred start for one task, not a new week plan.
+  if (SCHEDULE_TASK.test(text)) {
+    const task = namedTask(text, open);
+    const target = task ? moveTarget(text, zone, now, task, state.sessions) : null;
+    if (task && target) return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
   }
   // "Add a task called Essay, due Friday at noon, 90 minutes": read by the plan-entry parser, then confirmed.
   if (/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\b/i.test(text)) {
@@ -247,7 +322,12 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
   if (TODAY.test(text)) return { command: "show_today" };
   if (SHOW_PLAN.test(text)) return { command: "show_plan" };
   if (BUSY.test(text)) return { command: "busy_time" };
-  if (GENERATE.test(text)) return { command: "generate_schedule" };
+  if (GENERATE.test(text)) {
+    if (PLAN_CONDITION.test(text)) {
+      return { command: "clarify", question: "I can plan the week, but I can't apply that condition from chat yet. Block the time first (add an event, or turn the day off in Availability), then say “plan my week”. Or say “plan my week” to plan without it." };
+    }
+    return { command: "generate_schedule" };
+  }
   return null;
 }
 
@@ -260,7 +340,7 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>, userText = ""): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>, userText = "", now = new Date()): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
     case "update_preferences": {
@@ -282,16 +362,27 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       const task = state.tasks.find(t => t.id === params.taskId && !t.done);
       if (!task) return { command: "clarify", question: "Which task should I move?" };
       if (!params.notBefore || Number.isNaN(Date.parse(params.notBefore))) return { command: "clarify", question: `When should “${task.title}” start instead?` };
-      return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: task.title };
+      const zone = accountTimeZone(state.availability ?? null);
+      const when = new Date(params.notBefore);
+      const day = dateInZone(zone, when);
+      const today = dateInZone(zone, now);
+      return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: `${task.title} to ${dayWord(day, today)} at ${clock12(minutesInZone(zone, when))}` };
     }
     case "delete_task": {
       // Confirmation is a real pending action with buttons, never a sentence the model has to remember.
       const task = state.tasks.find(t => t.id === params.taskId && !t.done);
       return task ? { command: "delete_task", taskIds: [task.id] } : deleteRequest(params.taskTitle ?? "", state.tasks);
     }
-    case "add_task":
-      // The model only recognised the request; the user's words go through the plan-entry parser.
+    case "add_task": {
+      // The model may have gathered the details over several turns ("Essay, 2 hours" … "Friday"): use them.
+      const title = params.taskTitle?.trim();
+      if (title) {
+        const parts = [title, params.taskDuration ? `${params.taskDuration} minutes` : "", params.taskDeadline ? `due ${params.taskDeadline}` : ""];
+        return { command: "add_task", text: parts.filter(Boolean).join(", ") };
+      }
+      // Otherwise the user's own words go through the plan-entry parser.
       return userText ? { command: "add_task", text: userText.replace(/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\s*(?:called|named|:)?\s*/i, "") } : { command: "clarify", question: answer.reply };
+    }
 
     case "add_event":
     case "delete_event":
@@ -372,7 +463,7 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     case "replan":
       return preview(workspace, { kind: "repair", horizonDays: PLAN_DAYS }, "Repairing your saved plan; unaffected sessions stay where they are.\n");
     case "move_task":
-      return preview(workspace, { kind: "repair", horizonDays: PLAN_DAYS, moves: [{ taskId: req.taskId, notBefore: req.notBefore }] }, `Moving ${req.label}.\n`);
+      return preview(workspace, { kind: "repair", horizonDays: PLAN_DAYS, moves: [{ taskId: req.taskId, notBefore: req.notBefore }] }, `Moving ${req.label}. Its work starts no earlier than that; the deadline doesn't change.\n`);
     case "request_break": {
       try {
         const result = await workspace.requestPreview({ kind: "break", minutes: req.minutes });

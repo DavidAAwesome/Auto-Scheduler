@@ -40,7 +40,9 @@ export function draftLine(d: PlanDraft) {
     return `${name}: fixed event, ${d.date ?? "date ?"} ${times}`;
   }
   const due = d.deadline ? `due ${d.deadline}${d.dueTime != null ? ` ${clock12(d.dueTime)}` : ""}` : "no deadline yet";
-  return `${name}: ${d.kind === "flexible_event" ? "flexible event" : "task"}, ${d.minutes ?? "?"} min, ${due}, ${d.priority}`;
+  // A preferred start is when work may begin; it is shown apart from the deadline so the two are never confused.
+  const from = d.earliestStart && d.kind === "task" ? `, work starts no earlier than ${d.earliestStart.slice(0, 10)}${d.earliestStart.slice(11, 16) !== "00:00" ? ` ${clock12(Number(d.earliestStart.slice(11, 13)) * 60 + Number(d.earliestStart.slice(14, 16)))}` : ""}` : "";
+  return `${name}: ${d.kind === "flexible_event" ? "flexible event" : "task"}, ${d.minutes ?? "?"} min, ${due}${from}, ${d.priority}`;
 }
 
 /** Chat reply after reading drafts. It never says anything was saved: nothing is, until Apply. */
@@ -49,11 +51,17 @@ export function draftsReply(views: DraftView[], provider: string, notes: string[
   const lines = [`I read ${views.length} item${views.length === 1 ? "" : "s"}${provider === "openai" ? " (AI)" : provider === "local" ? " (built-in parser)" : ""}. Nothing is saved yet; they’re in the review panel above the calendar:`];
   for (const v of views) lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
   const open = views.flatMap(v => v.issues.filter(i => i.blocking).map(i => i.question));
+  // Assumptions that change the plan (a date read from "next Friday", a due time from "morning") are stated, briefly.
+  const assumed = views.flatMap(v => v.issues.filter(i => !i.blocking && i.field !== "priority").map(i => i.question)).slice(0, 2);
+  lines.push(...assumed.map(a => `Note: ${a}`));
   if (open.length) lines.push(`First question: ${open[0]} (Answer here or in the panel.)`);
   else lines.push("Use “Can this fit?” or “Preview on calendar”, then Apply to save.");
   lines.push(...notes);
   return lines.join("\n");
 }
+
+/** Short replies that acknowledge rather than answer ("thanks", "ok wait"), so they never overwrite a draft field. */
+export const ACKNOWLEDGEMENT = /^\s*(ok(ay)?|k|thanks?( you)?|thx|ty|cool|great|nice|got it|sure|wait|hold on|one sec(ond)?|hmm+|never ?mind)([\s,]+(wait|thanks|then|cool|sure|ok(ay)?))?[\s!.]*$/i;
 
 /** The first open question across the drafts, so a plain chat reply can answer it. */
 export function firstOpenQuestion(views: DraftView[]) {

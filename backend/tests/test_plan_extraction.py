@@ -1,6 +1,6 @@
 """Input interpretation: text and images become editable drafts. AI responses are mocked; no network."""
 import base64
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -203,3 +203,141 @@ def test_text_uses_the_model_when_configured_and_output_is_still_validated(envir
     first = body['drafts'][0]
     assert first['draft']['start'] is None and {'start', 'repeat.until'} <= set(first['draft']['unreadable'])
     assert any(i['code'] == 'unreadable' and i['field'] == 'start' for i in first['issues'])
+
+
+# ---------------------------------------------------------------- natural-language regressions
+# NOW is Monday 2026-10-26 8:00 AM in New York (schedule_fixtures).
+
+def one(text):
+    return parse_text(text, NOW, NY)[0]
+
+
+def test_next_weekday_is_the_following_week_and_the_reading_is_stated_not_blocking():
+    draft = one('Essay due next Friday 3 hours')
+    assert draft.deadline == '2026-11-06'  # the Friday of next week, not this Friday (Oct 30)
+    view = review_draft(draft, NOW, NY)
+    assert view.ready
+    assert any('as Fri, Nov 6' in i.question and not i.blocking for i in view.issues)
+    assert one('Essay due Friday 3 hours').deadline == '2026-10-30'
+
+
+def test_bare_due_hour_is_a_time_asked_as_am_or_pm_and_never_left_in_the_title():
+    draft = one('Essay due Friday at 5, 2 hours')
+    assert (draft.title, draft.deadline, draft.dueTime) == ('Essay', '2026-10-30', 17 * 60)
+    view = review_draft(draft, NOW, NY)
+    assert [i.question for i in view.issues if i.blocking] == ['Is "Essay" due at 5 AM or 5 PM?']
+    answered = apply_answer(draft, 'dueTime', 'AM', NOW, NY)
+    assert answered.dueTime == 5 * 60 and 'dueTime' not in answered.ambiguous
+
+
+def test_part_of_day_deadline_uses_its_start_and_says_so():
+    draft = one('Essay, 2 hours, due tomorrow morning')
+    assert (draft.deadline, draft.dueTime) == ('2026-10-27', 8 * 60)
+    view = review_draft(draft, NOW, NY)
+    assert view.ready
+    assert any('8:00 AM' in i.question and not i.blocking for i in view.issues)
+
+
+def test_stated_work_time_is_a_preferred_start_not_a_deadline_or_event():
+    draft = one('Work on essay tomorrow at 3pm for 2 hours, due Friday')
+    assert (draft.kind, draft.title) == ('task', 'Work on essay')
+    assert (draft.deadline, draft.earliestStart) == ('2026-10-30', '2026-10-27T15:00:00')
+    assert draft.date is None and draft.start is None
+
+
+def test_after_something_not_on_the_list_asks_when_it_can_start():
+    draft = one('Read chapter 3 after class, 1 hour, due Friday')
+    view = review_draft(draft, NOW, NY)
+    assert not view.ready
+    assert 'comes after something that isn\'t on your list (class)' in view.issues[0].question
+    answered = apply_answer(draft, 'earliestStart', 'Tuesday 2pm', NOW, NY)
+    assert answered.earliestStart == '2026-10-27T14:00:00'
+    assert review_draft(answered, NOW, NY).ready
+    # A time alone means the next time it comes round.
+    assert apply_answer(draft, 'earliestStart', '2pm', NOW, NY).earliestStart == '2026-10-26T14:00:00'
+
+
+def llm_task(title, source, minutes=60, deadline='2026-10-30', ambiguous=()):
+    return LlmItem(kind='task', title=title, sourceText=source, minutes=minutes, deadlineDate=deadline, deadlineTime=None,
+                   earliestStart=None, priority=None, allowSplit=None, maxSessionMinutes=None, date=None, startTime=None,
+                   endTime=None, eventKind=None, location=None, repeatWeekdays=[], repeatStartDate=None, repeatUntil=None,
+                   windows=[], dependsOnTitles=[], ambiguousFields=list(ambiguous), unreadableFields=[])
+
+
+def test_ai_extraction_drops_phantom_and_repeated_items_and_stray_after_questions():
+    from app.plan_extraction import drafts_from_extraction
+    extraction = Extraction(items=[
+        llm_task('Read chapter 3', 'Read chapter 3 after class, 1 hour, due Friday', ambiguous=['earliestStart']),
+        llm_task('Read chapter 3', 'Read chapter 3 after class, 1 hour, due Friday'),  # repeated
+        llm_task('', '', minutes=None),  # phantom: nothing to act on
+        llm_task('Reading', 'Reading due Friday at 5, 2 hours', minutes=120, ambiguous=['earliestStart']),
+    ], notes=[])
+    drafts = drafts_from_extraction(extraction)
+    assert [(d.title, d.ambiguous) for d in drafts] == [('Read chapter 3', ['earliestStart']), ('Reading', [])]
+
+
+def test_ai_extraction_fills_missing_titles_and_dates_from_the_item_text():
+    """gpt-4o-mini often leaves out names and plain days; the built-in parser reads them from the item's own text."""
+    from app.plan_extraction import drafts_from_extraction
+    lab = llm_task('', 'Lab report 90 min due tomorrow high priority', minutes=90)
+    meeting = LlmItem(**{**llm_task('', 'Advisor meeting today 11-11:30am', minutes=None).model_dump(),
+                         'kind': 'fixed_event', 'deadlineDate': None, 'date': None, 'startTime': '11:00',
+                         'endTime': '11:30'})
+    gym = LlmItem(**{**llm_task('', 'Gym 30 min sometime today, low priority', minutes=30).model_dump(),
+                     'kind': 'flexible_event', 'deadlineDate': None})
+    unreadable = LlmItem(**{**llm_task('', 'C$#@ 101 Mon 9-10am').model_dump(), 'unreadableFields': ['title']})
+    drafts = drafts_from_extraction(Extraction(items=[lab, meeting, gym, unreadable], notes=[]), date(2026, 10, 26))
+    assert [d.title for d in drafts] == ['Lab report', 'Advisor meeting', 'Gym', None]
+    # Plain days the model left out are read from the same text: the meeting is today, Gym is by today.
+    assert (drafts[1].date, drafts[2].deadline) == ('2026-10-26', '2026-10-26')
+    # A day the model flagged as unclear is still asked about, not filled in.
+    flagged = LlmItem(**{**llm_task('Essay', 'Essay due Friday', deadline=None).model_dump(), 'ambiguousFields': ['deadlineDate']})
+    assert drafts_from_extraction(Extraction(items=[flagged], notes=[]), date(2026, 10, 26))[0].deadline is None
+    assert 'title' in drafts[3].unreadable  # a name the model could not read is still asked about
+
+
+def test_ai_weekdays_follow_the_day_names_and_time_questions_need_a_time():
+    from app.plan_extraction import drafts_from_extraction
+    choir = LlmItem(**{**llm_task('Choir rehearsal', 'Choir rehearsal every Sat and Sun 9:00am-10:00am from Oct 31 until Nov 8',
+                                  minutes=None, deadline=None).model_dump(),
+                       'kind': 'fixed_event', 'startTime': '09:00', 'endTime': '10:00', 'repeatWeekdays': [0, 6],
+                       'repeatStartDate': '2026-10-31', 'repeatUntil': '2026-11-08'})
+    gym = LlmItem(**{**llm_task('Gym', 'Gym 30 min sometime today', minutes=30, deadline='2026-10-26').model_dump(),
+                     'kind': 'flexible_event', 'ambiguousFields': ['startTime', 'endTime']})
+    drafts = drafts_from_extraction(Extraction(items=[choir, gym], notes=[]), date(2026, 10, 26))
+    assert drafts[0].repeat.weekdays == [5, 6]  # Saturday and Sunday, not Monday and Sunday
+    assert drafts[1].ambiguous == []  # no "Is the end time of Gym AM or PM?" without a time
+
+
+def test_ai_fragments_of_one_line_collapse_and_noon_is_not_an_am_pm_question():
+    from app.plan_extraction import drafts_from_extraction
+    whole = 'Gym 30 min sometime today, low priority'
+    items = [LlmItem(**{**llm_task('Gym', whole, minutes=30, deadline='2026-10-26').model_dump(), 'kind': 'flexible_event'}),
+             llm_task('Gym', '30 min', minutes=30, deadline=None), llm_task('Gym', 'low priority', minutes=None, deadline=None),
+             LlmItem(**{**llm_task('Lab report', 'Lab report 60 min due tomorrow at noon').model_dump(),
+                        'deadlineTime': '12:00', 'ambiguousFields': ['deadlineTime']})]
+    drafts = drafts_from_extraction(Extraction(items=items, notes=[]), date(2026, 10, 26))
+    assert [(d.title, d.sourceText) for d in drafts] == [('Gym', whole), ('Lab report', 'Lab report 60 min due tomorrow at noon')]
+    assert drafts[1].dueTime == 720 and drafts[1].ambiguous == []
+
+
+def test_ai_items_are_cross_checked_against_the_built_in_reading():
+    from app.plan_extraction import LlmWindow, drafts_from_extraction
+    meeting = LlmItem(**{**llm_task('Advisor meeting', 'Advisor meeting today 11-11:30am', minutes=None).model_dump(),
+                         'kind': 'fixed_event', 'date': None, 'deadlineDate': '2026-10-26', 'startTime': '11:00',
+                         'endTime': '11:30', 'ambiguousFields': ['startTime', 'endTime']})
+    gym = LlmItem(**{**llm_task('Gym', 'Gym 30 min sometime today, low priority', minutes=30).model_dump(),
+                     'kind': 'flexible_event', 'allowSplit': True,
+                     'windows': [LlmWindow(weekdays=[0], start='08:00', end='23:59')]})
+    lab = llm_task('Lab report', 'Lab report 90 min due tomorrow', minutes=90)
+    slides = llm_task('Lab slides', 'Lab slides 30 min due tomorrow after Lab report', minutes=30,
+                      ambiguous=['earliestStart'])
+    drafts = drafts_from_extraction(Extraction(items=[meeting, gym, lab, slides], notes=[]), date(2026, 10, 26))
+    assert (drafts[0].date, drafts[0].start, drafts[0].end, drafts[0].ambiguous) == ('2026-10-26', 660, 690, [])
+    assert drafts[1].allowSplit is None and drafts[1].unreadable == []  # one block; "23:59" snaps to end of day
+    assert (drafts[1].windows[0].start, drafts[1].windows[0].end) == (480, 1440)
+    assert drafts[3].dependsOn == [drafts[2].id] and drafts[3].ambiguous == []
+
+    exam = LlmItem(**{**llm_task('Mock exam', 'Mock exam 2 hours in one sitting due tomorrow', minutes=120).model_dump(),
+                      'allowSplit': None})
+    assert drafts_from_extraction(Extraction(items=[exam], notes=[]), date(2026, 10, 26))[0].allowSplit is False
