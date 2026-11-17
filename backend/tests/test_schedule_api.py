@@ -375,3 +375,33 @@ def test_interpret_builds_preview_through_the_same_service(environment, monkeypa
     chat = client.post('/schedule/interpret', json={'message': 'plan my week'}).json()['preview']
     strip = lambda p: [(s['startAt'], s['endAt'], s['type'], s['title']) for s in p['sessions']]
     assert strip(chat) == strip(button)
+
+
+def test_a_new_plan_keeps_sessions_it_would_put_back_in_the_same_place(transaction_environment, monkeypatch):
+    """Generating again with nothing changed used to show every saved session as "Replaced by the new schedule"."""
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    saved = {s['id'] for s in client.get('/schedule').json()['sessions']}
+
+    again = preview(client)
+    assert again['removed'] == []
+    assert rows(again['sessions']) == ACCEPTANCE
+    assert {s['id'] for s in again['sessions']} == saved and {s['change'] for s in again['sessions']} == {'kept'}
+    assert apply(client, again['previewId']).status_code == 200
+    after = client.get('/schedule').json()['sessions']
+    assert {s['id'] for s in after} == saved and rows(after) == ACCEPTANCE
+
+
+def test_break_now_between_grid_minutes_starts_at_the_next_five_minutes(transaction_environment, monkeypatch):
+    """At 9:21:37 a break "now" used to start at 9:21, before the planning window (9:25), and the preview failed."""
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    freeze(monkeypatch, NOW + timedelta(hours=1, minutes=21, seconds=37))
+    proposal = preview(client, '/schedule/break', minutes=15)
+    breaks = [s for s in proposal['sessions'] if s['type'] == 'break' and s['locked']]
+    assert [(s['start'], s['end']) for s in breaks] == [(565, 580)]
+    assert apply(client, proposal['previewId']).status_code == 200

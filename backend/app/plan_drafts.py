@@ -216,6 +216,9 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
     if 'earliestStart' in draft.assumed and draft.earliestStart:
         ask('earliestStart', f'"{name}" starts no earlier than {draft.earliestStart[11:16]} on '
             f'{short_date(_iso(draft.earliestStart[:10]))}. Change it if you meant AM.', 'warning', blocking=False)
+    if 'end' in draft.assumed and draft.start is not None and draft.end is not None:
+        ask('end', f'"{name}" runs {clock(draft.start)}–{clock(draft.end)}: no length was given, so I assumed 1 hour. '
+            'Change the end time if it\'s different.', 'warning', blocking=False)
     if 'priority' in draft.assumed:
         ask('priority', f'Priority of "{name}" was not stated, so it is Medium. Change it if needed.', 'warning', False)
     ready = not any(i.blocking for i in issues)

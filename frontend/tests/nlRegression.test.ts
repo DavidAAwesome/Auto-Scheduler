@@ -25,7 +25,7 @@ test("next <weekday> is the day in the following week, never tomorrow", () => {
   const event = parseEventRequest("add a meeting next friday at 10am", state, NOW);
   assert.equal(event?.action?.type === "add_event" && event.action.input.date, "2026-11-20");
   assert.match(event && "summary" in event ? event.summary : "", /“next Friday” means Fri, Nov 20, 2026/);
-  const move = ask("push essay to next friday");
+  const move = ask("push essay to next friday", { tasks: [{ ...essay, deadline: "2026-11-27" }, lab] });
   assert.equal(move?.command === "move_task" && move.notBefore, zonedInstant("2026-11-20", 0, ZONE));
 });
 
@@ -111,4 +111,64 @@ test("draft replies state assumptions and keep a preferred start apart from the 
   assert.match(text, /due 2026-11-13, work starts no earlier than 2026-11-13 3 PM/);
   assert.match(text, /Note: I read the deadline of "Work on essay" as Fri, Nov 13/);
   assert.doesNotMatch(text, /Priority was not stated/);
+});
+
+test("a day and a clock time read as events, one per named day, never a model-picked day", async () => {
+  const { looksLikePlanEntry } = await import("../src/services/planEntry.ts");
+  assert.equal(looksLikePlanEntry("Soccer practice Sat and Sun 9-10am"), true);
+  assert.equal(looksLikePlanEntry("Dentist tomorrow 3pm"), true);
+  assert.equal(looksLikePlanEntry("What do I have tomorrow at 3pm?"), false);
+  assert.equal(looksLikePlanEntry("I usually take a break around noon"), false);
+  const add = (eventDate: string, text: string) => requestFromIntent({ reply: "ok", intent: "add_event",
+    params: { eventTitle: "Soccer practice", eventDate, eventStart: "09:00", eventEnd: "10:00" } } as never, state, text, NOW);
+  // The model once picked Thursday for "Sat and Sun": two named days are never one event on a third.
+  const both = add("2026-11-19", "Soccer practice Sat and Sun 9-10am");
+  assert.equal(both?.command, "clarify");
+  assert.match(both && "question" in both ? both.question : "", /each of Saturday and Sunday/);
+  const wrong = add("2026-11-19", "Soccer practice Saturday 9-10am");
+  assert.match(wrong && "question" in wrong ? wrong.question : "", /you said Saturday/);
+  assert.notEqual(add("2026-11-21", "Soccer practice Saturday 9-10am")?.command, "clarify");
+});
+
+test("work with a length goes to review, not to a new week plan", async () => {
+  const { looksLikePlanEntry } = await import("../src/services/planEntry.ts");
+  const text = "Essay draft 2 hours in one sitting, then proofread 30 min after Essay draft";
+  assert.equal(ask(text), null);
+  assert.equal(looksLikePlanEntry(text), true);
+  assert.equal(looksLikePlanEntry("Read chapter 4, 45 min"), true);
+  for (const chat of ["I worked 2 hours on lab report", "I can work 3 hours a day", "I'm so tired after 3 hours of class", "How long is 2 hours?"]) {
+    assert.equal(looksLikePlanEntry(chat), false, chat);
+  }
+});
+
+test("a move that can't finish before the deadline is refused with the reason", () => {
+  // Lab report is due Mon Nov 16 at 11:59 PM; on Thu Nov 12 "tomorrow at 3pm" is fine, "next Tuesday" is not.
+  const fine = ask("schedule my lab report for tomorrow at 3pm", { tasks: [{ ...lab, dueTime: 1439, remainingMinutes: 90 }] });
+  assert.equal(fine?.command, "move_task");
+  const late = ask("push the lab report to next tuesday", { tasks: [{ ...lab, dueTime: 1439, remainingMinutes: 90 }] });
+  assert.equal(late?.command, "clarify");
+  assert.match(late && "question" in late ? late.question : "", /is due Mon, Nov 16, 2026 at 11:59 PM, so its work can't start after that\. Nothing was changed/);
+  // The model's move is checked the same way.
+  const model = requestFromIntent({ reply: "ok", intent: "move_task", params: { taskId: "t2", notBefore: "2026-11-17T20:00:00Z" } } as never,
+    { ...(state as object), tasks: [{ ...lab, dueTime: 1439, remainingMinutes: 90 }] } as never, "", NOW);
+  assert.equal(model?.command, "clarify");
+});
+
+test("deadline and length edits get a straight answer, not a move or an offer", () => {
+  const edit = ask("change the essay deadline to Monday");
+  assert.equal(edit?.command, "clarify");
+  assert.match(edit && "question" in edit ? edit.question : "", /can't change “Essay”'s deadline or length from chat/);
+});
+
+test("questions about one day are answered from the calendar", async () => {
+  const { busyDayText } = await import("../src/utils/schedulePreview.ts");
+  // Thu Nov 12: "Saturday" is Nov 14, "Friday" Nov 13 (Project sync 3-4 PM).
+  assert.deepEqual(ask("What do I have on Saturday?"), { command: "busy_day", date: "2026-11-14", at: null });
+  assert.deepEqual(ask("Is Friday at 3pm free?"), { command: "busy_day", date: "2026-11-13", at: 900 });
+  assert.deepEqual(ask("Am I free tomorrow?"), { command: "busy_day", date: "2026-11-13", at: null });
+  assert.equal(ask("Why is it so hard to focus?"), null);
+  const events = [sync] as never;
+  assert.match(busyDayText(events, [], [], "2026-11-13", 900), /Fri, Nov 13, 2026 at 3 PM is busy: Project sync \(3 PM–4 PM\)/);
+  assert.match(busyDayText(events, [], [], "2026-11-13", 600), /at 10 AM is free/);
+  assert.match(busyDayText(events, [], [], "2026-11-14", null), /Sat, Nov 14, 2026 is free/);
 });

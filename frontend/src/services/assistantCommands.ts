@@ -7,7 +7,7 @@ import { eventFromIntent, nextWeekday, parseDate, parseEventRequest, parseTimes,
 import { clock12, dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
-import { busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { busyDayText, busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
 import { accountTimeZone } from "../utils/timeZones.ts";
 
 /** Actions the chat can run. Each one calls the same workspace method the calendar uses. */
@@ -29,6 +29,8 @@ export type AssistantCommand =
 export type ParsedRequest =
   | { command: Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
   | { command: "request_break"; minutes: number }
+  /** "What do I have on Saturday?" / "Is Friday at 3pm free?": that day's busy time, read from the calendar. */
+  | { command: "busy_day"; date: string; at: number | null }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
   | { command: "update_preferences"; change: PreferenceChange; summary: string }
   | { command: "propose_event"; action: PendingEventAction; summary: string }
@@ -60,6 +62,8 @@ const BREAK = /\b(take|need|want|give me|start|have)\b.*\bbreak\b|\bbreak\b.*\bn
 const BREAK_LATER = /\b(at \d|at noon|\d\s*(am|pm)|tomorrow|later|tonight|this (afternoon|evening)|after|before|when|once|until|in \d+ (min|minute|hour)s?)\b/i;
 /** Habits ("I usually take a break around noon") are preferences or chat, not a request for a break now. */
 const HABIT = /\b(usually|always|normally|often|sometimes|every day|daily|tend to|like to)\b/i;
+const EDIT_TASK = /\b(change|move|push|extend|set|update|edit|make)\b.*\b(deadline|due date|due time)\b|\b(deadline|due date)\b.*\b(to|until|be)\b\s+\w|\b(change|edit|update|set)\b.*\b(duration|length|estimate)\b/i;
+const DAY_QUESTION = /^\s*(?:what(?:'?s| is| do i have| have i got| am i doing)|anything|am i (?:free|busy)|is\b.*\b(?:free|busy|open|available)\b|do i have anything)\b.*\b(?:today|tomorrow|tonight|(?:next |this )?(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun))\b|^\s*(?:is|am i)\b.*\b(?:free|busy|open|available)\b/i;
 const MOVE = /\b(move|push|postpone|shift|reschedule|delay)\b/i;
 const REPLAN = /\breplan\b|\bre-plan\b|\brepair\b|\bfix (my |the )?(plan|schedule)\b|\breschedule (my|the|this)? ?(plan|schedule|week|work)\b/i;
 const EXPLAIN = /\bwhy\b.*\b(fit|scheduled|planned|placed|unscheduled|left out|missing)\b|didn.?t fit|doesn.?t fit|unscheduled|not scheduled|couldn.?t (fit|schedule)|unallocated|what.*\bleft\b.*\b(schedule|plan|fit)\b/i;
@@ -96,6 +100,22 @@ function namedTask(text: string, tasks: Task[]) {
 function nextSession(task: Task, sessions: WorkSession[] | undefined, now: Date) {
   return (sessions ?? []).filter(s => s.taskId === task.id && s.type === "work" && s.status === "saved" && new Date(s.startAt) > now)
     .sort((a, b) => a.startAt.localeCompare(b.startAt))[0] ?? null;
+}
+
+/**
+ * A move that can't finish before the task is due is refused with the reason, instead of a preview that quietly
+ * unschedules the task ("schedule my lab report for tomorrow" when it is due tonight).
+ */
+function deadlineBlocks(task: Task, notBefore: string, zone: string, now: Date): ParsedRequest | null {
+  if (!task.deadline) return null;
+  const due = new Date(zonedInstant(task.deadline, Math.min(task.dueTime ?? 1439, 1439) + 1, zone)).getTime();
+  const start = Math.max(Date.parse(notBefore), now.getTime());
+  const needed = Math.max(0, task.remainingMinutes ?? task.minutes ?? 0) * 60_000;
+  if (start + needed <= due) return null;
+  const today = dateInZone(zone, now);
+  const dueText = `${dayWord(task.deadline, today)} at ${clock12(Math.min(task.dueTime ?? 1439, 1439))}`;
+  const why = start >= due ? "so its work can't start after that" : `and its ${task.remainingMinutes} minutes of work wouldn't finish by then`;
+  return { command: "clarify", question: `“${task.title}” is due ${dueText}, ${why}. Nothing was changed. To work on it later, change its deadline in the task list first, or pick an earlier time.` };
 }
 
 /** How a local date reads in a reply: "today", "tomorrow" or "Fri, Nov 20, 2026". */
@@ -284,6 +304,11 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     if (minutes < 5 || minutes > 240) return { command: "clarify", question: "Breaks can be 5 minutes to 4 hours. How long should this one be?" };
     return { command: "request_break", minutes };
   }
+  // "Change the essay deadline to Monday": chat can't edit a task, and must not pretend to (or move it instead).
+  if (EDIT_TASK.test(text)) {
+    const task = namedTask(text, open);
+    return { command: "clarify", question: `I can't change ${task ? `“${task.title}”'s` : "a task's"} deadline or length from chat yet. Open it in the task list to edit it; then say “plan my week” to fit it in.` };
+  }
   if (REPLAN.test(text) && !namedTask(text, open)) return { command: "replan" };
   if (MOVE.test(text)) {
     const task = namedTask(text, open);
@@ -300,13 +325,15 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
       return { command: "clarify", question: open.length ? `Which task should I move? ${names}` : "You have no open tasks to move." };
     }
     if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow at 3pm” or “this afternoon”.` };
+    const blocked = deadlineBlocks(task, target.at, zone, now);
+    if (blocked) return blocked;
     return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
   }
   // "Schedule my essay for tomorrow at 3pm": a preferred start for one task, not a new week plan.
   if (SCHEDULE_TASK.test(text)) {
     const task = namedTask(text, open);
     const target = task ? moveTarget(text, zone, now, task, state.sessions) : null;
-    if (task && target) return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
+    if (task && target) return deadlineBlocks(task, target.at, zone, now) ?? { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
   }
   // "Add a task called Essay, due Friday at noon, 90 minutes": read by the plan-entry parser, then confirmed.
   if (/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\b/i.test(text)) {
@@ -321,6 +348,15 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
   if (EXPLAIN.test(text)) return { command: "explain_unscheduled" };
   if (TODAY.test(text)) return { command: "show_today" };
   if (SHOW_PLAN.test(text)) return { command: "show_plan" };
+  // A question about one named day is answered from the calendar, not by the model (it mislabels weekdays).
+  if (DAY_QUESTION.test(text) && !/\b(due|deadline)\b/i.test(text)) {
+    const today = dateInZone(zone, now);
+    const date = parseDate(text, today);
+    if (date) {
+      const times = parseTimes(text);
+      return { command: "busy_day", date, at: times ? times.start : null };
+    }
+  }
   if (BUSY.test(text)) return { command: "busy_time" };
   if (GENERATE.test(text)) {
     if (PLAN_CONDITION.test(text)) {
@@ -366,6 +402,8 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       const when = new Date(params.notBefore);
       const day = dateInZone(zone, when);
       const today = dateInZone(zone, now);
+      const blocked = deadlineBlocks(task, params.notBefore, zone, now);
+      if (blocked) return blocked;
       return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: `${task.title} to ${dayWord(day, today)} at ${clock12(minutesInZone(zone, when))}` };
     }
     case "delete_task": {
@@ -386,7 +424,7 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
 
     case "add_event":
     case "delete_event":
-      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }));
+      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }, userText));
 
     default:
       return { command: intent };
@@ -513,6 +551,8 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     }
     case "busy_time":
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
+    case "busy_day":
+      return reply(busyDayText(state.events, state.sessions, state.tasks, req.date, req.at));
     
     case "add_task": {
       try {

@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import re
 from datetime import date, datetime, timedelta
 from typing import Literal
@@ -31,6 +32,7 @@ IMAGE_SIGNATURES = {
     'image/png': lambda data: data.startswith(b'\x89PNG\r\n\x1a\n'),
     'image/webp': lambda data: data[:4] == b'RIFF' and data[8:12] == b'WEBP',
 }
+logger = logging.getLogger(__name__)
 MAX_ITEMS = 40
 
 
@@ -114,7 +116,9 @@ Rules:
 - Use currentLocalTime and timeZone to resolve relative dates (today, tomorrow, Friday) to YYYY-MM-DD. Times are HH:MM 24-hour.
   "Friday" is the coming Friday; "next Friday" is the Friday of the following Monday-Sunday week (never tomorrow).
 - A deadline with only a part of the day ("due tomorrow morning") gets the start of that part as deadlineTime
-  (morning 08:00, afternoon 12:00, evening 17:00, night 19:00) and "deadlineTime" in ambiguousFields.
+  (morning 08:00, afternoon 12:00, evening 17:00, night 19:00). Do not list it in ambiguousFields.
+- Leave deadlineTime null unless a time or part of the day is given ("due next Friday" has no time).
+- "this weekend" means the coming Saturday and Sunday: earliestStart is Saturday 00:00 and deadlineDate is Sunday.
 - A stated time to WORK on a task ("work on the essay tomorrow at 3pm") is a preferred start: put it in
   earliestStart (YYYY-MM-DDTHH:MM:00). It is not the deadline and not a fixed event.
 - Only when the text literally says "after <something>" (e.g. "after class") and that something is not another item in
@@ -131,6 +135,10 @@ Rules:
 - For images, extract only what is visible. Put the original wording of each row in sourceText. List fields you
   cannot read in unreadableFields. Do not fill priority unless it is stated.
 - dependsOnTitles: only when the user explicitly says one item must come after another.
+- existingTaskTitles are already saved. Use them only for dependsOnTitles; never return them as items unless the message
+  itself names them.
+- A single clock time on a day ("lunch with Sam at noon tomorrow", "dentist Friday 3pm") is a fixed_event: startTime is
+  that time and endTime is one hour later unless a length or end is given.
 - Field names for ambiguousFields/unreadableFields: title, minutes, deadlineDate, deadlineTime, date, startTime, endTime,
   repeatWeekdays, repeatStartDate, repeatUntil, location, earliestStart.
 """
@@ -246,7 +254,36 @@ def _fill_from_text(item: LlmItem, today: date) -> tuple[LlmItem, str | None]:
     if getattr(item, date_field) is None and date_field not in flagged and not item.repeatWeekdays and parsed_date \
             and parsed.kind == item.kind and parser_field not in parsed.ambiguous and not parsed.repeat:
         update[date_field] = parsed_date
-    if item.repeatWeekdays and parsed.repeat and parsed.repeat.weekdays \
+    # Turning a day name into a date is arithmetic the parser gets right and the model often doesn't ("Sat" read as
+    # Thu Nov 19, or as a weekly series). A one-time event the parser dates clearly keeps the parser's day.
+    if parsed.kind == 'fixed_event' and parsed.date and not parsed.repeat and 'date' not in parsed.ambiguous \
+            and parsed.start is not None and parsed.end is not None and 'date' not in item.unreadableFields:
+        if item.kind != 'fixed_event' or item.date != parsed.date or item.repeatWeekdays:
+            update.update(kind='fixed_event', date=parsed.date, repeatWeekdays=[], repeatStartDate=None,
+                          repeatUntil=None, deadlineDate=None, deadlineTime=None)
+            if item.startTime is None or item.endTime is None:
+                update.update(startTime=f'{parsed.start // 60:02d}:{parsed.start % 60:02d}',
+                              endTime=f'{parsed.end // 60:02d}:{parsed.end % 60:02d}')
+    elif item.kind != 'fixed_event' and parsed.kind == item.kind and parsed.deadline and item.deadlineDate != parsed.deadline:
+        said_next = re.search(rf'\bnext\s+{WD}', item.sourceText, re.I) is not None
+        if said_next or ('deadline' not in parsed.ambiguous and 'deadlineDate' not in item.ambiguousFields):
+            # "next Friday" is resolved by rule (the Friday of next week); the review states the date as a note.
+            update['deadlineDate'] = parsed.deadline
+            if said_next:
+                update['ambiguousFields'] = sorted(set(item.ambiguousFields) | {'deadlineDate'})
+    if item.kind != 'fixed_event' and parsed.kind == item.kind:
+        if item.minutes is None and parsed.minutes:
+            update['minutes'] = parsed.minutes
+        if parsed.earliestStart and not item.earliestStart and 'earliestStart' not in parsed.ambiguous:
+            update['earliestStart'] = parsed.earliestStart  # "this weekend": not before Saturday
+        if item.deadlineTime and parsed.dueTime is None and not re.search(rf'{TIME}|\b(?:at|@)\s*\d', item.sourceText, re.I):
+            # A due time the text never gave ("12 AM or 12 PM?" for "due next Friday"): drop it and its question.
+            update['deadlineTime'] = None
+            update['ambiguousFields'] = [f for f in update.get('ambiguousFields', item.ambiguousFields) if f != 'deadlineTime']
+        if 'dueTime' in parsed.assumed and parsed.dueTime is not None and _hm(item.deadlineTime) == parsed.dueTime:
+            # "due tomorrow morning" → 8:00 AM, stated as an assumption, not an AM/PM question.
+            update['ambiguousFields'] = [f for f in update.get('ambiguousFields', item.ambiguousFields) if f != 'deadlineTime']
+    if item.repeatWeekdays and 'repeatWeekdays' not in update and parsed.repeat and parsed.repeat.weekdays \
             and sorted(parsed.repeat.weekdays) != sorted(item.repeatWeekdays):
         # Day names are unambiguous; the model sometimes counts from Sunday ("Sat and Sun" as [0, 6]).
         update['repeatWeekdays'] = parsed.repeat.weekdays
@@ -278,9 +315,12 @@ def drafts_from_extraction(extraction: Extraction, today: date | None = None) ->
     # keep the item whose text contains the others.
     def fragment(item: LlmItem) -> bool:
         name, text = (item.title or '').strip().lower(), (item.sourceText or '').strip().lower()
+        def differs(other: LlmItem) -> bool:  # its own day or time: a separate occurrence, not a fragment
+            return any(getattr(item, f) and getattr(other, f) and getattr(item, f) != getattr(other, f)
+                       for f in ('date', 'startTime'))
         return any(other is not item and (other.title or '').strip().lower() == name
                    and text in (other.sourceText or '').lower() and len(text) < len((other.sourceText or '').strip())
-                   for other in items)
+                   and not differs(other) for other in items)
     items = [item for item in items if not fragment(item)][:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
     for i, item in enumerate(items):
@@ -290,7 +330,44 @@ def drafts_from_extraction(extraction: Extraction, today: date | None = None) ->
         if key and titles[key] != f'd{i + 1}' and not item.dependsOnTitles:
             items[i] = item.model_copy(update={
                 'dependsOnTitles': [key], 'ambiguousFields': [f for f in item.ambiguousFields if f != 'earliestStart']})
-    return [_convert_item(item, i, titles) for i, item in enumerate(items)]
+    # Exact repeats after the cross-check ("Lunch with Sam" returned twice, once as a 30-minute flexible item that the
+    # check turned into the same 12-1 PM event) are one item.
+    unique, keys = [], set()
+    for i, item in enumerate(items):
+        d = _convert_item(item, i, titles)
+        key = (d.kind, (d.title or '').lower(), d.date, d.start, d.end, d.deadline, d.dueTime,
+               None if d.kind == 'fixed_event' else d.minutes, json.dumps(d.repeat.model_dump() if d.repeat else None))
+        if key not in keys:
+            keys.add(key)
+            unique.append(item)
+    if len(unique) < len(items):
+        items = unique
+        titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
+    drafts = [_convert_item(item, i, titles) for i, item in enumerate(items)]
+    for draft in drafts:
+        # "Lunch at noon": when the 1-hour length is the parser's assumption too, the review says so.
+        if draft.kind == 'fixed_event' and draft.sourceText and draft.end is not None and not draft.repeat:
+            parsed, _ = parse_item(draft.sourceText, 0, today)
+            if 'end' in parsed.assumed and parsed.start == draft.start and parsed.end == draft.end:
+                draft.assumed = sorted(set(draft.assumed) | {'end'})
+    for draft in drafts:
+        if draft.kind != 'fixed_event' and draft.sourceText and draft.dueTime is not None:
+            parsed, _ = parse_item(draft.sourceText, 0, today)
+            if 'dueTime' in parsed.assumed and parsed.dueTime == draft.dueTime:
+                draft.assumed = sorted(set(draft.assumed) | {'dueTime'})
+                draft.ambiguous = [f for f in draft.ambiguous if f != 'dueTime']
+    return drafts
+
+
+def _mentioned(item: LlmItem, text: str) -> bool:
+    """Whether a model item comes from the typed message. gpt-4o-mini sometimes returns a saved task from the
+    context ("Lab report") as a new item when the message only said "Lunch with Sam at noon tomorrow"."""
+    said = re.sub(r'\s+', ' ', text.lower())
+    source = re.sub(r'\s+', ' ', (item.sourceText or '').lower()).strip(' .,')
+    if source and source in said:
+        return True
+    words = [w for w in re.findall(r'[a-z0-9]+', (item.title or '').lower()) if len(w) > 2]
+    return bool(words) and sum(w in said for w in words) * 2 >= len(words)
 
 
 def call_model(inputs: list[dict]) -> Extraction:
@@ -322,6 +399,9 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
     local = now.astimezone(zone)
     context = {'currentLocalTime': local.isoformat(timespec='minutes'), 'weekday': local.strftime('%A'),
                'timeZone': str(zone), 'existingTaskTitles': saved_titles[:40]}
+    if text.strip():
+        # "Soccer practice Sat and Sun 9-10am" reaches the model as one line per day, as the built-in parser reads it.
+        text = '\n'.join(part for line in text.split('\n') for part in (expand_day_list(line) if line.strip() else [line]))
     content: list[dict] = [{'type': 'input_text', 'text': text.strip() or 'Extract every item visible in this image.'}]
     if image:
         media, data = image
@@ -337,7 +417,14 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
         raise
     except Exception as exc:  # anything unexpected from the SDK is a provider failure, not a server crash
         raise HTTPException(502, 'The AI provider request failed. Your input was kept; try again.') from exc
-    return drafts_from_extraction(extraction, local.date()), extraction.notes[:5]
+    notes = extraction.notes[:5]
+    if text.strip() and not image:
+        kept = [item for item in extraction.items if _mentioned(item, text)]
+        if len(kept) < len(extraction.items):
+            dropped = [item.title or item.sourceText for item in extraction.items if item not in kept]
+            logger.info('Dropped AI items not in the message: %s', dropped)
+        extraction = extraction.model_copy(update={'items': kept})
+    return drafts_from_extraction(extraction, local.date()), notes
 
 
 # ---------------------------------------------------------------- deterministic local parser (typed text)
@@ -366,13 +453,35 @@ LEAD = re.compile(r'^\s*(?:please\s+)?(?:(?:add|create|schedule|plan|put)\s+(?:a
                   r'remind me to\s+|i (?:need|have|want|should) to\s+|i have\s+(?:an?\s+)?|(?:task|event)\s*:\s*)', re.I)
 
 
+DAY_LIST = re.compile(rf'(?<![\w-])({WD}(?:\s*(?:,\s*(?:and\s+|&\s*)?|\s+and\s+|\s*&\s*|\s*/\s*){WD})+)(?![\w-])', re.I)
+
+
+def expand_day_list(part: str) -> list[str]:
+    """'Soccer practice Sat and Sun 9-10am' is two one-time events, one each day: the line is repeated once
+    per named day. Recurring wording ("every Sat and Sun", "Saturdays"), "next", and deadlines are left alone."""
+    match = DAY_LIST.search(part)
+    if not match or not re.search(rf'{TIME}|{RANGE.pattern}', part, re.I):
+        return [part]
+    before = part[:match.start()].lower()
+    if re.search(r'\b(every|each|next|this|due|by|before)\s*$', before) or re.search(r'\b(weekly|every week)\b', part, re.I):
+        return [part]
+    days = re.findall(WD, match[1], re.I)
+    if len(days) < 2 or any(re.fullmatch(r'\w+days', d, re.I) for d in days):
+        return [part]
+    return [part[:match.start()] + day + part[match.end():] for day in days]
+
+
 def split_items(text: str) -> list[str]:
     parts: list[str] = []
     for line in re.split(r'[\n;]+', text):
         line = re.sub(r'^\s*(?:[-*•]|\d+[.)])\s+', '', line).strip()
         if not line or re.fullmatch(r'(?:add|plan|schedule)?\s*(?:these|the following)?\s*(?:tasks?|events?|items?)?\s*:?', line, re.I):
             continue
-        parts.extend(p.strip(' .') for p in re.split(r'(?<=[a-z0-9)])\.\s+(?=[A-Z])', line) if p.strip(' .'))
+        for p in re.split(r'(?<=[a-z0-9)])\.\s+(?=[A-Z])', line):
+            # "Essay draft 2 hours, then proofread 30 min": two items, in that order.
+            for q in re.split(r'(?<!\buntil)(?<!\bby)(?<!\bsince)(?<!\btill)(?<!\bbefore)(?<!\bafter)\s*(?:,|;)?\s+(?:and\s+)?then\s+', p, flags=re.I):
+                if q.strip(' .,'):
+                    parts.extend(expand_day_list(q.strip(' .,')))
     return parts[:MAX_ITEMS]
 
 
@@ -533,6 +642,17 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         if start_amb or end_amb:
             ambiguous += ['start', 'end']
 
+    weekend = re.search(r'\b(?:sometime\s+)?(?:(this|next|the)\s+)?weekend\b', lower)
+    if weekend and not re.search(rf'\bweekends?\s+(?:mornings?|afternoons?|evenings?|nights?)\b', lower):
+        take(weekend)
+        saturday = today + timedelta(days=(5 - today.weekday()) % 7) if today.weekday() < 5 else today
+        if weekend[1] == 'next':
+            saturday += timedelta(days=7)
+        weekend_days = (max(saturday, today), saturday + timedelta(days=1) if saturday.weekday() == 5 else saturday)
+        if today.weekday() == 6 and weekend[1] != 'next':
+            weekend_days = (today, today)
+    else:
+        weekend_days = None
     due = re.search(rf'\b(?:due|by|before|deadline)\s*(?:on\s+|is\s+)?({DATE})(?:\s*,?\s*(?:at|@)\s*({TIME_AT})|\s*,?\s*({TIME}))?', lower) or \
         _TimeFirst.search(rf'\b(?:due|by|before)\s*(?:at\s+)?({TIME})\s*,?\s*(?:on\s+)?({DATE})', lower)  # "by noon tomorrow"
     on = re.search(rf'\b(?:on\s+)?({DATE})(?:\s*(?:at|@)\s*({TIME}))?', lower)
@@ -547,14 +667,21 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
     flex = re.search(FLEX_CUES, lower) is not None or (re.search(FLEX_WORDS, lower) is not None and not due)
     has_day = bool(weekdays) or (on is not None and not due)
 
+    # A single clock time on a day with no length and no deadline is an appointment ("Lunch with Sam at noon
+    # tomorrow", "Dentist Friday 3pm"): a fixed event, 1 hour unless stated (the review says so).
+    clock = at_time or re.search(r'\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.))', lower)
+    single_time = bool(clock) and has_day and not due and not duration and not time_range and not weekdays
     if (time_range and (has_day or is_event)) or (at_time and has_day and is_event and duration and not due) \
-            or (weekdays and is_class):
+            or (weekdays and is_class) or single_time:
         draft['kind'] = 'fixed_event'
         draft['eventKind'] = _event_kind(lower)
-        if not time_range and at_time:
-            take(re.search(re.escape(at_time[0]), lower))
-            start, amb = parse_time(at_time[1])
+        if not time_range and clock:
+            take(re.search(re.escape(clock[0]), lower))
+            start, amb = parse_time(clock[1])
             end = None if start is None or duration is None else start + duration
+            if start is not None and end is None and single_time:
+                end = min(start + 60, 1440)
+                assumed.append('end')
             if amb:
                 ambiguous += ['start']
         draft['start'], draft['end'] = start, end
@@ -583,6 +710,11 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         draft['kind'] = 'flexible_event' if flex else 'task'
         draft['minutes'] = duration
         target = due or (on if flex else None)
+        if weekend_days and not target:
+            # "sometime this weekend": between Saturday and Sunday; "due this weekend": by Sunday night.
+            draft['deadline'] = weekend_days[1].isoformat()
+            if not re.search(r'\b(?:due|by|before)\s+(?:this\s+|next\s+|the\s+)?weekend\b', lower):
+                draft['earliestStart'] = f'{weekend_days[0].isoformat()}T00:00:00'
         if target:
             take(target)
             value, amb = resolve_date(target[1], today)

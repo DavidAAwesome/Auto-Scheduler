@@ -210,7 +210,10 @@ def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, reques
     now_min = to_abs(now)
     requested_break = None
     if request.get('breakMinutes'):
-        requested_break = (now_min, now_min + int(request['breakMinutes']))
+        # On the planner's 5-minute grid, like every other session: at 9:36 a break "now" runs 9:40-9:55. (Starting it
+        # at 9:36 put it before the planning window and the preview failed validation.)
+        start = -(-now_min // 5) * 5
+        requested_break = (start, start + int(request['breakMinutes']))
     result = plan_schedule(engine_tasks(ctx), ctx.availability, engine_prefs(ctx.prefs), ctx.events, ctx.existing,
                            now_min, horizon_days, 'generate' if mode == 'generate' else 'repair',
                            requested_break, request.get('notBefore') or None, displace)
@@ -454,20 +457,30 @@ def schedule_snapshot(user, db, now: datetime, preview_id: str | None = None, da
             preview = None
 
     def describe(s: ScheduleSession) -> dict:
-        return {'date': s.date, 'start': clock(s.start), 'end': clock(s.end), 'type': s.type, 'task': s.title if s.type == 'work' else None,
+        return {'date': s.date, 'weekday': day(s.date), 'start': clock(s.start), 'end': clock(s.end), 'type': s.type, 'task': s.title if s.type == 'work' else None,
                 'status': s.status, 'locked': s.locked, 'minutes': int((s.endAt - s.startAt).total_seconds() // 60)}
 
+    def day(value: str | None) -> str | None:
+        return date_cls.fromisoformat(value).strftime('%A') if value else None
+
+    local_now = now.astimezone(ctx.zone)
     return {
         'timeZone': ctx.availability.timeZone,
-        'now': now.astimezone(ctx.zone).isoformat(timespec='minutes'),
+        'now': local_now.isoformat(timespec='minutes'),
         'today': today,
+        'todayWeekday': local_now.strftime('%A'),
+        # Weekday names for the next two weeks, so "Saturday" or "next Friday" is looked up, never computed.
+        'calendar': [{'date': (local_now.date() + timedelta(days=i)).isoformat(),
+                      'weekday': (local_now.date() + timedelta(days=i)).strftime('%A')} for i in range(15)],
         'tasks': [{
             'id': t.id, 'title': t.title, 'priority': t.priority, 'done': t.done,
-            'dueDate': t.deadline, 'dueTime': clock(1439 if t.dueTime >= 1439 else t.dueTime),
+            'dueDate': t.deadline, 'dueWeekday': day(t.deadline), 'dueTime': clock(1439 if t.dueTime >= 1439 else t.dueTime),
             'estimatedMinutes': t.minutes, 'completedMinutes': t.completedMinutes, 'remainingMinutes': t.remainingMinutes,
             'savedFutureWorkMinutes': sum(int((s.endAt - s.startAt).total_seconds() // 60) for s in saved
                                           if s.taskId == t.id and s.type == 'work' and s.status == 'saved' and s.endAt > now),
-        } for t in ctx.tasks],
+        } for t in ctx.tasks if not t.done],
+        # Finished tasks, by name only: never listed as due.
+        'completedTasks': [t.title for t in ctx.tasks if t.done][-10:],
         'savedSessions': [describe(s) for s in window],
         'todaySavedSessions': [describe(s) for s in window if s.date == today],
         'pendingPreview': None if preview is None else {
@@ -478,6 +491,7 @@ def schedule_snapshot(user, db, now: datetime, preview_id: str | None = None, da
             'conflicts': [c.message for c in preview.conflicts],
         },
         'events': [{'title': b.title, 'date': local_parts(b.start, ctx.zone)[0].isoformat(),
+                    'weekday': local_parts(b.start, ctx.zone)[0].strftime('%A'),
                     'start': clock(local_parts(b.start, ctx.zone)[1]), 'end': clock(local_parts(b.end, ctx.zone)[1])}
                    for b in ctx.events if ctx.start_date <= local_parts(b.start, ctx.zone)[0].isoformat() <= ctx.end_date],
         'preferences': ctx.prefs.model_dump(),

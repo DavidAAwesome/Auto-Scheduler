@@ -86,7 +86,11 @@ def test_events_are_in_the_snapshot(environment, monkeypatch):
     captured = fake_openai(monkeypatch, intent='busy_time')
     response = client.post('/assistant/chat', json={'message': 'What is busy today?'})
     assert response.json()['intent'] == 'busy_time'
-    assert snapshot_from(captured)['events'] == [{'title': 'Dinner', 'date': TODAY, 'start': '7:00 PM', 'end': '8:00 PM'}]
+    snapshot = snapshot_from(captured)
+    assert snapshot['events'] == [{'title': 'Dinner', 'date': TODAY, 'weekday': 'Monday', 'start': '7:00 PM', 'end': '8:00 PM'}]
+    # Weekday names are looked up, never worked out by the model: two weeks of dates with their weekdays.
+    assert snapshot['todayWeekday'] == 'Monday' and snapshot['calendar'][5] == {'date': '2026-10-31', 'weekday': 'Saturday'}
+    assert len(snapshot['calendar']) == 15
 
 
 def test_chat_never_generates_or_saves_by_itself(environment, monkeypatch):
@@ -219,3 +223,13 @@ def test_review_outcomes_are_counted(environment, monkeypatch):
     fake_openai(monkeypatch, reply='Hello there!', review=reviewed('x'))
     client.post('/assistant/chat', json={'message': 'hi'})
     assert self_review.STATS == {'changed': 1, 'skipped': 1}
+
+
+def test_a_weekday_with_the_wrong_date_is_corrected_from_the_calendar():
+    snapshot = {'calendar': [{'date': f'2026-11-{d}', 'weekday': w} for d, w in
+                             [(17, 'Tuesday'), (18, 'Wednesday'), (19, 'Thursday'), (20, 'Friday'), (21, 'Saturday'),
+                              (22, 'Sunday'), (23, 'Monday')]]}
+    fix = assistant.fix_weekday_dates
+    assert fix('On Saturday, November 18, you have soccer.', snapshot) == 'On Saturday, November 21, you have soccer.'
+    assert fix('Friday, November 17th at 3 PM', snapshot) == 'Friday, November 20th at 3 PM'
+    assert fix('Wednesday, November 18 is free.', snapshot) == 'Wednesday, November 18 is free.'

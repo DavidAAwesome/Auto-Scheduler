@@ -8,7 +8,8 @@ and reports that call's real outcome.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from bson import ObjectId
@@ -125,14 +126,21 @@ Task and event management intents:
 - delete_event: when the user asks to delete a calendar event. Put the event's exact title from the snapshot in params.eventTitle,
   and params.eventDate (YYYY-MM-DD) when the user names a day. The app asks the user to confirm before deleting.
 - clarify: when required information is missing or ambiguous. Ask one short question.
-Dates and times: resolve them from the snapshot's "now" and "timeZone". "Friday" is the coming Friday; "next Friday" is the
+Dates and times: resolve them from the snapshot's "now" and "timeZone". Look weekday names up in snapshot.calendar
+(each date with its weekday); never work out a weekday yourself, and always name a date with the weekday shown there.
+When asked about a day, list only the events and sessions the snapshot has on that date (match on "date"); if there are
+none, say the day is free. Never mention an event, session, time or task that is not in the snapshot. snapshot.tasks are
+the open tasks; completedTasks are finished and never due. "Friday" is the coming Friday; "next Friday" is the
 Friday of the following Monday-Sunday week (never tomorrow). Keep a deadline (when work is due), a preferred start (when work
 may begin) and a fixed appointment (an event) apart:
 - "schedule/move/do <task> tomorrow at 3pm" is move_task with params.notBefore at that local time; it never changes the deadline.
 - Events cannot be moved from chat, and a task's deadline or length cannot be edited from chat: use none and say so in one
   sentence, pointing to the calendar or the task list.
 - A break "after class" or "at 3pm" is not request_break (that starts now): use none and say breaks can only start now.
-Replies: one or two short, natural sentences. If you assumed something that affects the plan, say it briefly. If one detail is
+New work described in the message ("Essay draft 2 hours, then proofread 30 min") is add_task, never generate_schedule:
+generate_schedule is only for an explicit request to plan or schedule the week or the existing tasks.
+Replies: one or two short, natural sentences (a short list only when listing items from the snapshot); no headings,
+and no numbered advice lists for general questions. If you assumed something that affects the plan, say it briefly. If one detail is
 missing, ask one focused question.
 Never invent task IDs, event IDs, dates, or times.
 Never claim an item was created or deleted before the application confirms success.
@@ -198,6 +206,34 @@ def validate_intent(parsed: ChatResponseModel, snapshot: dict, now: datetime, pr
         )
 
 
+WEEKDAY_DATE = re.compile(r'\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(January|February|March|April|May|'
+                          r'June|July|August|September|October|November|December)\s+(\d{1,2})(st|nd|rd|th)?\b')
+MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+               'November', 'December']
+
+
+def fix_weekday_dates(reply: str, snapshot: dict) -> str:
+    """'Saturday, November 18' when Saturday is the 21st: the weekday is what the user asked about, so the date is
+    corrected from the snapshot calendar. A pair that matches, or a weekday outside the next two weeks, is left alone."""
+    calendar = snapshot.get('calendar') or []
+
+    def fix(match: re.Match) -> str:
+        weekday, month, day, suffix = match.group(1), match.group(2), int(match.group(3)), match.group(4) or ''
+        for entry in calendar:
+            d = date.fromisoformat(entry['date'])
+            if MONTH_NAMES[d.month - 1] == month and d.day == day:
+                if entry['weekday'] == weekday:
+                    return match.group(0)
+                break
+        target = next((date.fromisoformat(e['date']) for e in calendar if e['weekday'] == weekday), None)
+        if target is None:
+            return match.group(0)
+        sep = match.group(0)[len(weekday):match.group(0).index(month)]
+        return f'{weekday}{sep}{MONTH_NAMES[target.month - 1]} {target.day}{suffix}'
+
+    return WEEKDAY_DATE.sub(fix, reply)
+
+
 @router.post('/chat', response_model=ChatResponse)
 def chat(body: ChatRequest, user=Depends(get_current_user), db=Depends(get_database)):
     settings = get_settings()
@@ -245,4 +281,6 @@ def chat(body: ChatRequest, user=Depends(get_current_user), db=Depends(get_datab
         result.reply = review_reply(client, settings.openai_model, request=body.message.strip(), draft=parsed.reply,
                                     snapshot=snapshot, history=inputs[3:-1], personal=personal,
                                     intent=result.intent)
+    if result.intent in REVIEWED_INTENTS:
+        result.reply = fix_weekday_dates(result.reply, snapshot)
     return result

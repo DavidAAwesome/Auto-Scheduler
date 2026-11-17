@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from app import plan_extraction
 from app.config import get_settings
-from app.plan_drafts import review_draft
+from app.plan_drafts import review_all, review_draft
 from app.plan_extraction import Extraction, LlmItem, apply_answer, parse_text
 from schedule_fixtures import NOW, setup_user
 
@@ -199,7 +199,8 @@ def test_text_uses_the_model_when_configured_and_output_is_still_validated(envir
     bad.items[0].startTime = '25:99'  # invalid model output is never trusted
     bad.items[0].repeatUntil = 'next semester'
     monkeypatch.setattr(plan_extraction, 'call_model', lambda inputs: bad)
-    body = client.post('/plan/interpret', json={'text': 'my classes'}).json()
+    text = '\n'.join(item.sourceText for item in bad.items)  # typed items must come from the message itself
+    body = client.post('/plan/interpret', json={'text': text}).json()
     first = body['drafts'][0]
     assert first['draft']['start'] is None and {'start', 'repeat.until'} <= set(first['draft']['unreadable'])
     assert any(i['code'] == 'unreadable' and i['field'] == 'start' for i in first['issues'])
@@ -341,3 +342,108 @@ def test_ai_items_are_cross_checked_against_the_built_in_reading():
     exam = LlmItem(**{**llm_task('Mock exam', 'Mock exam 2 hours in one sitting due tomorrow', minutes=120).model_dump(),
                       'allowSplit': None})
     assert drafts_from_extraction(Extraction(items=[exam], notes=[]), date(2026, 10, 26))[0].allowSplit is False
+
+
+def test_a_list_of_days_with_a_time_is_one_event_per_day():
+    from app.plan_extraction import expand_day_list
+    monday = datetime(2026, 11, 16, 15, 0, tzinfo=NY)
+    drafts = parse_text('Soccer practice Sat and Sun 9-10am', monday, NY)
+    assert [(d.kind, d.title, d.date, d.start, d.end, d.repeat) for d in drafts] == [
+        ('fixed_event', 'Soccer practice', '2026-11-21', 540, 600, None),
+        ('fixed_event', 'Soccer practice', '2026-11-22', 540, 600, None)]
+    assert [d.date for d in parse_text('Gym Mon, Wed and Fri 6-7pm', monday, NY)] == ['2026-11-16', '2026-11-18', '2026-11-20']
+    # Recurring wording, deadlines and lines without a time stay one item.
+    for text in ('Soccer practice every Sat and Sun 9-10am', 'Soccer practice Saturdays and Sundays 9-10am',
+                 'Essay due Fri and Sat 2 hours', 'Meet Monday and Tuesday'):
+        assert expand_day_list(text) == [text]
+
+
+def test_a_model_date_for_a_named_day_is_checked_against_the_calendar():
+    from app.plan_extraction import drafts_from_extraction
+    # gpt-4o-mini read "Soccer practice Sat 9-10am" (on Monday Nov 16) as a weekly series starting Thu Nov 19.
+    wrong = LlmItem(**{**llm_task('Soccer practice', 'Soccer practice Sat 9-10am', minutes=None, deadline=None).model_dump(),
+                       'kind': 'fixed_event', 'date': '2026-11-19', 'startTime': '09:00', 'endTime': '10:00',
+                       'repeatWeekdays': [5]})
+    draft = drafts_from_extraction(Extraction(items=[wrong], notes=[]), date(2026, 11, 16))[0]
+    assert (draft.kind, draft.date, draft.start, draft.end, draft.repeat) == ('fixed_event', '2026-11-21', 540, 600, None)
+
+
+def test_ai_items_the_message_never_mentions_are_dropped(environment, monkeypatch, with_ai):
+    """gpt-4o-mini returned the saved task "Lab report" as a new item for "Lunch with Sam at noon tomorrow"."""
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    lunch = LlmItem(**{**llm_task('Lunch with Sam', 'Lunch with Sam at noon tomorrow', minutes=30, deadline='2026-10-27').model_dump(),
+                       'kind': 'flexible_event'})
+    ghost = llm_task('Lab report', 'Lab report', minutes=None, deadline=None)
+    monkeypatch.setattr(plan_extraction, 'call_model', lambda inputs: Extraction(items=[lunch, ghost], notes=[]))
+    drafts = [v['draft'] for v in client.post('/plan/interpret', json={'text': 'Lunch with Sam at noon tomorrow'}).json()['drafts']]
+    # Only Lunch, and as an appointment: 12-1 PM tomorrow (1 hour assumed), not a 30-minute flexible item.
+    assert [(d['title'], d['kind'], d['date'], d['start'], d['end']) for d in drafts] == \
+        [('Lunch with Sam', 'fixed_event', '2026-10-27', 720, 780)]
+    assert drafts[0]['deadline'] is None and drafts[0]['dueTime'] is None and 'end' in drafts[0]['assumed']
+
+
+def test_a_single_clock_time_on_a_day_is_a_one_hour_appointment():
+    lunch = one('Lunch with Sam at noon tomorrow')
+    assert (lunch.kind, lunch.title, lunch.date, lunch.start, lunch.end, lunch.assumed) == \
+        ('fixed_event', 'Lunch with Sam', '2026-10-27', 720, 780, ['end'])
+    view = review_draft(lunch, NOW, NY)
+    assert view.ready and any('assumed 1 hour' in i.question and not i.blocking for i in view.issues)
+    assert (one('Dentist Friday 3pm').start, one('Dentist Friday 3pm').end) == (900, 960)
+    # A deadline or a length keeps its meaning.
+    assert one('Essay due tomorrow at 5pm 2 hours').kind == 'task'
+
+
+def test_two_days_with_a_short_source_text_are_not_fragments():
+    from app.plan_extraction import drafts_from_extraction
+    sat = LlmItem(**{**llm_task('Soccer practice', 'Soccer practice Sat 9-10am', minutes=None, deadline=None).model_dump(),
+                     'kind': 'fixed_event', 'date': '2026-11-21', 'startTime': '09:00', 'endTime': '10:00'})
+    sun = LlmItem(**{**sat.model_dump(), 'sourceText': 'Soccer practice', 'date': '2026-11-22'})
+    drafts = drafts_from_extraction(Extraction(items=[sat, sun], notes=[]), date(2026, 11, 16))
+    assert [d.date for d in drafts] == ['2026-11-21', '2026-11-22']
+
+
+def test_then_splits_work_into_ordered_items():
+    drafts = parse_text('Essay draft 2 hours in one sitting, then proofread 30 min after Essay draft', NOW, NY)
+    assert [(d.title, d.minutes, d.allowSplit, d.dependsOn) for d in drafts] == [
+        ('Essay draft', 120, False, []), ('Proofread', 30, None, ['d1'])]
+    assert [d.title for d in parse_text('Study until then 2 hours', NOW, NY)] == ['Study until then']
+
+
+def test_weekend_next_weekday_and_after_class_fragments():
+    tuesday = datetime(2026, 11, 17, 9, 0, tzinfo=NY)
+    coffee = parse_text('Coffee with Mia sometime this weekend, 1 hour', tuesday, NY)[0]
+    assert (coffee.kind, coffee.title, coffee.deadline, coffee.earliestStart) == \
+        ('flexible_event', 'Coffee with Mia', '2026-11-22', '2026-11-21T00:00:00')
+    assert parse_text('Report due this weekend 2 hours', tuesday, NY)[0].earliestStart is None
+    from app.plan_extraction import drafts_from_extraction
+    # The model read "next Friday" (on Tue Nov 17) as Tue Nov 24 at 12 AM: the rule's Fri Nov 27 wins, no time question.
+    essay = LlmItem(**{**llm_task('Essay', 'Essay due next Friday 3 hours', minutes=180, deadline='2026-11-24').model_dump(),
+                       'deadlineTime': '00:00', 'ambiguousFields': ['deadlineTime']})
+    # And split "Read chapter 3 after class, 1 hour, due Friday" into two items with different deadlines.
+    whole = llm_task('Read chapter 3', 'Read chapter 3 after class, 1 hour, due Friday', minutes=60, deadline='2026-11-18',
+                     ambiguous=['earliestStart'])
+    part = llm_task('Read chapter 3', 'Read chapter 3 after class', minutes=None, deadline='2026-11-20')
+    weekend = LlmItem(**{**llm_task('Coffee with Mia', 'Coffee with Mia sometime this weekend, 1 hour', deadline='2026-11-20').model_dump(),
+                         'kind': 'flexible_event'})
+    morning = LlmItem(**{**llm_task('Essay outline', 'Essay outline, 2 hours, due tomorrow morning', minutes=120,
+                                    deadline='2026-11-18').model_dump(), 'deadlineTime': '08:00', 'ambiguousFields': ['deadlineTime']})
+    drafts = drafts_from_extraction(Extraction(items=[essay, whole, part, weekend, morning], notes=[]), tuesday.date())
+    assert [(d.title, d.deadline, d.dueTime) for d in drafts] == [
+        ('Essay', '2026-11-27', None), ('Read chapter 3', '2026-11-20', None), ('Coffee with Mia', '2026-11-22', None),
+        ('Essay outline', '2026-11-18', 480)]
+    assert drafts[0].ambiguous == ['deadline']  # stated as a note: "I read the deadline as Fri, Nov 27"
+    assert drafts[2].earliestStart == '2026-11-21T00:00:00'
+    assert drafts[3].ambiguous == [] and 'dueTime' in drafts[3].assumed
+    views = review_all(drafts, tuesday, NY, set())
+    assert not any(i.blocking for i in views[0].issues + views[3].issues)
+
+
+def test_an_item_the_cross_check_makes_identical_is_kept_once():
+    from app.plan_extraction import drafts_from_extraction
+    event = LlmItem(**{**llm_task('Lunch with Sam', 'Lunch with Sam at noon tomorrow', minutes=None, deadline=None).model_dump(),
+                       'kind': 'fixed_event', 'date': '2026-11-18', 'startTime': '12:00', 'endTime': '13:00'})
+    flexible = LlmItem(**{**llm_task('Lunch with Sam', 'Lunch with Sam at noon tomorrow', minutes=30, deadline='2026-11-18').model_dump(),
+                          'kind': 'flexible_event'})
+    drafts = drafts_from_extraction(Extraction(items=[event, flexible], notes=[]), date(2026, 11, 17))
+    assert [(d.kind, d.date, d.start, d.end) for d in drafts] == [('fixed_event', '2026-11-18', 720, 780)]

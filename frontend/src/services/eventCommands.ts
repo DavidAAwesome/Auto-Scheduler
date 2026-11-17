@@ -299,10 +299,22 @@ function clockFromModel(value: string | null | undefined): number | null {
 }
 
 /** The model's add_event / delete_event intent, checked against this workspace before anything is offered. */
+const WEEKDAY_WORDS: [RegExp, number][] = [
+  [/\bsun(?:day)?s?\b/i, 0], [/\bmon(?:day)?s?\b/i, 1], [/\btue(?:s(?:day)?)?s?\b/i, 2], [/\bwed(?:s|nesday)?s?\b/i, 3],
+  [/\bthu(?:r(?:s(?:day)?)?)?s?\b/i, 4], [/\bfri(?:day)?s?\b/i, 5], [/\bsat(?:urday)?s?\b/i, 6],
+];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** Weekdays the user named (0 = Sunday), so a model-picked date can be checked against them. */
+export function namedWeekdays(text: string): number[] {
+  return WEEKDAY_WORDS.filter(([pattern]) => pattern.test(text)).map(([, day]) => day).sort((a, b) => (a + 6) % 7 - (b + 6) % 7);
+}
+
 export function eventFromIntent(
   intent: "add_event" | "delete_event",
   params: { eventId?: string | null; eventTitle?: string | null; eventDate?: string | null; eventStart?: string | null; eventEnd?: string | null },
   state: EventState,
+  userText = "",
 ): EventProposal {
   if (intent === "delete_event") {
     const byId = params.eventId ? state.events.find(e => e.id === params.eventId) : undefined;
@@ -315,6 +327,16 @@ export function eventFromIntent(
   if (!params.eventTitle?.trim()) return { action: null, question: `What should the event be called? ${ADD_EXAMPLE}` };
   if (!params.eventDate || !validDate(params.eventDate)) return { action: null, question: `Which day is “${params.eventTitle.trim()}” on?` };
   if (start === null || end === null) return { action: null, question: `What time does “${params.eventTitle.trim()}” start and end?` };
+  // The model picks one date; it must be a day the user named ("Sat and Sun" once became a Thursday).
+  const named = namedWeekdays(userText);
+  const picked = new Date(`${params.eventDate}T12:00:00Z`).getUTCDay();
+  if (named.length > 1) {
+    const days = named.map(d => DAY_NAMES[d]).join(" and ");
+    return { action: null, question: `That's one “${params.eventTitle.trim()}” on each of ${days}. Type it as a list, one per line, such as “${params.eventTitle.trim()} ${DAY_NAMES[named[0]]} 9-10am”, and I'll read them all.` };
+  }
+  if (named.length === 1 && named[0] !== picked) {
+    return { action: null, question: `Which day is “${params.eventTitle.trim()}” on? I read ${longDate(params.eventDate)}, but you said ${DAY_NAMES[named[0]]}.` };
+  }
   return proposeAddEvent({ title: params.eventTitle, kind: kindFrom(params.eventTitle), date: params.eventDate, start, end, location: null, repeat: null }, state);
 }
 
