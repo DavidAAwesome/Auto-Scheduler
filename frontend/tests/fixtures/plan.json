@@ -1,0 +1,490 @@
+{
+  "tasks": [],
+  "availability": {
+    "days": [
+      {
+        "day": 0,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 1,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 2,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 3,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 4,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 5,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      },
+      {
+        "day": 6,
+        "enabled": true,
+        "periods": [
+          {
+            "start": 540,
+            "end": 720
+          }
+        ]
+      }
+    ],
+    "weekOverrides": [],
+    "timeZone": "America/New_York",
+    "reminders": false
+  },
+  "preferences": {
+    "focusMinutes": 50,
+    "breakMinutes": 10,
+    "maxDailyWorkMinutes": 240,
+    "lunch": null
+  },
+  "schedule": {
+    "scheduleVersion": 1,
+    "timeZone": "America/New_York",
+    "sessions": []
+  },
+  "interpret": {
+    "batchId": "batch-1",
+    "provider": "local",
+    "drafts": [
+      {
+        "draft": {
+          "id": "d1",
+          "kind": "task",
+          "title": "Lab report",
+          "minutes": 90,
+          "deadline": "2026-10-27",
+          "dueTime": null,
+          "earliestStart": null,
+          "priority": "High",
+          "category": "Study",
+          "allowSplit": null,
+          "minSessionMinutes": null,
+          "maxSessionMinutes": null,
+          "date": null,
+          "start": null,
+          "end": null,
+          "eventKind": "Other",
+          "location": null,
+          "repeat": null,
+          "windows": [],
+          "dependsOn": [],
+          "sourceText": "Lab report 90 min due tomorrow high priority",
+          "ambiguous": [],
+          "unreadable": [],
+          "assumed": [],
+          "include": true
+        },
+        "issues": [],
+        "ready": true
+      },
+      {
+        "draft": {
+          "id": "d2",
+          "kind": "fixed_event",
+          "title": "Advisor meeting",
+          "minutes": null,
+          "deadline": null,
+          "dueTime": null,
+          "earliestStart": null,
+          "priority": "Medium",
+          "category": "Study",
+          "allowSplit": null,
+          "minSessionMinutes": null,
+          "maxSessionMinutes": null,
+          "date": "2026-10-26",
+          "start": 660,
+          "end": 690,
+          "eventKind": "Meeting",
+          "location": null,
+          "repeat": null,
+          "windows": [],
+          "dependsOn": [],
+          "sourceText": "Advisor meeting today 11-11:30am",
+          "ambiguous": [],
+          "unreadable": [],
+          "assumed": [],
+          "include": true
+        },
+        "issues": [],
+        "ready": true
+      },
+      {
+        "draft": {
+          "id": "d3",
+          "kind": "flexible_event",
+          "title": "Gym",
+          "minutes": 30,
+          "deadline": "2026-10-26",
+          "dueTime": null,
+          "earliestStart": "2026-10-26T00:00:00",
+          "priority": "Low",
+          "category": "Study",
+          "allowSplit": null,
+          "minSessionMinutes": null,
+          "maxSessionMinutes": null,
+          "date": null,
+          "start": null,
+          "end": null,
+          "eventKind": "Other",
+          "location": null,
+          "repeat": null,
+          "windows": [],
+          "dependsOn": [],
+          "sourceText": "Gym 30 min sometime today, low priority",
+          "ambiguous": [],
+          "unreadable": [],
+          "assumed": [],
+          "include": true
+        },
+        "issues": [],
+        "ready": true
+      }
+    ],
+    "notes": [
+      "Read with AutoPlan\u2019s built-in parser (no AI key set). Check each item."
+    ],
+    "now": "2026-10-26T12:00:00Z",
+    "timeZone": "America/New_York"
+  },
+  "review": [
+    {
+      "draft": {
+        "id": "d1",
+        "kind": "task",
+        "title": "Lab report",
+        "minutes": 90,
+        "deadline": "2026-10-27",
+        "dueTime": null,
+        "earliestStart": null,
+        "priority": "High",
+        "category": "Study",
+        "allowSplit": null,
+        "minSessionMinutes": null,
+        "maxSessionMinutes": null,
+        "date": null,
+        "start": null,
+        "end": null,
+        "eventKind": "Other",
+        "location": null,
+        "repeat": null,
+        "windows": [],
+        "dependsOn": [],
+        "sourceText": "Lab report 90 min due tomorrow high priority",
+        "ambiguous": [],
+        "unreadable": [],
+        "assumed": [],
+        "include": true
+      },
+      "issues": [],
+      "ready": true
+    },
+    {
+      "draft": {
+        "id": "d2",
+        "kind": "fixed_event",
+        "title": "Advisor meeting",
+        "minutes": null,
+        "deadline": null,
+        "dueTime": null,
+        "earliestStart": null,
+        "priority": "Medium",
+        "category": "Study",
+        "allowSplit": null,
+        "minSessionMinutes": null,
+        "maxSessionMinutes": null,
+        "date": "2026-10-26",
+        "start": 660,
+        "end": 690,
+        "eventKind": "Meeting",
+        "location": null,
+        "repeat": null,
+        "windows": [],
+        "dependsOn": [],
+        "sourceText": "Advisor meeting today 11-11:30am",
+        "ambiguous": [],
+        "unreadable": [],
+        "assumed": [],
+        "include": true
+      },
+      "issues": [],
+      "ready": true
+    },
+    {
+      "draft": {
+        "id": "d3",
+        "kind": "flexible_event",
+        "title": "Gym",
+        "minutes": 30,
+        "deadline": "2026-10-26",
+        "dueTime": null,
+        "earliestStart": "2026-10-26T00:00:00",
+        "priority": "Low",
+        "category": "Study",
+        "allowSplit": null,
+        "minSessionMinutes": null,
+        "maxSessionMinutes": null,
+        "date": null,
+        "start": null,
+        "end": null,
+        "eventKind": "Other",
+        "location": null,
+        "repeat": null,
+        "windows": [],
+        "dependsOn": [],
+        "sourceText": "Gym 30 min sometime today, low priority",
+        "ambiguous": [],
+        "unreadable": [],
+        "assumed": [],
+        "include": true
+      },
+      "issues": [],
+      "ready": true
+    }
+  ],
+  "feasibility": {
+    "status": "fits_without_moving",
+    "summary": "Everything fits in your free time without moving any saved work.",
+    "items": [
+      {
+        "draftId": "d1",
+        "title": "Lab report",
+        "kind": "task",
+        "status": "fits",
+        "neededMinutes": 90,
+        "scheduledMinutes": 90,
+        "unscheduledMinutes": 0,
+        "causes": []
+      },
+      {
+        "draftId": "d2",
+        "title": "Advisor meeting",
+        "kind": "fixed_event",
+        "status": "fixed",
+        "neededMinutes": 0,
+        "scheduledMinutes": 0,
+        "unscheduledMinutes": 0,
+        "causes": []
+      },
+      {
+        "draftId": "d3",
+        "title": "Gym",
+        "kind": "flexible_event",
+        "status": "fits",
+        "neededMinutes": 30,
+        "scheduledMinutes": 30,
+        "unscheduledMinutes": 0,
+        "causes": []
+      }
+    ],
+    "displaced": [],
+    "alternatives": [],
+    "horizonDays": 1,
+    "windowStart": "2026-10-26T12:00:00Z",
+    "windowEnd": "2026-10-27T04:00:00Z",
+    "searchLimits": "Planning horizon: 1 days (2026-10-26 to 2026-10-26, America/New_York). Search: earliest-fit in priority order plus at most 20 local repairs (6 per task).",
+    "savedDataChanged": false
+  },
+  "preview": {
+    "previewId": "6ae0e2298ebfb5fd4813d99a",
+    "status": "proposed",
+    "mode": "plan",
+    "baseScheduleVersion": 1,
+    "generatedAt": "2026-10-26T12:00:00Z",
+    "timeZone": "America/New_York",
+    "windowStart": "2026-10-26T12:00:00Z",
+    "windowEnd": "2026-10-27T04:00:00Z",
+    "startDate": "2026-10-26",
+    "endDate": "2026-10-26",
+    "preferences": {
+      "focusMinutes": 50,
+      "breakMinutes": 10,
+      "maxDailyWorkMinutes": 240,
+      "lunch": null
+    },
+    "sessions": [
+      {
+        "id": "proposed-1",
+        "taskId": "draft:d1",
+        "title": "Lab report",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 1,
+        "startAt": "2026-10-26T13:00:00Z",
+        "endAt": "2026-10-26T13:50:00Z",
+        "date": "2026-10-26",
+        "start": 540,
+        "end": 590,
+        "change": "new",
+        "reason": null
+      },
+      {
+        "id": "proposed-2",
+        "taskId": null,
+        "title": "Break",
+        "type": "break",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 1,
+        "startAt": "2026-10-26T13:50:00Z",
+        "endAt": "2026-10-26T14:00:00Z",
+        "date": "2026-10-26",
+        "start": 590,
+        "end": 600,
+        "change": "new",
+        "reason": "Reserved break after reaching the focus limit"
+      },
+      {
+        "id": "proposed-3",
+        "taskId": "draft:d1",
+        "title": "Lab report",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 1,
+        "startAt": "2026-10-26T14:00:00Z",
+        "endAt": "2026-10-26T14:40:00Z",
+        "date": "2026-10-26",
+        "start": 600,
+        "end": 640,
+        "change": "new",
+        "reason": null
+      },
+      {
+        "id": "proposed-4",
+        "taskId": "draft:d3",
+        "title": "Gym",
+        "type": "work",
+        "status": "proposed",
+        "locked": false,
+        "source": "auto",
+        "scheduleVersion": 1,
+        "startAt": "2026-10-26T15:30:00Z",
+        "endAt": "2026-10-26T16:00:00Z",
+        "date": "2026-10-26",
+        "start": 690,
+        "end": 720,
+        "change": "new",
+        "reason": null
+      }
+    ],
+    "removed": [],
+    "tasks": [
+      {
+        "taskId": "draft:d1",
+        "title": "Lab report",
+        "priority": "High",
+        "kind": "task",
+        "dueAt": "2026-10-28T04:00:00Z",
+        "estimatedMinutes": 90,
+        "completedMinutes": 0,
+        "remainingMinutes": 90,
+        "retainedMinutes": 0,
+        "inProgressMinutes": 0,
+        "newMinutes": 90,
+        "unallocatedMinutes": 0,
+        "overAllocatedMinutes": 0,
+        "atRisk": false,
+        "slackMinutes": 35,
+        "status": "scheduled",
+        "reasons": []
+      },
+      {
+        "taskId": "draft:d3",
+        "title": "Gym",
+        "priority": "Low",
+        "kind": "flexible_event",
+        "dueAt": "2026-10-27T04:00:00Z",
+        "estimatedMinutes": 30,
+        "completedMinutes": 0,
+        "remainingMinutes": 30,
+        "retainedMinutes": 0,
+        "inProgressMinutes": 0,
+        "newMinutes": 30,
+        "unallocatedMinutes": 0,
+        "overAllocatedMinutes": 0,
+        "atRisk": false,
+        "slackMinutes": null,
+        "status": "scheduled",
+        "reasons": []
+      }
+    ],
+    "conflicts": [],
+    "days": [
+      {
+        "date": "2026-10-26",
+        "workMinutes": 120,
+        "newWorkMinutes": 120,
+        "breakCount": 1,
+        "sessionCount": 4
+      }
+    ],
+    "firstProposedDate": "2026-10-26",
+    "explanations": [],
+    "note": "AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this heuristic found no valid place under your rules; that is not proof that no schedule exists. Search limits: earliest-fit in priority order, then at most 20 local repairs (6 per task) over the next 1 days. Unplaced work means no plan was found within these limits, not that none exists, unless a reason says it is impossible.",
+    "inputFingerprint": "cfd8db2d2c8a8a5a355ff65c041b45a097c7d1637f4d7b37ae9b7a50635d4d41",
+    "proposedEvents": [
+      {
+        "draftId": "d2",
+        "title": "Advisor meeting",
+        "kind": "Meeting",
+        "date": "2026-10-26",
+        "start": 660,
+        "end": 690,
+        "startAt": "2026-10-26T15:00:00Z",
+        "endAt": "2026-10-26T15:30:00Z",
+        "repeats": false
+      }
+    ],
+    "horizonDays": 1
+  }
+}

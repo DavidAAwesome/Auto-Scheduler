@@ -74,7 +74,7 @@ def interpret_request(
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=503,
-            detail='OpenAI is not configured. Set OPENAI_API_KEY in backend/.env.',
+            detail='The AI assistant isn’t available right now.',  # OPENAI_API_KEY is not set
         )
     client = OpenAI(api_key=settings.openai_api_key, timeout=30.0)
     context = {

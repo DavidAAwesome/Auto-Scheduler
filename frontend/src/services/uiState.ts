@@ -32,6 +32,16 @@ export const calendarViewStore = createStore<CalendarViewState>(
   { mode: savedMode === 'day' || savedMode === 'month' ? savedMode : 'week', anchor: localDate() },
   view => write('autoplan.calendarMode', view.mode),
 );
+/**
+ * The first anchor comes from the device clock, before the account timezone is known. Once it is, move the
+ * calendar to the account's today, unless the user has already navigated somewhere.
+ */
+let navigated = false;
+const setView = calendarViewStore.set;
+calendarViewStore.set = (next: CalendarViewState) => { navigated = true; setView(next); };
+export function alignCalendarToday(today: string) {
+  if (!navigated && calendarViewStore.get().anchor !== today) setView({ ...calendarViewStore.get(), anchor: today });
+}
 export function useCalendarView() { return useSyncExternalStore(calendarViewStore.subscribe, calendarViewStore.get); }
 
 // The chat panel overlays the calendar on narrow screens, so it starts closed there unless the user opened it before.
@@ -39,3 +49,7 @@ const savedChat = read('autoplan.chatOpen');
 const wide = typeof innerWidth === 'undefined' || innerWidth > 1180;
 export const chatPanelStore = createStore<boolean>(savedChat === null ? wide : savedChat === 'true', open => write('autoplan.chatOpen', String(open)));
 export function useChatPanelOpen() { return useSyncExternalStore(chatPanelStore.subscribe, chatPanelStore.get); }
+
+/** Show built-in holidays, observances and daylight-saving changes on the calendar (on by default). */
+export const holidaysStore = createStore<boolean>(read('autoplan.holidays') !== 'false', on => write('autoplan.holidays', String(on)));
+export function useShowHolidays() { return useSyncExternalStore(holidaysStore.subscribe, holidaysStore.get); }

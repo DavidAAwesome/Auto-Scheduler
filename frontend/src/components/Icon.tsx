@@ -1,4 +1,5 @@
 export type IconName =
+  | "image"
   | "home"
   | "planner"
   | "tasks"
@@ -58,6 +59,7 @@ const paths: Record<IconName, string> = {
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6",
   check: "M20 6 9 17l-5-5",
   send: "m22 2-7 20-4-9-9-4ZM22 2 11 13",
+  image: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM21 15l-5-5L5 21M8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z",
   sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
   moon: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z",
   clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3 2",

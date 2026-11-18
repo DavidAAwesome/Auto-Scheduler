@@ -66,6 +66,49 @@ def test_acceptance_preview_apply_refresh(transaction_environment, monkeypatch):
     assert len(client.get('/schedule').json()['sessions']) == 6
 
 
+def save_acceptance_plan(db, tasks):
+    """The saved acceptance plan, stored the way apply stores it (apply itself needs a transaction-capable server)."""
+    from datetime import date
+    from zoneinfo import ZoneInfo
+    from app.scheduling_engine import from_abs, local_to_abs
+    owner, zone, ids = str(db.users.find_one()['_id']), ZoneInfo('America/New_York'), {t['title']: t['id'] for t in tasks}
+    for day, span, kind, title in ACCEPTANCE:
+        start, end = (int(x[:2]) * 60 + int(x[3:]) for x in span.split('-'))
+        at = lambda minute: from_abs(local_to_abs(date.fromisoformat(day), minute, zone))
+        db.sessions.insert_one({'user_id': owner, 'task_id': ids.get(title) if kind == 'work' else None, 'type': kind,
+                                'status': 'saved', 'locked': False, 'source': 'auto', 'start_at': at(start), 'end_at': at(end),
+                                'date': day, 'start': start, 'end': end, 'schedule_version': 1})
+
+
+def test_deleting_a_task_removes_breaks_left_between_nothing(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    asm, rev = acceptance_tasks(client)
+    save_acceptance_plan(db, (asm, rev))
+    assert rows(client.get('/schedule').json()['sessions']) == ACCEPTANCE
+
+    # 09:50 sits between two Asm sessions and stays; 10:50 sat between two revision sessions and goes with them.
+    assert client.delete(f"/tasks/{rev['id']}").status_code == 204
+    assert rows(client.get('/schedule').json()['sessions']) == ACCEPTANCE[:3]
+
+    assert client.delete(f"/tasks/{asm['id']}").status_code == 204
+    assert client.get('/schedule').json()['sessions'] == []
+
+
+def test_breaks_you_asked_for_survive_task_deletion_and_any_break_can_be_deleted(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    asm, rev = acceptance_tasks(client)
+    save_acceptance_plan(db, (asm, rev))
+    db.sessions.update_one({'type': 'break', 'start': 10 * 60 + 50}, {'$set': {'locked': True, 'source': 'manual'}})
+    assert client.delete(f"/tasks/{rev['id']}").status_code == 204
+    breaks = [s for s in client.get('/schedule').json()['sessions'] if s['type'] == 'break']
+    assert [(b['start'], b['locked']) for b in breaks] == [(590, False), (650, True)]
+    for brk in breaks:
+        assert client.delete(f"/sessions/{brk['id']}").status_code == 204
+    assert db.sessions.count_documents({'type': 'break'}) == 0
+
+
 def test_concurrent_apply_requests_save_once(transaction_environment, monkeypatch):
     client, db = transaction_environment
     setup_user(client, monkeypatch)
@@ -332,3 +375,33 @@ def test_interpret_builds_preview_through_the_same_service(environment, monkeypa
     chat = client.post('/schedule/interpret', json={'message': 'plan my week'}).json()['preview']
     strip = lambda p: [(s['startAt'], s['endAt'], s['type'], s['title']) for s in p['sessions']]
     assert strip(chat) == strip(button)
+
+
+def test_a_new_plan_keeps_sessions_it_would_put_back_in_the_same_place(transaction_environment, monkeypatch):
+    """Generating again with nothing changed used to show every saved session as "Replaced by the new schedule"."""
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    saved = {s['id'] for s in client.get('/schedule').json()['sessions']}
+
+    again = preview(client)
+    assert again['removed'] == []
+    assert rows(again['sessions']) == ACCEPTANCE
+    assert {s['id'] for s in again['sessions']} == saved and {s['change'] for s in again['sessions']} == {'kept'}
+    assert apply(client, again['previewId']).status_code == 200
+    after = client.get('/schedule').json()['sessions']
+    assert {s['id'] for s in after} == saved and rows(after) == ACCEPTANCE
+
+
+def test_break_now_between_grid_minutes_starts_at_the_next_five_minutes(transaction_environment, monkeypatch):
+    """At 9:21:37 a break "now" used to start at 9:21, before the planning window (9:25), and the preview failed."""
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    freeze(monkeypatch, NOW + timedelta(hours=1, minutes=21, seconds=37))
+    proposal = preview(client, '/schedule/break', minutes=15)
+    breaks = [s for s in proposal['sessions'] if s['type'] == 'break' and s['locked']]
+    assert [(s['start'], s['end']) for s in breaks] == [(565, 580)]
+    assert apply(client, proposal['previewId']).status_code == 200

@@ -16,12 +16,33 @@ router = APIRouter(tags=['workspace'])
 DEFAULT_DUE_TIME = 23 * 60 + 59  # 11:59 PM when no due time is given
 
 
+class TimeWindow(BaseModel):
+    """A recurring local time window when a task or flexible event may be placed. Empty weekdays = every day."""
+    model_config = ConfigDict(extra='forbid')
+    weekdays: list[int] = Field(default_factory=list, max_length=7)  # Monday = 0
+    start: int = Field(strict=True, ge=0, le=1435, multiple_of=5)
+    end: int = Field(strict=True, ge=5, le=1440, multiple_of=5)
+
+    @field_validator('weekdays')
+    @classmethod
+    def valid_weekdays(cls, value):
+        if any(isinstance(day, bool) or day not in range(7) for day in value) or len(set(value)) != len(value):
+            raise ValueError('Choose weekdays from Monday (0) to Sunday (6), each once.')
+        return sorted(value)
+
+    @model_validator(mode='after')
+    def ordered(self):
+        if self.end <= self.start:
+            raise ValueError('A time window must end after it starts; overnight windows are not supported.')
+        return self
+
+
 class TaskInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=80)
     deadline: str
     # Total estimated work. Tasks can be split into several work sessions, so allow up to 100 hours.
-    minutes: int = Field(strict=True, ge=15, le=6000, multiple_of=15)
+    minutes: int = Field(strict=True, ge=5, le=6000, multiple_of=5)
     # Work actually done. Remaining work is always minutes - completedMinutes; scheduled work is not completed work.
     completedMinutes: int | None = Field(default=None, strict=True, ge=0, le=6000)
     # Accepted for older clients: remainingMinutes sets completedMinutes = minutes - remainingMinutes.
@@ -31,9 +52,13 @@ class TaskInput(BaseModel):
     category: Literal['Project', 'Study', 'Personal', 'Work']
     earliestStart: str | None = None  # ISO-8601 datetime; null = as soon as allowed
     allowSplit: bool = Field(default=True, strict=True)
-    minSessionMinutes: int = Field(default=15, strict=True, ge=15, le=6000, multiple_of=15)
-    maxSessionMinutes: int = Field(default=60, strict=True, ge=15, le=6000, multiple_of=15)
+    minSessionMinutes: int = Field(default=15, strict=True, ge=5, le=6000, multiple_of=5)
+    maxSessionMinutes: int = Field(default=60, strict=True, ge=5, le=6000, multiple_of=5)
     dependsOn: list[str] = Field(default_factory=list, max_length=32)
+    # "task" is focus work. "flexible_event" (gym, coffee with a friend) is placed by the scheduler in one
+    # contiguous slot unless allowSplit is set, and does not count toward focus or daily work limits.
+    kind: Literal['task', 'flexible_event'] = 'task'
+    windows: list[TimeWindow] = Field(default_factory=list, max_length=14)
 
     @field_validator('title')
     @classmethod
@@ -89,6 +114,8 @@ TASK_DEFAULTS = {
     'minSessionMinutes': 15,
     'maxSessionMinutes': 60,
     'dependsOn': [],
+    'kind': 'task',
+    'windows': [],
 }
 
 
@@ -172,7 +199,30 @@ def delete_task(task_id: str, user=Depends(get_current_user), db=Depends(get_dat
     if not db.tasks.delete_one(owned_task(task_id, user)).deleted_count:
         raise HTTPException(404, 'Task not found.')
     db.sessions.delete_many({'user_id': str(user['_id']), 'task_id': task_id})
+    prune_orphan_breaks(db, user)
     bump(db, user)
+
+
+def prune_orphan_breaks(db, user):
+    """Deletes scheduler-placed breaks that no longer sit between two pieces of work on the same day.
+
+    The engine only reserves a break between work runs, so once a task (and its sessions) is gone, the breaks
+    around it are left resting between nothing. Breaks the user asked for (locked) are kept."""
+    zone = user_zone(db, user)
+    docs = [doc for doc in list_session_docs(db, user) if doc.get('status') != 'cancelled']
+    spans = []
+    for doc in docs:
+        try:
+            spans.append((doc, session_output(doc, zone)))
+        except (KeyError, TypeError, ValueError):
+            continue  # an incomplete legacy document is left alone
+    work = [s for doc, s in spans if s.type == 'work']
+    orphans = [doc['_id'] for doc, s in spans
+               if s.type == 'break' and s.source == 'auto' and not s.locked
+               and not (any(w.date == s.date and w.end <= s.start for w in work)
+                        and any(w.date == s.date and w.start >= s.end for w in work))]
+    if orphans:
+        db.sessions.delete_many({'_id': {'$in': orphans}, 'user_id': str(user['_id'])})
 
 
 class SessionInput(BaseModel):
@@ -407,6 +457,7 @@ class AvailableDay(BaseModel):
     @model_validator(mode='after')
     def valid_periods(self):
         if not self.enabled:
+            self.periods = []  # an unavailable day keeps no hours, so turning it back on starts fresh
             return self
         if not self.periods:
             raise ValueError('Enabled days need at least one available period.')
@@ -462,6 +513,14 @@ class Availability(BaseModel):
             raise ValueError('Choose a valid IANA time zone, such as America/New_York or GMT.') from None
         return value
 
+    @model_validator(mode='before')
+    @classmethod
+    def ignore_saved_flag(cls, value):
+        # `saved` is read-only output (see AvailabilityView); clients may send back what they loaded.
+        if isinstance(value, dict) and 'saved' in value and 'saved' not in cls.model_fields:
+            value = {key: item for key, item in value.items() if key != 'saved'}
+        return value
+
     @model_validator(mode='after')
     def unique_weekdays(self):
         if sorted(day.day for day in self.days) != list(range(7)):
@@ -472,6 +531,11 @@ class Availability(BaseModel):
             raise ValueError('Each week override must use a unique Monday.')
         self.weekOverrides.sort(key=lambda week: week.weekStart)
         return self
+
+
+class AvailabilityView(Availability):
+    """`saved` is false until the user (or the app, from the browser's timezone) first saves availability."""
+    saved: bool = True
 
 
 def default_availability():
@@ -491,14 +555,40 @@ def resolve_available_day(availability: Availability, day: date) -> AvailableDay
     return next(row for row in availability.days if row.day == day.weekday())
 
 
-@router.get('/availability', response_model=Availability)
+@router.get('/availability', response_model=AvailabilityView)
 def get_availability(user=Depends(get_current_user), db=Depends(get_database)):
     doc = db.availability.find_one({'user_id': str(user['_id'])}, {'_id': 0, 'user_id': 0})
-    return Availability(**doc) if doc else default_availability()
+    if doc:
+        return AvailabilityView(**doc)
+    return AvailabilityView(**default_availability().model_dump(), saved=False)
 
 
-@router.put('/availability', response_model=Availability)
+@router.put('/availability', response_model=AvailabilityView)
 def save_availability(data: Availability, user=Depends(get_current_user), db=Depends(get_database)):
-    db.availability.update_one({'user_id': str(user['_id'])}, {'$set': data.model_dump()}, upsert=True)
+    """The saved timezone is the account's only timezone. Changing it keeps events at the same real time."""
+    from datetime import datetime, timezone
+    from app.timezone_change import preserve_event_times
+    from pymongo.read_concern import ReadConcern
+    from pymongo.write_concern import WriteConcern
+    from app.schedule_version import bump_schedule_version
+    user_id = str(user['_id'])
+    previous = db.availability.find_one({'user_id': user_id}, {'timeZone': 1})
+    if previous and previous.get('timeZone') and previous['timeZone'] != data.timeZone:
+        # Events and the new zone are saved together, so a failure can't leave events converted to a zone the
+        # account doesn't have (a replica set is required, as for schedule Apply).
+        today = datetime.now(timezone.utc).astimezone(ZoneInfo(previous['timeZone'])).date()
+
+        def change(session):
+            current = db.availability.find_one({'user_id': user_id}, {'timeZone': 1}, session=session)
+            if (current or {}).get('timeZone') != previous['timeZone']:
+                raise HTTPException(409, 'Your timezone was changed somewhere else. Reload and try again.')
+            preserve_event_times(db, user_id, previous['timeZone'], data.timeZone, today, session=session)
+            db.availability.update_one({'user_id': user_id}, {'$set': data.model_dump()}, session=session)
+            bump_schedule_version(db, user_id, session=session)
+
+        with db.client.start_session() as session:
+            session.with_transaction(change, read_concern=ReadConcern('snapshot'), write_concern=WriteConcern('majority'))
+        return AvailabilityView(**data.model_dump())
+    db.availability.update_one({'user_id': user_id}, {'$set': data.model_dump()}, upsert=True)
     bump(db, user)
-    return data
+    return AvailabilityView(**data.model_dump())

@@ -4,12 +4,13 @@ import { duration } from "../utils/taskDisplay";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { dateInZone } from "../utils/calendar";
 import type { Category } from "../types/models";
+import { accountTimeZone } from "../utils/timeZones";
 
 type Stat = { icon: IconName; value: string; label: string; tone: "purple" | "green" | "peach" };
 
 export default function Analytics() {
   const { tasks, sessions, availability } = useWorkspace();
-  const zone = availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(availability);
   const today = dateInZone(zone);
   const done = tasks.filter(t => t.done);
   const open = tasks.filter(t => !t.done);

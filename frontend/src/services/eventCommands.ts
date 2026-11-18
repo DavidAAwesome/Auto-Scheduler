@@ -3,6 +3,7 @@ import type { WorkspaceState } from "./workspaceStore.ts";
 import { clock12, dateInZone, longDate, weekdayIndex } from "../utils/calendar.ts";
 import { addDays, validDate } from "../utils/dates.ts";
 import { eventClash, occursOn } from "../utils/events.ts";
+import { accountTimeZone } from "../utils/timeZones.ts";
 
 /**
  * Add and delete calendar events from chat. Nothing is saved or deleted until the user presses the
@@ -67,7 +68,7 @@ function guessMeridiem(hour: number): "am" | "pm" {
 /** Start and end in minutes, from "from 3 to 4pm", "3-4:30pm", "at 2pm for 90 minutes" or "at 10am" (1 hour). */
 export function parseTimes(raw: string): { start: number; end: number; assumed: string[] } | null {
   const assumed: string[] = [];
-  const text = stripDates(raw);
+  const text = withClockWords(stripDates(raw));
   const range = text.match(new RegExp(`(?:\\bfrom\\s+|\\bat\\s+|\\b)${TIME}\\s*(?:-|–|to|until|till)\\s*${TIME}`, "i"));
   if (range) {
     const [, h1, m1, a1, h2, m2, a2] = range;
@@ -115,13 +116,34 @@ export function parseDate(text: string, today: string): string | null {
   if (named) return pick(MONTHS.indexOf(named[1].slice(0, 3)) + 1, Number(named[2]), named[3] ? Number(named[3]) : undefined);
   const slash = lower.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?\b/);
   if (slash) return pick(Number(slash[1]), Number(slash[2]), slash[3] ? Number(slash[3]) : undefined);
-  const day = WEEKDAY_NAMES.findIndex(name => new RegExp(`\\b${name}\\b|\\b${name.slice(0, 3)}\\b`).test(lower));
+  const day = WEEKDAY_NAMES.findIndex(name => new RegExp(`\\b${name}s?\\b|\\b${name.slice(0, 3)}\\b`).test(lower));
   if (day >= 0) {
-    const ahead = (day - weekdayIndex(today) + 7) % 7;
-    const next = /\bnext\s+\w+day\b/.test(lower) && ahead === 0 ? 7 : ahead;
-    return addDays(today, next);
+    const current = weekdayIndex(today);
+    // "next Friday" is the Friday of next week (Monday–Sunday), never tomorrow; "Friday" is the coming one.
+    if (nextWeekday(lower)) return addDays(today, 7 - current + day);
+    return addDays(today, (day - current + 7) % 7);
   }
   return null;
+}
+
+/** "noon" and "midnight" as clock times the patterns below understand. */
+export function withClockWords(text: string) {
+  return text.replace(/\bnoon\b/gi, "12pm").replace(/\bmidnight\b/gi, "12am");
+}
+
+/** True when the text says "next <weekday>", which people mean as that day in the following week. */
+export function nextWeekday(text: string) {
+  return /\bnext\s+(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day|nesday|sday|rsday|urday)?\b/i.test(text);
+}
+
+/** Weekdays (Monday = 0) named after "every"/"each" or as plurals ("Mondays and Wednesdays"), else []. */
+export function repeatWeekdays(text: string): number[] {
+  const lower = text.toLowerCase();
+  const phrase = lower.match(/\b(?:every|each)\s+((?:(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*(?:\s*(?:,|and|&|\/)\s*)?)+)/)?.[1]
+    ?? lower.match(/\b((?:(?:mon|tues|wednes|thurs|fri|satur|sun)days)(?:\s*(?:,|and|&|\/)\s*(?:mon|tues|wednes|thurs|fri|satur|sun)days)*)\b/)?.[1];
+  if (!phrase) return [];
+  const days = (phrase.match(/(mon|tue|wed|thu|fri|sat|sun)/g) ?? []).map(d => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].indexOf(d));
+  return [...new Set(days)].sort((a, b) => a - b);
 }
 
 /** Removes calendar dates so "2026-10-30" or "10/30" is never read as a time range. */
@@ -133,14 +155,16 @@ function stripDates(text: string) {
 
 /** Strips date/time phrases so what remains can be used as (or to find) a title. */
 function stripWhen(text: string) {
-  return text
+  return withClockWords(text)
     .replace(new RegExp(`\\b(?:from|at|@)?\\s*${TIME}\\s*(?:-|–|to|until|till)\\s*${TIME}`, "gi"), " ")
     .replace(new RegExp(`\\b(?:at|@)\\s*${TIME}`, "gi"), " ")
     .replace(/\bfor\s+\d+(?:\.\d+)?\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b/gi, " ")
-    .replace(/\b(on\s+)?(next\s+)?(today|tonight|tomorrow|this\s+\w+|(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?)\b/gi, " ")
+    .replace(/\b(on\s+|every\s+|each\s+)?(next\s+)?(today|tonight|tomorrow|this\s+\w+|(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?s?)\b/gi, " ")
+    .replace(/\b(every week|weekly)\b/gi, " ")
     .replace(/\b(on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(st|nd|rd|th)?(,?\s*\d{4})?\b/gi, " ")
     .replace(/\b(on\s+)?\d{4}-\d{2}-\d{2}\b|\b(on\s+)?\d{1,2}\/\d{1,2}(\/\d{4})?\b/gi, " ")
     .replace(/\s+/g, " ")
+    .replace(/[\s,]+(and|&)[\s,]*$/i, "")
     .replace(/^[\s,.-]+|[\s,.-]+$/g, "");
 }
 
@@ -169,7 +193,7 @@ export function proposeAddEvent(input: CalendarEventInput, state: EventState, as
   }
   if (input.end <= input.start) return { action: null, question: "The event must end after it starts. What are the start and end times?" };
   if (input.start % 5 || input.end % 5) return { action: null, question: "Events use 5-minute steps (e.g. 3:05, 3:10). What times should I use?" };
-  const zone = state.availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(state.availability);
   const today = dateInZone(zone);
   const clean: CalendarEventInput = { ...input, title, location: input.location?.trim() || null, repeat: input.repeat ?? null };
   const clash = eventClash(state.events, clean.date, clean.start, clean.end);
@@ -221,9 +245,9 @@ export function proposeDeleteEvent(title: string, date: string | null, state: Ev
 }
 
 /** Plain-language add/delete event requests, or null when the text isn't one. */
-export function parseEventRequest(text: string, state: EventState): EventProposal | null {
-  const zone = state.availability?.timeZone ?? "UTC";
-  const today = dateInZone(zone);
+export function parseEventRequest(text: string, state: EventState, now = new Date()): EventProposal | null {
+  const zone = accountTimeZone(state.availability);
+  const today = dateInZone(zone, now);
   if (DELETE.test(text)) {
     const rest = text.replace(DELETE, "").replace(/^\s*(?:called|named|titled)\s+/i, "").trim();
     const quoted = rest.match(/["“']([^"”']{1,80})["”']/)?.[1];
@@ -248,12 +272,19 @@ export function parseEventRequest(text: string, state: EventState): EventProposa
     if (!title) return { action: null, question: `What should the event be called? ${ADD_EXAMPLE}` };
     if (!date) return { action: null, question: `Which day is “${title}” on? ${ADD_EXAMPLE}` };
     if (!times) return { action: null, question: `What time is “${title}”? ${ADD_EXAMPLE}` };
-    const repeat = /\b(every|each)\s+week\b|\bweekly\b/i.test(text)
-      ? { weekdays: [weekdayIndex(date)], until: addDays(date, 7 * 15) }
-      : null;
+    const named = repeatWeekdays(text);
+    const repeat = named.length
+      ? { weekdays: named, until: addDays(date, 7 * 15) }
+      : /\b(every|each)\s+week\b|\bweekly\b/i.test(text) ? { weekdays: [weekdayIndex(date)], until: addDays(date, 7 * 15) } : null;
+    const assumed = [...times.assumed];
+    if (nextWeekday(text)) assumed.push(`“next ${capitalize(WEEKDAY_NAMES[weekdayIndex(date)])}” means ${longDate(date)}`);
+    if (repeat) assumed.push(`it repeats for 15 weeks`);
     const input: CalendarEventInput = { title, kind: kindFrom(text), date, start: times.start, end: times.end, location: null, repeat };
-    const proposal = proposeAddEvent(input, state, times.assumed);
-    if (proposal.action && repeat) proposal.summary = proposal.summary.replace("\n• ", `\n• Repeats every ${WEEKDAY_NAMES[weekdayIndex(date)][0].toUpperCase()}${WEEKDAY_NAMES[weekdayIndex(date)].slice(1)} until ${longDate(repeat.until)}\n• `);
+    const proposal = proposeAddEvent(input, state, assumed);
+    if (proposal.action && repeat) {
+      const days = repeat.weekdays.map(d => capitalize(WEEKDAY_NAMES[d])).join(" and ");
+      proposal.summary = proposal.summary.replace(/(\n• [^\n]+\n• [^\n]+)/, `$1\n• Repeats every ${days} until ${longDate(repeat.until)}`);
+    }
     return proposal;
   }
   return null;
@@ -268,10 +299,22 @@ function clockFromModel(value: string | null | undefined): number | null {
 }
 
 /** The model's add_event / delete_event intent, checked against this workspace before anything is offered. */
+const WEEKDAY_WORDS: [RegExp, number][] = [
+  [/\bsun(?:day)?s?\b/i, 0], [/\bmon(?:day)?s?\b/i, 1], [/\btue(?:s(?:day)?)?s?\b/i, 2], [/\bwed(?:s|nesday)?s?\b/i, 3],
+  [/\bthu(?:r(?:s(?:day)?)?)?s?\b/i, 4], [/\bfri(?:day)?s?\b/i, 5], [/\bsat(?:urday)?s?\b/i, 6],
+];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** Weekdays the user named (0 = Sunday), so a model-picked date can be checked against them. */
+export function namedWeekdays(text: string): number[] {
+  return WEEKDAY_WORDS.filter(([pattern]) => pattern.test(text)).map(([, day]) => day).sort((a, b) => (a + 6) % 7 - (b + 6) % 7);
+}
+
 export function eventFromIntent(
   intent: "add_event" | "delete_event",
   params: { eventId?: string | null; eventTitle?: string | null; eventDate?: string | null; eventStart?: string | null; eventEnd?: string | null },
   state: EventState,
+  userText = "",
 ): EventProposal {
   if (intent === "delete_event") {
     const byId = params.eventId ? state.events.find(e => e.id === params.eventId) : undefined;
@@ -284,6 +327,16 @@ export function eventFromIntent(
   if (!params.eventTitle?.trim()) return { action: null, question: `What should the event be called? ${ADD_EXAMPLE}` };
   if (!params.eventDate || !validDate(params.eventDate)) return { action: null, question: `Which day is “${params.eventTitle.trim()}” on?` };
   if (start === null || end === null) return { action: null, question: `What time does “${params.eventTitle.trim()}” start and end?` };
+  // The model picks one date; it must be a day the user named ("Sat and Sun" once became a Thursday).
+  const named = namedWeekdays(userText);
+  const picked = new Date(`${params.eventDate}T12:00:00Z`).getUTCDay();
+  if (named.length > 1) {
+    const days = named.map(d => DAY_NAMES[d]).join(" and ");
+    return { action: null, question: `That's one “${params.eventTitle.trim()}” on each of ${days}. Type it as a list, one per line, such as “${params.eventTitle.trim()} ${DAY_NAMES[named[0]]} 9-10am”, and I'll read them all.` };
+  }
+  if (named.length === 1 && named[0] !== picked) {
+    return { action: null, question: `Which day is “${params.eventTitle.trim()}” on? I read ${longDate(params.eventDate)}, but you said ${DAY_NAMES[named[0]]}.` };
+  }
   return proposeAddEvent({ title: params.eventTitle, kind: kindFrom(params.eventTitle), date: params.eventDate, start, end, location: null, repeat: null }, state);
 }
 

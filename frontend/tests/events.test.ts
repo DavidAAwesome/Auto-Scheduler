@@ -53,3 +53,40 @@ test('event validation', () => {
   assert.throws(() => validateEvent({ ...input, repeat: { weekdays: [], until: '2026-12-09' } }), /at least one day/);
   assert.throws(() => validateEvent({ ...input, repeat: { weekdays: [0], until: '2026-10-01' } }), /on or after/);
 });
+
+test('next occurrence skips cancelled classes and ends with the series', async () => {
+  const { nextOccurrence } = await import('../src/utils/events.ts');
+  assert.equal(nextOccurrence(cls, '2026-10-12'), '2026-10-14'); // Oct 12 is skipped, next is Wed
+  assert.equal(nextOccurrence(cls, '2026-10-01'), '2026-10-05'); // before the series starts
+  assert.equal(nextOccurrence(cls, '2026-12-10'), null); // after the last class
+  assert.equal(nextOccurrence(meetup, '2026-10-08'), '2026-10-08');
+  assert.equal(nextOccurrence(meetup, '2026-10-09'), null);
+});
+
+test('sidebar groups: one-time upcoming by date, each series once, past most recent first', async () => {
+  const { groupEvents } = await import('../src/utils/events.ts');
+  const early = { ...meetup, id: 'early', date: '2026-10-07', start: 540 };
+  const old = { ...meetup, id: 'old', date: '2026-10-01' };
+  const ended = { ...cls, id: 'ended', repeat: { weekdays: [1], until: '2026-10-06' } };
+  const { upcoming, repeating, past } = groupEvents([meetup, cls, early, old, ended], '2026-10-07');
+  assert.deepEqual(upcoming.map(e => e.event.id), ['early', 'meet']);
+  assert.deepEqual(repeating.map(e => [e.event.id, e.date]), [['cls', '2026-10-07']]);
+  assert.deepEqual(past.map(e => [e.event.id, e.date]), [['ended', '2026-10-06'], ['old', '2026-10-01']]);
+});
+
+test('an imported multi-day event is listed once, as a span', async () => {
+  const { groupEvents } = await import('../src/utils/events.ts');
+  const piece = (id: string, date: string, start: number, end: number) =>
+    ({ ...meetup, id, title: 'Wolfjam 2026', source: 'google' as const, busy: false, location: 'ETEC', date, start, end });
+  const pieces = [piece('a', '2026-11-06', 600, 1440), piece('b', '2026-11-07', 0, 1440), piece('c', '2026-11-08', 0, 960)];
+  const { upcoming } = groupEvents([...pieces, { ...meetup, date: '2026-11-07' }], '2026-11-04');
+  assert.deepEqual(upcoming.map(e => [e.event.id, e.date, e.through]), [
+    ['a', '2026-11-06', { date: '2026-11-08', end: 960 }],
+    ['meet', '2026-11-07', undefined],
+  ]);
+  // From the middle of the span, the remaining days still show as one row.
+  assert.deepEqual(groupEvents(pieces, '2026-11-07').upcoming.map(e => [e.date, e.through?.date]), [['2026-11-07', '2026-11-08']]);
+  // A different event with a gap day is not merged.
+  const gap = groupEvents([piece('a', '2026-11-06', 600, 1440), piece('x', '2026-11-08', 0, 960)], '2026-11-04').upcoming;
+  assert.equal(gap.length, 2);
+});

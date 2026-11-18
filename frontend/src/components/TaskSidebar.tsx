@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DEFAULT_DUE_TIME, type CalendarEvent, type Task } from "../types/models";
+import { DEFAULT_DUE_TIME, type CalendarEvent, type ScheduleSession, type Task } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { clock12, longDate } from "../utils/calendar";
@@ -7,9 +7,13 @@ import { resolveDay } from "../utils/availability";
 import { formatDate } from "../utils/dates";
 import { plannedMinutes } from "../utils/planning";
 import { selectTasks, type TaskFilter } from "../services/taskRules";
-import { eventIcon } from "../utils/events";
+import { allDayOn, blocksTime, eventIcon } from "../utils/events";
+import { observancesBetween } from "../utils/holidays";
+import { useShowHolidays } from "../services/uiState";
+import { accountTimeZone } from "../utils/timeZones";
 import { todayAgenda } from "../utils/schedulePreview";
 import Icon from "./Icon";
+import EventList from "./EventList";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 
 function TaskRow({ task, today, planned, onOpen, onError }: { task: Task; today: string; planned: number; onOpen: (task: Task, rect: DOMRect) => void; onError: (message: string) => void }) {
@@ -39,13 +43,14 @@ function TaskRow({ task, today, planned, onOpen, onError }: { task: Task; today:
   );
 }
 
-export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSession, onOpenEvent }: {
+export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSession, onOpenEvent, onOpenBreak }: {
   today: string;
   onAdd: () => void;
   onAddEvent: () => void;
   onOpenEvent: (event: CalendarEvent, date: string, rect: DOMRect) => void;
   onOpen: (task: Task, rect: DOMRect) => void;
   onOpenSession: (task: Task, rect: DOMRect, sessionId: string) => void;
+  onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
 }) {
   const { tasks, sessions, events, availability, schedulePreview, saving } = useWorkspace();
   const [error, setError] = useState("");
@@ -62,12 +67,28 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   // Search/filter from the old Planner page. "Open" keeps completed tasks tucked under their own toggle.
   const shown = selectTasks(sorted, search.trim(), filter);
   const hours = availability ? resolveDay(availability, today) : null;
+  // Show-only items for today: holidays/clock changes AutoPlan knows, and all-day events (none block time).
+  const showHolidays = useShowHolidays();
+  const marks = showHolidays ? observancesBetween(today, today, accountTimeZone(availability)) : [];
+  const allDayToday = allDayOn(events, today);
   const row = (task: Task) => <TaskRow key={task.id} task={task} today={today} planned={plannedMinutes(task.id, sessions)} onOpen={onOpen} onError={setError} />;
   return (
     <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving}>
       <section className="today-card">
         <h2>Today’s Tasks</h2>
         <p className="today-date">{longDate(today)}</p>
+        {(marks.length > 0 || allDayToday.length > 0) && (
+          <ul className="today-marks" aria-label="All day today">
+            {marks.map(m => <li key={m.title} className={`observance-chip ${m.kind}`} title={m.note}><Icon name={m.kind === "dst" ? "clock" : "calendar"} size={12} /> <span>{m.title}</span></li>)}
+            {allDayToday.map(e => (
+              <li key={e.id}>
+                <button className={`allday-chip source-${e.source}`} onClick={ev => onOpenEvent(e, today, ev.currentTarget.getBoundingClientRect())}>
+                  <Icon name={eventIcon[e.kind]} size={12} /> <span>{e.title}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <p className={`today-hours ${hours?.enabled ? "" : "off"}`}>
           <Icon name="clock" size={14} />
           {hours?.enabled ? `Available ${hours.periods.map(p => `${clock12(p.start)} – ${clock12(p.end)}`).join(", ")}` : <>No available hours · <a href="#/settings">set hours</a></>}
@@ -82,22 +103,49 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                     <button className={`today-event kind-${event.kind.toLowerCase()} source-${event.source}`} onClick={e => onOpenEvent(event, today, e.currentTarget.getBoundingClientRect())}>
                       <span className="today-session-time">{clock12(event.start)}</span>
                       <span className="today-session-title"><Icon name={eventIcon[event.kind]} size={13} /> {event.title}</span>
-                      <small>{event.location ?? duration(event.end - event.start)}</small>
+                      <small>{blocksTime(event) ? event.location ?? duration(event.end - event.start) : "Free"}</small>
                     </button>
+                  </li>
+                );
+              }
+              if (item.kind === "proposedEvent") {
+                const e = item.proposed;
+                return (
+                  <li key={`pe-${e.draftId}-${e.date}`}>
+                    <span className={`today-event kind-${e.kind.toLowerCase()} proposed`}>
+                      <span className="today-session-time">{clock12(e.start)}</span>
+                      <span className="today-session-title"><Icon name={eventIcon[e.kind]} size={13} /> {e.title}</span>
+                      <small>{duration(e.end - e.start)} · proposed</small>
+                    </span>
                   </li>
                 );
               }
               const s = item.item.session;
               const proposed = item.item.kind === "proposed";
               const task = s.taskId ? taskById.get(s.taskId) : undefined;
-              if (s.type === "break" || !task) {
+              if (s.type === "work" && !task) {
+                // Work for an item still under review: it has no saved task yet, only the preview.
                 return (
                   <li key={s.id}>
-                    <span className={`today-break ${proposed ? "proposed" : ""}`}>
+                    <span className="today-break proposed draft-work">
                       <span className="today-session-time">{clock12(s.start)}</span>
-                      <span className="today-session-title">{s.locked ? "Protected break" : "Break"}</span>
-                      <small>{duration(s.end - s.start)}{proposed ? " · proposed" : ""}</small>
+                      <span className="today-session-title">✦ {s.title}</span>
+                      <small>{duration(s.end - s.start)} · proposed</small>
                     </span>
+                  </li>
+                );
+              }
+              if (s.type === "break" || !task) {
+                const content = <>
+                  <span className="today-session-time">{clock12(s.start)}</span>
+                  <span className="today-session-title">{s.locked ? "Protected break" : "Break"}</span>
+                  <small>{duration(s.end - s.start)}{proposed ? " · proposed" : ""}</small>
+                </>;
+                return (
+                  <li key={s.id}>
+                    {proposed || s.type !== "break"
+                      ? <span className={`today-break ${proposed ? "proposed" : ""}`}>{content}</span>
+                      : <button className="today-break" onClick={e => onOpenBreak(s, e.currentTarget.getBoundingClientRect())}>{content}</button>}
                   </li>
                 );
               }
@@ -114,7 +162,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
             })}
           </ul>
         )}
-        {agenda.some(i => i.kind === "session" && i.item.kind === "proposed") && <p className="muted small">Proposed sessions are a preview until you Apply.</p>}
+        {agenda.some(i => i.kind === "proposedEvent" || (i.kind === "session" && i.item.kind === "proposed")) && <p className="muted small">Proposed items are a preview until you Apply.</p>}
         {dueNow.length > 0 && <h3 className="today-subhead">Deadlines: due today{dueNow.some(t => t.deadline < today) ? " & overdue" : ""}</h3>}
         {dueNow.length ? <ul className="task-list">{dueNow.map(row)}</ul> : !agenda.length && <p className="muted small">Nothing scheduled or due today.</p>}
       </section>
@@ -143,6 +191,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
           </details>
         )}
       </section>
+      <EventList today={today} onOpen={onOpenEvent} />
     </aside>
   );
 }

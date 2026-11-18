@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.schedule_model import SchedulePreferences, SchedulePreview
-from app.scheduling_engine import CONTEXT_LOOKBACK, local_parts, local_to_abs, subtract, to_abs
+from app.scheduling_engine import CONTEXT_LOOKBACK, local_parts, local_to_abs, resolve_windows, subtract, to_abs
 from app.workspace import Availability, TaskOutput, resolve_available_day
 
 
@@ -117,12 +117,21 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
             if a[3] or b[3]:
                 raise ValidationError('overlap', f'"{a[2]}" overlaps "{b[2]}".')
 
-    # 2. Availability, deadlines, earliest start and dependencies for checked work.
-    work = [(s, e, tid, checked) for s, e, _label, checked, kind, tid in items if kind == 'work']
+    # 2. Availability / allowed windows, deadlines, earliest start, dependencies and contiguity.
+    #    Flexible events are placed like tasks but are not focus work (see scheduling_engine).
+    all_sessions = [(s, e, tid, checked) for s, e, _label, checked, kind, tid in items if kind == 'work']
+    is_flex = {t.id for t in tasks if getattr(t, 'kind', 'task') == 'flexible_event'}
+    work = [x for x in all_sessions if x[2] not in is_flex]
+    flex = [x for x in all_sessions if x[2] in is_flex]
     ends_by_task: dict[str, int] = {}
-    for s, e, tid, _ in work:
+    for s, e, tid, _ in all_sessions:
         ends_by_task[tid] = max(ends_by_task.get(tid, e), e)
-    for s, e, tid, checked in work:
+    for tid in {x[2] for x in all_sessions if x[3]}:
+        task = task_by_id[tid]
+        mine = [x for x in all_sessions if x[2] == tid]
+        if not task.allowSplit and len(mine) > 1:
+            raise ValidationError('contiguity', f'"{task.title}" must happen in one uninterrupted block.')
+    for s, e, tid, checked in all_sessions:
         if not checked:
             continue
         task = task_by_id[tid]
@@ -131,8 +140,16 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
         day, _ = local_parts(s, zone)
         hours = resolve_available_day(availability, day)
         periods = [(local_to_abs(day, p.start, zone), local_to_abs(day, p.end, zone)) for p in hours.periods] if hours.enabled else []
-        if not any(ps <= s and e <= pe for ps, pe in periods):
+        windows = resolve_windows(task.windows, day - timedelta(days=1), day + timedelta(days=1), zone) if task.windows else ()
+        inside_hours = any(ps <= s and e <= pe for ps, pe in periods)
+        inside_window = any(ws <= s and e <= we for ws, we in windows)
+        if tid in is_flex and task.windows:
+            if not inside_window:
+                raise ValidationError('availability', f'"{task.title}" is outside its allowed times.')
+        elif not inside_hours:
             raise ValidationError('availability', f'Work on "{task.title}" is outside your available hours.')
+        elif task.windows and not inside_window:
+            raise ValidationError('availability', f'Work on "{task.title}" is outside its allowed times.')
         if e > _due(task, zone):
             raise ValidationError('deadline', f'Work on "{task.title}" ends after its deadline.')
         if task.earliestStart:
@@ -150,7 +167,7 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
     # 3. Daily limit and continuous-work limit (with recent past work as context).
     context = [(r.start, r.end, r.task_id, False) for r in saved
                if r.type == 'work' and r.status in {'saved', 'completed'} and now_min - CONTEXT_LOOKBACK < r.end <= now_min
-               and r.id not in {x.id for x in preview.sessions}]
+               and r.id not in {x.id for x in preview.sessions} and r.task_id not in is_flex]
     all_work = sorted(work + context)
     daily: dict[date, list[int]] = {}
     for s, e, _tid, checked in work:
@@ -158,7 +175,8 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
         total, flag = daily.get(day, [0, 0])
         daily[day] = [total + e - s, flag or checked]
     for r in saved:
-        if r.type == 'work' and r.status == 'completed' and r.id not in {x.id for x in preview.sessions}:
+        if (r.type == 'work' and r.status == 'completed' and r.id not in {x.id for x in preview.sessions}
+                and r.task_id not in is_flex):
             day, _ = local_parts(r.start, zone)
             if day in daily:
                 daily[day][0] += r.end - r.start
@@ -166,17 +184,22 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
         if flag and total > prefs.maxDailyWorkMinutes:
             raise ValidationError('daily_limit', f'{day.isoformat()} has {total} minutes of task work; the limit is '
                                   f'{prefs.maxDailyWorkMinutes}.')
-    busy = sorted((ev.start, ev.end) for ev in events)
+    busy = sorted([(ev.start, ev.end) for ev in events] + [(s, e) for s, e, _t, _c in flex])  # not rest
     rests = [(s, e) for s, e, _l, _c, kind, _t in items if kind == 'break'] + lunch
-    runs: list[list] = []  # start, end, total, checked
-    for s, e, _tid, checked in all_work:
+    runs: list[list] = []  # start, end, total, checked, task ids
+    for s, e, tid, checked in all_work:
         if runs and not _rest_gap(runs[-1][1], s, busy, prefs.breakMinutes):
             runs[-1][1] = max(runs[-1][1], e)
             runs[-1][2] += e - s
             runs[-1][3] = runs[-1][3] or checked
+            runs[-1][4].append(tid)
         else:
-            runs.append([s, e, e - s, checked])
+            runs.append([s, e, e - s, checked, [tid]])
     for run in runs:
+        # One session of a task the user asked to do in one sitting may run past the focus limit on its own.
+        only = task_by_id.get(run[4][0]) if len(run[4]) == 1 else None
+        if only is not None and not only.allowSplit:
+            continue
         if run[3] and run[2] > prefs.focusMinutes:
             raise ValidationError('focus_limit', f'{run[2]} minutes of continuous work exceeds the '
                                   f'{prefs.focusMinutes}-minute focus limit.')

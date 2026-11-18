@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { DEFAULT_DUE_TIME, type Task, type TaskInput } from "../types/models";
-import { addDays, localDate } from "../utils/dates";
+import { addDays } from "../utils/dates";
+import { accountToday } from "../utils/timeZones";
 import { clock12, clockTime, parseClock } from "../utils/calendar";
 import { endsAfterDue, plannedMinutes } from "../utils/planning";
 import { duration } from "../utils/taskDisplay";
@@ -20,13 +21,13 @@ export default function TaskForm({
   onSave: (message: string, saved: Task, planNext: boolean) => void;
   defaultDeadline?: string;
 }) {
-  const { sessions } = useWorkspace();
+  const { sessions, availability } = useWorkspace();
+  const today = accountToday(availability);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [deadline, setDeadline] = useState(task?.deadline ?? defaultDeadline ?? addDays(localDate(), 2));
+  const [deadline, setDeadline] = useState(task?.deadline ?? defaultDeadline ?? addDays(today, 2));
   // Blank means "no specific time", saved as 11:59 PM.
   const [dueTime, setDueTime] = useState(task && task.dueTime !== DEFAULT_DUE_TIME ? clockTime(task.dueTime) : "");
-  const today = localDate();
   const taskSessions = task ? sessions.filter(s => s.taskId === task.id) : [];
   const dueMinutes = dueTime ? parseClock(dueTime) : DEFAULT_DUE_TIME;
   const stranded = taskSessions.filter(s => endsAfterDue(s, { deadline, dueTime: dueMinutes })).length;
@@ -49,6 +50,9 @@ export default function TaskForm({
       minSessionMinutes: Number(data.get("minSessionMinutes") || task?.minSessionMinutes || 15),
       maxSessionMinutes: Number(data.get("maxSessionMinutes") || task?.maxSessionMinutes || 60),
       dependsOn: task?.dependsOn ?? [],
+      // Fields this form does not edit (set by plan entry) are kept as they are.
+      kind: task?.kind ?? "task",
+      windows: task?.windows ?? [],
     };
     setSaving(true);
     setError("");

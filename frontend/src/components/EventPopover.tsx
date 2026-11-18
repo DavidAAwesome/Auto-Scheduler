@@ -40,7 +40,10 @@ export default function EventPopover({ event, date, anchor, onClose, onEdit }: {
       <p className="event-kind">{event.kind}</p>
       <dl>
         <div><dt>When</dt><dd>{longDate(date)}</dd></div>
-        <div><dt>Time</dt><dd>{clock12(event.start)} – {clock12(event.end % 1440)}</dd></div>
+        <div><dt>Time</dt><dd>{event.allDay ? "All day" : `${clock12(event.start)} – ${clock12(event.end % 1440)}`}</dd></div>
+        {(event.allDay || event.busy === false) && (
+          <div><dt>Status</dt><dd>{event.allDay ? "All-day" : "Marked Free"} · doesn’t block your time</dd></div>
+        )}
         {event.location && <div><dt>Where</dt><dd><Icon name="pin" size={13} /> {event.location}</dd></div>}
         {event.repeat && <div><dt>Repeats</dt><dd>Every {days} until {longDate(event.repeat.until)}</dd></div>}
       </dl>

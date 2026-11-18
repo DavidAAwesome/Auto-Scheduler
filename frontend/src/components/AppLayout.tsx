@@ -3,12 +3,14 @@ import { authSession, useAuth } from "../services/authSession";
 import { themeStore, useCalendarView, useTheme } from "../services/uiState";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { useDismiss } from "../hooks/useDismiss";
-import { clock12, rangeTitle, dateInZone } from "../utils/calendar";
-import { addDays, formatDate, localDate } from "../utils/dates";
+import { clock12, rangeTitle } from "../utils/calendar";
+import { addDays, formatDate } from "../utils/dates";
 import Icon, { type IconName } from "./Icon";
+import DeleteAccountDialog from "./DeleteAccountDialog";
 import { categoryIcon } from "../utils/taskDisplay";
 import { eventIcon, occurrencesOn } from "../utils/events";
 import { initials } from "../services/avatarUpload";
+import { accountToday } from "../utils/timeZones";
 
 const pageTitles: Record<string, string> = {
   calendars: "Connected calendars",
@@ -75,7 +77,7 @@ function Reminders() {
   const panel = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useDismiss(panel, open, close, button);
-  const today = availability ? dateInZone(availability.timeZone) : localDate();
+  const today = accountToday(availability);
   const tomorrow = addDays(today, 1);
   const overdue = tasks.filter(t => !t.done && t.deadline < today);
   const dueToday = tasks.filter(t => !t.done && t.deadline === today);
@@ -111,29 +113,6 @@ function Reminders() {
         </div>
       )}
     </div>
-  );
-}
-
-function DeleteAccountDialog({ onClose }: { onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  useEffect(() => { const node = dialog.current; node?.showModal(); return () => node?.close(); }, []);
-  async function confirm() {
-    setBusy(true); setError("");
-    try { await authSession.deleteAccount(); } catch (e) { setError((e as Error).message); setBusy(false); }
-  }
-  return (
-    <dialog ref={dialog} className="task-dialog confirm-dialog" aria-labelledby="delete-title" onCancel={e => { if (busy) e.preventDefault(); else onClose(); }}>
-      <span className="confirm-icon"><Icon name="alert" /></span>
-      <h2 id="delete-title">Delete your account?</h2>
-      <p className="muted">This permanently deletes your AutoPlan account, tasks, and availability. This can’t be undone.</p>
-      {error && <p role="alert" className="form-error">{error}</p>}
-      <div className="task-dialog-footer">
-        <button className="button secondary" disabled={busy} onClick={onClose}>Cancel</button>
-        <button className="button danger" disabled={busy} onClick={() => void confirm()}>{busy ? "Deleting…" : "Delete account"}</button>
-      </div>
-    </dialog>
   );
 }
 

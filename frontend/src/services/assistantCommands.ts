@@ -1,12 +1,14 @@
-import type { AIProfile, PreferenceChange, SchedulePreferences, SchedulePreview, Task, TaskInput, WorkSession } from "../types/models.ts";
+import type { ActionTarget, AIProfile, InterpretResult, PendingAction, PendingChoice, PreferenceChange, SchedulePreferences, SchedulePreview, Task, WorkSession } from "../types/models.ts";
 import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
-import { eventFromIntent, parseEventRequest, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
-import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
+import { draftsReply } from "./planEntry.ts";
+import { eventFromIntent, nextWeekday, parseDate, parseEventRequest, parseTimes, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
+import { clock12, dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
-import { busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { busyDayText, busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { accountTimeZone } from "../utils/timeZones.ts";
 
 /** Actions the chat can run. Each one calls the same workspace method the calendar uses. */
 export type AssistantCommand =
@@ -20,42 +22,24 @@ export type AssistantCommand =
   | "cancel_schedule"
   | "add_task"
   | "delete_task"
-  | "confirm_delete_task"
   | "add_event"
   | "delete_event";
 
 /** A chat request turned into validated, structured parameters for the scheduling service. */
 export type ParsedRequest =
-  | {
-    command: Exclude<
-      AssistantCommand,
-      "add_task" | "delete_task" | "confirm_delete_task" | "add_event" | "delete_event"  
-    >;
-    }
+  | { command: Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
   | { command: "request_break"; minutes: number }
+  /** "What do I have on Saturday?" / "Is Friday at 3pm free?": that day's busy time, read from the calendar. */
+  | { command: "busy_day"; date: string; at: number | null }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
   | { command: "update_preferences"; change: PreferenceChange; summary: string }
   | { command: "propose_event"; action: PendingEventAction; summary: string }
-  | {
-      command: "add_task";
-      title: string;
-      deadline: string;
-      duration: number;
-    }
-  | {
-      command: "delete_task";
-      taskId: string;
-      title: string;
-    }
-  | {
-    command: "confirm_delete_task";
-    taskId: string;
-    }
-  | {
-    command: "confirm_delete_task";
-    taskId: string;
-    title: string;
-    }
+  /** The user's own words, read by the same parser as any plan entry (so "due Friday at noon" keeps its time). */
+  | { command: "add_task"; text: string }
+  /** Exact task ids; the server shows their names and session count, and deletes only after confirmation. */
+  | { command: "delete_task"; taskIds: string[] }
+  /** Several tasks fit the request: show a numbered list and resolve the reply against exactly that list. */
+  | { command: "pick_tasks"; prompt: string; options: ActionTarget[] }
   | { command: "clarify"; question: string };
 
 /** The subset of the workspace store the commands need; tests pass a store built on a fake transport. */
@@ -64,25 +48,68 @@ export interface CommandWorkspace {
   requestPreview(request: PreviewRequest): Promise<SchedulePreview>;
   applySchedulePreview(): Promise<WorkSession[]>;
   clearSchedulePreview(): void;
-  createTask(input: TaskInput): Promise<Task>;
-  deleteTask(id: string): Promise<void>;
+  /** Reads the user's words into drafts in the review panel; nothing is saved. */
+  interpretPlan(text: string): Promise<InterpretResult>;
+  proposeDeleteTasks(taskIds: string[]): Promise<PendingAction>;
+  proposeCreateItems(): Promise<PendingAction>;
+  setChoice(choice: PendingChoice | null): void;
 }
 
 export const PLAN_DAYS = 7;
 
 const BREAK = /\b(take|need|want|give me|start|have)\b.*\bbreak\b|\bbreak\b.*\bnow\b|\d+\s*-?\s*(min|minute)s?\s+break/i;
-const MOVE = /\b(move|push|postpone|shift|reschedule)\b/i;
+/** A break described for some other time ("after class", "at 3pm") is not a break starting now. */
+const BREAK_LATER = /\b(at \d|at noon|\d\s*(am|pm)|tomorrow|later|tonight|this (afternoon|evening)|after|before|when|once|until|in \d+ (min|minute|hour)s?)\b/i;
+/** Habits ("I usually take a break around noon") are preferences or chat, not a request for a break now. */
+const HABIT = /\b(usually|always|normally|often|sometimes|every day|daily|tend to|like to)\b/i;
+const EDIT_TASK = /\b(change|move|push|extend|set|update|edit|make)\b.*\b(deadline|due date|due time)\b|\b(deadline|due date)\b.*\b(to|until|be)\b\s+\w|\b(change|edit|update|set)\b.*\b(duration|length|estimate)\b/i;
+const DAY_QUESTION = /^\s*(?:what(?:'?s| is| do i have| have i got| am i doing)|anything|am i (?:free|busy)|is\b.*\b(?:free|busy|open|available)\b|do i have anything)\b.*\b(?:today|tomorrow|tonight|(?:next |this )?(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun))\b|^\s*(?:is|am i)\b.*\b(?:free|busy|open|available)\b/i;
+const DONE_QUESTION = /^\s*(?:did i (?:finish|complete|do|submit)|have i (?:finished|completed|done|submitted)|is (?:my |the )?.+\b(?:done|finished|complete|completed)\b)/i;
+const WHAT_FIRST = /\b(?:what|which)(?: task)? (?:should|do) i (?:work on|do|start(?: with)?|tackle|focus on)(?: first| next| now)\b|\bwhat(?:'?s| is) (?:first|next|my next task|most urgent)\b|\bwhere (?:should|do) i start\b/i;
+const TASKS_LEFT = /\bhow many (?:open |more )?tasks\b|\bwhat tasks (?:do i have )?(?:are )?(?:left|remaining|open)\b|\b(?:list|show) (?:my )?(?:open |remaining )?tasks\b/i;
+const PRIORITY_RANK: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
+
+function minutesText(minutes: number) {
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return h && m ? `${h} h ${m} min` : h ? `${h} h` : `${m} min`;
+}
+
+/** By deadline, then priority; a task never comes before a task it depends on. */
+export function orderedTasks(tasks: Task[]): Task[] {
+  const key = (t: Task) => `${t.deadline} ${String(t.dueTime).padStart(4, "0")} ${PRIORITY_RANK[t.priority] ?? 1}`;
+  const pending = [...tasks].sort((a, b) => key(a).localeCompare(key(b)));
+  const ids = new Set(tasks.map(t => t.id));
+  const placed: Task[] = [];
+  while (pending.length) {
+    const i = pending.findIndex(t => t.dependsOn.every(d => !ids.has(d) || placed.some(p => p.id === d)));
+    placed.push(...pending.splice(i < 0 ? 0 : i, 1)); // a dependency loop falls back to deadline order
+  }
+  return placed;
+}
+// "What's the weather tomorrow?" names a day but isn't about the calendar.
+const NOT_CALENDAR = /\b(weather|forecast|rain|snow|temperature|news|score|game on tv)\b/i;
+const MOVE = /\b(move|push|postpone|shift|reschedule|delay)\b/i;
 const REPLAN = /\breplan\b|\bre-plan\b|\brepair\b|\bfix (my |the )?(plan|schedule)\b|\breschedule (my|the|this)? ?(plan|schedule|week|work)\b/i;
-const EXPLAIN = /\bwhy\b|didn.?t fit|doesn.?t fit|unscheduled|not scheduled|couldn.?t (fit|schedule)|unallocated|what.*\bleft\b/i;
+const EXPLAIN = /\bwhy\b.*\b(fit|scheduled|planned|placed|unscheduled|left out|missing)\b|didn.?t fit|doesn.?t fit|unscheduled|not scheduled|couldn.?t (fit|schedule)|unallocated|what.*\bleft\b.*\b(schedule|plan|fit)\b/i;
 const TODAY = /\btoday.?s\s+(tasks?|plan|schedule|agenda)\b|\b(what|anything).*\b(today|my day)\b|\bplan for today\b|^\s*today\s*\??\s*$/i;
-const SHOW_PLAN = /\b(show|see|display|view)\b.*\b(plan|schedule)\b|\bmy (plan|schedule)\b/i;
-const BUSY = /\bbusy\b|my calendar|what'?s on|free time|events? (today|tomorrow|this week|next week)/i;
-const GENERATE = /\bgenerate\b|\bplan (my|the|this|next)\b|\bschedule (my|the|this|next)\b|\b(make|build|create)\b.*\b(plan|schedule)\b/i;
+const SHOW_PLAN = /\b(show|see|display|view)\b.*\b(plan|schedule)\b|^\s*(what'?s|what is)?\s*my (plan|schedule)\s*\??\s*$/i;
+const BUSY = /^\s*busy( time)?\s*\??\s*$|\b(when|am) i (busy|free)\b|\bbusy (time|today|tomorrow|this week|next week)\b|\bmy calendar\b|what'?s on (my|the) (calendar|schedule)|what'?s on (today|tomorrow)|\bfree time\b|events? (today|tomorrow|this week|next week)/i;
+const GENERATE = /\bgenerate\b|\b(plan|schedule) (my|the|this|next) (week|days?|schedule|plan|tasks|work)\b|^\s*(plan|schedule) my\b|\b(make|build|create)\b.*\b(plan|schedule)\b/i;
+/** Extra conditions on a whole-week plan that chat cannot apply ("but keep Friday free"). */
+const PLAN_CONDITION = /\b(but|except|without|only|keep\b.*\bfree|leave\b.*\bfree|not on|no work on|avoid)\b/i;
+/** Asking for a task at a chosen time: "schedule my essay for tomorrow at 3pm", "do Asm Friday afternoon". */
+const SCHEDULE_TASK = /\b(schedule|plan|do|work on|start|put)\b/i;
+const EVENT_WORDS = /\b(meeting|class|lecture|appointment|appt|event|lunch|dinner|call|party)\b/i;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
 function durationMinutes(text: string): number | null {
+  const compact = text.match(/(\d+)\s*h\s*(\d{1,2})\b/i); // "1h30"
+  if (compact) return Number(compact[1]) * 60 + Number(compact[2]);
+  if (/\bhalf (an )?hour\b/i.test(text)) return 30;
+  if (/\b(an|one) hour and a half\b|\bhour and a half\b/i.test(text)) return 90;
   const hours = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(h|hr|hrs|hour|hours)\b/i);
   if (hours) return Math.round(Number(hours[1]) * 60);
+  if (/\b(an|one) hour\b/i.test(text)) return 60;
   const minutes = text.match(/(\d+)\s*-?\s*(m|min|mins|minute|minutes)\b/i);
   return minutes ? Number(minutes[1]) : null;
 }
@@ -93,24 +120,87 @@ function namedTask(text: string, tasks: Task[]) {
   return tasks.filter(t => !t.done && lower.includes(t.title.toLowerCase())).sort((a, b) => b.title.length - a.title.length)[0] ?? null;
 }
 
-/** Local start time a move request refers to, as a UTC instant, or null when no target is given. */
-function moveTarget(text: string, zone: string, now: Date): { at: string; label: string } | null {
+/** The task's next saved work session that has not started yet, if any. */
+function nextSession(task: Task, sessions: WorkSession[] | undefined, now: Date) {
+  return (sessions ?? []).filter(s => s.taskId === task.id && s.type === "work" && s.status === "saved" && new Date(s.startAt) > now)
+    .sort((a, b) => a.startAt.localeCompare(b.startAt))[0] ?? null;
+}
+
+/**
+ * A move that can't finish before the task is due is refused with the reason, instead of a preview that quietly
+ * unschedules the task ("schedule my lab report for tomorrow" when it is due tonight).
+ */
+function deadlineBlocks(task: Task, notBefore: string, zone: string, now: Date): ParsedRequest | null {
+  if (!task.deadline) return null;
+  const due = new Date(zonedInstant(task.deadline, Math.min(task.dueTime ?? 1439, 1439) + 1, zone)).getTime();
+  const start = Math.max(Date.parse(notBefore), now.getTime());
+  const needed = Math.max(0, task.remainingMinutes ?? task.minutes ?? 0) * 60_000;
+  if (start + needed <= due) return null;
+  const today = dateInZone(zone, now);
+  const dueText = `${dayWord(task.deadline, today)} at ${clock12(Math.min(task.dueTime ?? 1439, 1439))}`;
+  const why = start >= due ? "so its work can't start after that" : `and its ${task.remainingMinutes} minutes of work wouldn't finish by then`;
+  return { command: "clarify", question: `“${task.title}” is due ${dueText}, ${why}. Nothing was changed. To work on it later, change its deadline in the task list first, or pick an earlier time.` };
+}
+
+/** How a local date reads in a reply: "today", "tomorrow" or "Fri, Nov 20, 2026". */
+function dayWord(date: string, today: string) {
+  return date === today ? "today" : date === addDays(today, 1) ? "tomorrow" : longDate(date);
+}
+
+/**
+ * The earliest start a move request asks for, as a UTC instant, or null when no target is given.
+ * Reads a day and a clock time together ("3pm tomorrow", "next Friday at 10"), relative shifts
+ * ("back a day", "2 hours later"), and parts of the day. `assumed` says what was filled in.
+ */
+export function moveTarget(text: string, zone: string, now: Date, task?: Task, sessions?: WorkSession[]): { at: string; label: string; assumed?: string } | null {
   const today = dateInZone(zone, now);
   const lower = text.toLowerCase();
-  const at = (date: string, minute: number, label: string) => ({ at: zonedInstant(date, minute, zone), label });
-  if (/\btomorrow\b/.test(lower)) return at(addDays(today, 1), 0, "tomorrow");
+  const at = (date: string, minute: number, label: string, assumed?: string) => ({ at: zonedInstant(date, minute, zone), label, ...(assumed ? { assumed } : {}) });
+
+  // "push it back a day", "2 hours later": relative to the task's next saved session (or now).
+  const shift = lower.match(/\b(?:back|forward|later|by)\b.*?\b(a|an|one|two|three|\d+)\s+(day|days|hour|hours)\b|\b(a|an|one|two|three|\d+)\s+(day|days|hour|hours)\s+(later|back)\b/);
+  if (shift) {
+    const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3 };
+    const raw = shift[1] ?? shift[3];
+    const amount = words[raw] ?? Number(raw);
+    const unit = (shift[2] ?? shift[4]).startsWith("day") ? 24 * 60 : 60;
+    const session = task ? nextSession(task, sessions, now) : null;
+    const base = session ? new Date(session.startAt) : now;
+    const moved = new Date(base.getTime() + amount * unit * 60_000);
+    const label = `${dayWord(dateInZone(zone, moved), today)} at ${clock12(minutesInZone(zone, moved))}`;
+    return { at: moved.toISOString(), label, ...(session ? {} : { assumed: "it has no upcoming session, so I counted from now" }) };
+  }
+
+  // A clock time, with or without a day.
+  const clock = /\d\s*(am|pm|a\.m\.|p\.m\.)|\b(at|@)\s*\d|\bnoon\b|\bmidnight\b/i.test(text) ? parseTimes(text) : null;
+  const named = parseDate(text, today);
+  if (clock) {
+    const minute = clock.start % 1440;
+    let date = named;
+    let assumed: string | undefined;
+    if (!date) {
+      date = minute > minutesInZone(zone, now) ? today : addDays(today, 1);
+      if (date !== today) assumed = `${clock12(minute)} has passed today`;
+    }
+    if (clock.assumed.includes("am/pm")) assumed = [assumed, `I read it as ${clock12(minute)}`].filter(Boolean).join("; ");
+    if (nextWeekday(text)) assumed = [assumed, `“next” means the week after this one`].filter(Boolean).join("; ");
+    return at(date, minute, `${dayWord(date, today)} at ${clock12(minute)}`, assumed);
+  }
+
+  if (/\btomorrow\b/.test(lower)) {
+    const evening = /\b(evening|night)\b/.test(lower) ? 17 * 60 : /\bafternoon\b/.test(lower) ? 12 * 60 : /\bmorning\b/.test(lower) ? 8 * 60 : 0;
+    return at(addDays(today, 1), evening, evening ? `tomorrow ${evening === 17 * 60 ? "evening" : evening === 12 * 60 ? "afternoon" : "morning"}` : "tomorrow");
+  }
   if (/\bnext week\b/.test(lower)) {
     const weekday = (new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7;
     return at(addDays(today, 7 - weekday), 0, "next week");
   }
-  if (/\b(this )?evening|tonight\b/.test(lower)) return at(today, 17 * 60, "this evening");
+  if (/\b(this )?evening\b|\btonight\b/.test(lower)) return at(today, 17 * 60, "this evening");
   if (/\b(this )?afternoon\b/.test(lower)) return at(today, 12 * 60, "this afternoon");
   if (/\blater( today)?\b/.test(lower)) return at(today, Math.min(1439, minutesInZone(zone, now) + 60), "later today");
-  const day = WEEKDAYS.findIndex(name => lower.includes(name));
-  if (day >= 0) {
-    const current = new Date(`${today}T12:00:00Z`).getUTCDay();
-    const ahead = ((day - current + 7) % 7) || 7;
-    return at(addDays(today, ahead), 0, WEEKDAYS[day][0].toUpperCase() + WEEKDAYS[day].slice(1));
+  if (named && named !== today) {
+    const label = nextWeekday(text) ? longDate(named) : WEEKDAYS.some(name => lower.includes(name)) ? WEEKDAYS[(new Date(`${named}T12:00:00Z`).getUTCDay())].replace(/^./, c => c.toUpperCase()) : longDate(named);
+    return at(named, 0, label, nextWeekday(text) ? `“next” means the week after this one` : undefined);
   }
   return null;
 }
@@ -133,7 +223,7 @@ function preferenceNumbers(text: string): PreferenceChange {
   const focus = text.match(/(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\s+(?:of\s+)?(?:focus|focused|work|study)?\s*(?:blocks?|sessions?|sprints?|chunks?|stretches?|focus)\b/i)
     ?? text.match(/\b(?:focus|work|study)\s*(?:blocks?|sessions?|length)?\b[^\d]{0,20}(\d+)\s*-?\s*(?:m|min|mins|minute|minutes)\b/i);
   if (focus && !/breaks?/i.test(focus[0])) change.focusMinutes = Number(focus[1]);
-  const daily = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b[^.]{0,25}\b(?:a|per|each)\s+day\b/i);
+  const daily = text.match(/(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b[^.]{0,25}(?:\b(?:a|per|each)\s+|\/\s*)day\b/i);
   if (daily) change.maxDailyWorkMinutes = Math.round(Number(daily[1]) * 60);
   if (/\b(short(er)?|brief(er)?|concise)\b.{0,20}\b(answers?|repl(y|ies)|responses?|messages?)\b|\bkeep (it|them|answers|replies) (short|brief)\b/i.test(text)) change.replyStyle = "concise";
   else if (/\b(more detail(ed)?|detailed|longer)\b.{0,20}\b(answers?|repl(y|ies)|responses?|explanations?)\b|\bexplain more\b/i.test(text)) change.replyStyle = "detailed";
@@ -201,8 +291,27 @@ function fromEventProposal(proposal: EventProposal): ParsedRequest {
   return proposal.action ? { command: "propose_event", action: proposal.action, summary: proposal.summary } : { command: "clarify", question: proposal.question };
 }
 
-export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events">>, now = new Date()): ParsedRequest | null {
-  const zone = state.availability?.timeZone ?? "UTC";
+/** Which task(s) a delete request means. An exact name picks one; anything else shows a numbered list. */
+export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
+  const open = tasks.filter(t => !t.done);
+  const label = (t: Task) => ({ id: t.id, title: t.title, detail: `due ${t.deadline}` });
+  if (!open.length) return { command: "clarify", question: "You have no open tasks to delete." };
+  const wanted = name.replace(/^["“']|["”']$/g, "").trim().toLowerCase();
+  const exact = open.filter(t => t.title.trim().toLowerCase() === wanted);
+  if (wanted && exact.length === 1) return { command: "delete_task", taskIds: [exact[0].id] };
+  const close = wanted ? open.filter(t => t.title.toLowerCase().includes(wanted) || wanted.includes(t.title.toLowerCase())) : open;
+  if (close.length === 1 && !exact.length) return { command: "pick_tasks", prompt: `Did you mean this task? Reply 1 to choose it.`, options: [label(close[0])] };
+  if (!close.length) {
+    // "remove task gym" when Gym is already done: say that, rather than "couldn't find".
+    const finished = tasks.find(t => t.done && t.title.trim().toLowerCase() === wanted);
+    const prompt = finished ? `“${finished.title}” is already done, so it isn’t in your open tasks. Did you mean one of these?` : `I couldn’t find a task named “${name}”. Which one should I delete?`;
+    return { command: "pick_tasks", prompt, options: open.slice(0, 12).map(label) };
+  }
+  return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
+}
+
+export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "sessions">>, now = new Date()): ParsedRequest | null {
+  const zone = accountTimeZone(state.availability);
   const open = state.tasks.filter(t => !t.done);
   // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
   if (state.preferences) {
@@ -214,118 +323,103 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     const event = parseEventRequest(text, { events: state.events, availability: state.availability });
     if (event) return fromEventProposal(event);
   }
-  if (BREAK.test(text)) {
+  if (BREAK.test(text) && !(HABIT.test(text) && !/\bnow\b/i.test(text))) {
     const minutes = durationMinutes(text);
+    const later = BREAK_LATER.test(text) && !/\bnow\b/i.test(text);
+    if (later) {
+      return { command: "clarify", question: `I can only start a protected break right now. For a break ${/\bafter\b/i.test(text) ? "after that" : "later"}, add an event at that time and repair your schedule. To start one now, say “${minutes ?? 15}-minute break now”.` };
+    }
     if (minutes === null) return { command: "clarify", question: "How long a break do you need? For example: “I need a 15-minute break now.”" };
     if (minutes < 5 || minutes > 240) return { command: "clarify", question: "Breaks can be 5 minutes to 4 hours. How long should this one be?" };
-    if (/\b(at \d|tomorrow|later|tonight|this (afternoon|evening))\b/i.test(text) && !/\bnow\b/i.test(text)) {
-      return { command: "clarify", question: "I can start a protected break right now. For a break later, add an event at that time and replan. Start one now?" };
-    }
     return { command: "request_break", minutes };
+  }
+  // "Change the essay deadline to Monday": chat can't edit a task, and must not pretend to (or move it instead).
+  if (EDIT_TASK.test(text)) {
+    const task = namedTask(text, open);
+    return { command: "clarify", question: `I can't change ${task ? `“${task.title}”'s` : "a task's"} deadline or length from chat yet. Open it in the task list to edit it; then say “plan my week” to fit it in.` };
   }
   if (REPLAN.test(text) && !namedTask(text, open)) return { command: "replan" };
   if (MOVE.test(text)) {
-    const task = namedTask(text, open) ?? (open.length === 1 ? open[0] : null);
+    const task = namedTask(text, open);
+    const target = moveTarget(text, zone, now, task ?? undefined, state.sessions);
     if (!task) {
+      // Events are fixed: chat can't move them, and a meeting is never mistaken for a task.
+      const event = (state.events ?? []).find(e => text.toLowerCase().includes(e.title.toLowerCase()));
+      if (event || EVENT_WORDS.test(text)) {
+        return { command: "clarify", question: `I can't move ${event ? `“${event.title}”` : "events"} from chat yet. Events stay where you put them: change it on the calendar, or delete it and add it again at the new time.` };
+      }
+      // "shift my focus", "move on": not a move unless it names a target or refers to a task.
+      if (!target && !/\b(it|this|that|task)\b/i.test(text)) return null;
       const names = open.slice(0, 5).map(t => `“${t.title}”`).join(", ");
       return { command: "clarify", question: open.length ? `Which task should I move? ${names}` : "You have no open tasks to move." };
     }
-    const target = moveTarget(text, zone, now);
-    if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow” or “this afternoon”.` };
-    return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}` };
+    if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow at 3pm” or “this afternoon”.` };
+    const blocked = deadlineBlocks(task, target.at, zone, now);
+    if (blocked) return blocked;
+    return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
   }
-    // Recognize simple task creation requests without OpenAI.
-  if (/^\s*(add|create)\s+(a\s+)?task\b/i.test(text)) {
-   const match =
-      text.match(
-        /^\s*(?:add|create)\s+(?:a\s+)?task\s+called\s+(.+?),?\s+due\s+(.+?),?\s+with\s+a\s+duration\s+of\s+(\d+)\s+minutes?\.?\s*$/i
-      ) ??
-      text.match(
-        /^\s*(?:add|create)\s+(?:a\s+)?task\s+called\s+(.+?)\s+for\s+(\d+)\s+minutes?\s+due\s+(.+?)\.?\s*$/i
-      )?.map((value, index, values) =>
-        index === 2 ? values[3] : index === 3 ? values[2] : value
-      );
-
-    if (!match) {
-      return {
-        command: "clarify",
-        question:
-          'Please use: Add a task called Study Networking, due October 30, 2026, with a duration of 60 minutes.'
-      };
-    }
-
-    const title = match[1].trim();
-    const deadlineDate = new Date(match[2].trim());
-    const duration = Number(match[3]);
-
-    if (
-      !title ||
-      title.length > 80 ||
-      Number.isNaN(deadlineDate.getTime()) ||
-      !Number.isInteger(duration) ||
-      duration < 15 ||
-      duration > 6000 ||
-      duration % 15 !== 0
-    ) {
-      return {
-        command: "clarify",
-        question:
-          "Please provide a valid task title, deadline, and duration in multiples of 15 minutes."
-      };
-    }
-
-    const deadline = [
-      deadlineDate.getFullYear(),
-      String(deadlineDate.getMonth() + 1).padStart(2, "0"),
-      String(deadlineDate.getDate()).padStart(2, "0")
-    ].join("-");
-
-    return {
-      command: "add_task",
-      title,
-      deadline,
-      duration
-    };
+  // "Schedule my essay for tomorrow at 3pm": a preferred start for one task, not a new week plan.
+  if (SCHEDULE_TASK.test(text)) {
+    const task = namedTask(text, open);
+    const target = task ? moveTarget(text, zone, now, task, state.sessions) : null;
+    if (task && target) return deadlineBlocks(task, target.at, zone, now) ?? { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}${target.assumed ? ` (${target.assumed})` : ""}` };
   }
-    // Recognize task deletion requests locally.
-  if (/^\s*(delete|remove)\s+(the\s+|a\s+)?task\b/i.test(text)) {
-    const match = text.match(
-      /^\s*(?:delete|remove)\s+(?:the\s+|a\s+)?task\s+(?:called\s+)?(.+?)\.?\s*$/i
-    );
-
-    if (!match) {
-      return {
-        command: "clarify",
-        question: 'Which task should I delete? Example: Delete the task called Study Networking.'
-      };
+  // "Add a task called Essay, due Friday at noon, 90 minutes": read by the plan-entry parser, then confirmed.
+  if (/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\b/i.test(text)) {
+    const rest = text.replace(/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\s*(?:called|named|:)?\s*/i, "")
+      .replace(/,?\s*with a duration of\s+/i, ", ");
+    if (!rest.trim()) return { command: "clarify", question: "What is the task? For example: “Add a task: Essay, 90 minutes, due Friday at noon.”" };
+    return { command: "add_task", text: rest };
+  }
+  // "Delete the task called Essay", "remove task essay", "delete a task": exact ids, or a numbered list to pick from.
+  const del = text.match(/^\s*(?:please\s+)?(?:delete|remove)\s+(?:the\s+|a\s+|my\s+)?tasks?\b\s*(?:called\s+|named\s+)?(.*?)[.!]?\s*$/i);
+  if (del) return deleteRequest(del[1].trim(), state.tasks);
+  // "Did I finish the gym task?": answered from the task list (the model mixed up a done task and an event).
+  if (DONE_QUESTION.test(text)) {
+    const lower = text.toLowerCase();
+    const task = state.tasks.filter(t => lower.includes(t.title.toLowerCase())).sort((a, b) => b.title.length - a.title.length)[0];
+    if (task) {
+      return { command: "clarify", question: task.done
+        ? `Yes, “${task.title}” is marked done.`
+        : `Not yet: “${task.title}” is still open${task.deadline ? `, due ${task.deadline}` : ""}. Mark it done in the task list when you finish.` };
     }
-
-    const title = match[1].trim().replace(/\.$/, "");
-
-    const matches = open.filter(
-      task => task.title.toLowerCase() === title.toLowerCase()
-    );
-
-    if (matches.length !== 1) {
-      return {
-        command: "clarify",
-        question: matches.length > 1
-          ? `Multiple tasks are named "${title}". Please identify which one you mean.`
-          : `I couldn't find an open task named "${title}".`
-      };
-    }
-
-    return {
-      command: "delete_task",
-      taskId: matches[0].id,
-      title: matches[0].title
+  }
+  // "What should I work on first?" / "How many tasks do I have left?": counted and ordered from the task list
+  // (the model got the counts and remaining minutes wrong).
+  if (WHAT_FIRST.test(text) || (TASKS_LEFT.test(text) && !/\b(today|tonight|tomorrow)\b/i.test(text))) {
+    const today = dateInZone(zone, now);
+    const tasks = orderedTasks(open.filter(t => (t.kind ?? "task") === "task"));
+    if (!tasks.length) return { command: "clarify", question: "You have no open tasks. Nice work!" };
+    const line = (t: Task, i: number) => {
+      const after = t.dependsOn.map(id => open.find(o => o.id === id)?.title).filter(Boolean);
+      return `${i + 1}. ${t.title}: due ${dayWord(t.deadline, today)} at ${clock12(t.dueTime >= 1439 ? 1439 : t.dueTime)}, ${minutesText(t.remainingMinutes)} left${after.length ? ` (after ${after.join(", ")})` : ""}`;
     };
+    const lines = tasks.map(line).join("\n");
+    const late = tasks.filter(t => t.deadline < today);
+    const lateNote = late.length ? `\n${late.map(t => `“${t.title}”`).join(", ")} ${late.length === 1 ? "is" : "are"} past due.` : "";
+    return { command: "clarify", question: WHAT_FIRST.test(text)
+      ? `Start with “${tasks[0].title}”. In order of deadline:\n${lines}${lateNote}`
+      : `You have ${tasks.length} open task${tasks.length === 1 ? "" : "s"}:\n${lines}${lateNote}` };
   }
   if (EXPLAIN.test(text)) return { command: "explain_unscheduled" };
-  if (TODAY.test(text)) return { command: "show_today" };
+  if (TODAY.test(text) && !NOT_CALENDAR.test(text)) return { command: "show_today" };
   if (SHOW_PLAN.test(text)) return { command: "show_plan" };
+  // A question about one named day is answered from the calendar, not by the model (it mislabels weekdays).
+  if (DAY_QUESTION.test(text) && !/\b(due|deadline)\b/i.test(text) && !NOT_CALENDAR.test(text)) {
+    const today = dateInZone(zone, now);
+    const date = parseDate(text, today);
+    if (date) {
+      const times = parseTimes(text);
+      return { command: "busy_day", date, at: times ? times.start : null };
+    }
+  }
   if (BUSY.test(text)) return { command: "busy_time" };
-  if (GENERATE.test(text)) return { command: "generate_schedule" };
+  if (GENERATE.test(text)) {
+    if (PLAN_CONDITION.test(text)) {
+      return { command: "clarify", question: "I can plan the week, but I can't apply that condition from chat yet. Block the time first (add an event, or turn the day off in Availability), then say “plan my week”. Or say “plan my week” to plan without it." };
+    }
+    return { command: "generate_schedule" };
+  }
   return null;
 }
 
@@ -338,7 +432,7 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>, userText = "", now = new Date()): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
     case "update_preferences": {
@@ -360,50 +454,33 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       const task = state.tasks.find(t => t.id === params.taskId && !t.done);
       if (!task) return { command: "clarify", question: "Which task should I move?" };
       if (!params.notBefore || Number.isNaN(Date.parse(params.notBefore))) return { command: "clarify", question: `When should “${task.title}” start instead?` };
-      return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: task.title };
+      const zone = accountTimeZone(state.availability ?? null);
+      const when = new Date(params.notBefore);
+      const day = dateInZone(zone, when);
+      const today = dateInZone(zone, now);
+      const blocked = deadlineBlocks(task, params.notBefore, zone, now);
+      if (blocked) return blocked;
+      return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: `${task.title} to ${dayWord(day, today)} at ${clock12(minutesInZone(zone, when))}` };
     }
-    case "delete_task":
-      return {
-        command: "clarify",
-        question: "Task deletion requires confirmation."
-  };
-     case "add_task": {
-      const title = params.taskTitle;
-      const deadline = params.taskDeadline;
-      const duration = params.taskDuration;
-
-      if (!title || !title.trim()) {
-        return {
-          command: "clarify",
-          question: "What should I call the task?"
-        };
+    case "delete_task": {
+      // Confirmation is a real pending action with buttons, never a sentence the model has to remember.
+      const task = state.tasks.find(t => t.id === params.taskId && !t.done);
+      return task ? { command: "delete_task", taskIds: [task.id] } : deleteRequest(params.taskTitle ?? "", state.tasks);
+    }
+    case "add_task": {
+      // The model may have gathered the details over several turns ("Essay, 2 hours" … "Friday"): use them.
+      const title = params.taskTitle?.trim();
+      if (title) {
+        const parts = [title, params.taskDuration ? `${params.taskDuration} minutes` : "", params.taskDeadline ? `due ${params.taskDeadline}` : ""];
+        return { command: "add_task", text: parts.filter(Boolean).join(", ") };
       }
-
-      if (!deadline) {
-        return {
-          command: "clarify",
-          question: "What is the deadline for this task?"
-        };
-      }
-
-      if (duration == null) {
-        return {
-          command: "clarify",
-          question: "How many minutes will this task take?"
-        };
-      }
-
-      return {
-        command: "add_task",
-        title,
-        deadline,
-        duration
-      };
+      // Otherwise the user's own words go through the plan-entry parser.
+      return userText ? { command: "add_task", text: userText.replace(/^\s*(?:please\s+)?(?:add|create)\s+(?:a\s+|an\s+)?(?:new\s+)?tasks?\s*(?:called|named|:)?\s*/i, "") } : { command: "clarify", question: answer.reply };
     }
 
     case "add_event":
     case "delete_event":
-      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }));
+      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }, userText));
 
     default:
       return { command: intent };
@@ -449,13 +526,10 @@ async function preview(workspace: CommandWorkspace, request: PreviewRequest, int
 export async function runAssistantCommand(request: ParsedRequest | AssistantCommand, workspace: CommandWorkspace, now = new Date()): Promise<AssistantMessage> {
   const req: ParsedRequest =
   typeof request === "string"
-    ? { command: request as Exclude<
-        AssistantCommand,
-      "add_task" | "delete_task" | "confirm_delete_task" | "add_event" | "delete_event"  
-      > }
+    ? { command: request as Exclude<AssistantCommand, "add_task" | "delete_task" | "add_event" | "delete_event"> }
     : request;
   const state = workspace.getSnapshot();
-  const zone = state.availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(state.availability);
   const today = dateInZone(zone, now);
   const endDate = addDays(today, PLAN_DAYS - 1);
 
@@ -466,43 +540,24 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(req.summary, [], req.change);
     case "propose_event":
       return reply(req.summary, [], undefined, req.action);
-    case "delete_task": {
-      const task = workspace.getSnapshot().tasks.find(
-      t => t.id === req.taskId && !t.done
-      );
-
-      if (!task) {
-        return reply("This task no longer exists or has already been completed.");
-      }
-
-      return reply(
-        `Are you sure you want to delete "${task.title}"?`,
-        ["confirm_delete_task"]
-      );
-    
-    }
-    case "confirm_delete_task": {
-      const task = workspace.getSnapshot().tasks.find(
-        t => t.id === req.taskId && !t.done
-      );
-
-      if (!task) {
-        return reply("This task no longer exists.");
-      }
-
+    case "delete_task":
       try {
-        await workspace.deleteTask(task.id);
-        return reply(`Task "${task.title}" was deleted successfully.`);
-      } catch {
-        return reply("Sorry, I couldn't delete the task.");
+        const action = await workspace.proposeDeleteTasks(req.taskIds);
+        return { ...reply(`${action.summary} Nothing is deleted until you press Delete.`), actionId: action.id };
+      } catch (error) {
+        return reply(`I couldn’t prepare that deletion: ${errorText(error)} Nothing was deleted.`);
       }
-}
+    case "pick_tasks": {
+      workspace.setChoice({ id: `choice-${++counter}`, purpose: "delete_tasks", prompt: req.prompt, options: req.options });
+      const lines = req.options.map((o, i) => `${i + 1}. ${o.title}${o.detail ? ` (${o.detail})` : ""}`);
+      return reply(`${req.prompt}\n${lines.join("\n")}\nReply with a number, or several like “1 and 3”. Nothing is deleted yet.`);
+    }
     case "generate_schedule":
       return preview(workspace, { kind: "generate", horizonDays: PLAN_DAYS });
     case "replan":
       return preview(workspace, { kind: "repair", horizonDays: PLAN_DAYS }, "Repairing your saved plan; unaffected sessions stay where they are.\n");
     case "move_task":
-      return preview(workspace, { kind: "repair", horizonDays: PLAN_DAYS, moves: [{ taskId: req.taskId, notBefore: req.notBefore }] }, `Moving ${req.label}.\n`);
+      return preview(workspace, { kind: "repair", horizonDays: PLAN_DAYS, moves: [{ taskId: req.taskId, notBefore: req.notBefore }] }, `Moving ${req.label}. Its work starts no earlier than that; the deadline doesn't change.\n`);
     case "request_break": {
       try {
         const result = await workspace.requestPreview({ kind: "break", minutes: req.minutes });
@@ -552,56 +607,21 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     }
     case "busy_time":
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
+    case "busy_day":
+      return reply(busyDayText(state.events, state.sessions, state.tasks, req.date, req.at));
     
     case "add_task": {
-      const title = req.title.trim();
-      const deadline = req.deadline;
-      const duration = req.duration;
-    
-      if (!title || title.length > 80) {
-        return reply("Please provide a task title between 1 and 80 characters.");
+      try {
+        const result = await workspace.interpretPlan(req.text);
+        const text = draftsReply(result.drafts, result.provider, result.notes);
+        const selected = result.drafts.filter(v => v.draft.include);
+        if (!selected.length || selected.some(v => !v.ready)) return reply(text);
+        const action = await workspace.proposeCreateItems();
+        return { ...reply(`${text}\nConfirm to save ${selected.length === 1 ? "it" : "them"} as ${selected.length === 1 ? "a task" : "tasks"} now (not scheduled yet), or Edit them in the review panel.`), actionId: action.id };
+      } catch (error) {
+        return reply(`I couldn’t read that task: ${errorText(error)} Nothing was saved.`);
       }
-
-  const parsedDate = new Date(`${deadline}T12:00:00Z`);
-
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(deadline) ||
-    Number.isNaN(parsedDate.getTime()) ||
-    parsedDate.toISOString().slice(0, 10) !== deadline
-  ) {
-    return reply("Please provide a valid deadline in YYYY-MM-DD format.");
-  }
-
-  if (
-    !Number.isInteger(duration) ||
-    duration < 15 ||
-    duration > 6000 ||
-    duration % 15 !== 0
-  ) {
-    return reply("Task duration must be between 15 and 6000 minutes, in multiples of 15.");
-  }
-
-  try {
-    const task = await workspace.createTask({
-      title,
-      deadline,
-      minutes: duration,
-      completedMinutes: 0,
-      dueTime: 1439,
-      priority: "Medium",
-      category: "Personal",
-      earliestStart: null,
-      allowSplit: true,
-      minSessionMinutes: 15,
-      maxSessionMinutes: 60,
-      dependsOn: [],
-    });
-
-    return reply(`Task "${task.title}" was created successfully.`);
-  } catch {
-    return reply("Sorry, I couldn't create the task. Please try again.");
-  }
-}  
     }
+  }
 return reply("This command is not supported yet.");
 }

@@ -16,6 +16,8 @@ class Settings:
     allowed_origins: tuple[str, ...]
     openai_api_key: str
     openai_model: str
+    # Second model pass that checks the assistant's free-text replies before they are shown.
+    assistant_self_review: bool = True
 
 
 @lru_cache
@@ -38,4 +40,5 @@ def get_settings() -> Settings:
         origins,
         os.getenv('OPENAI_API_KEY', '').strip(),
         os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip() or 'gpt-4o-mini',
+        os.getenv('ASSISTANT_SELF_REVIEW', 'true').strip().lower() not in {'0', 'false', 'no', 'off'},
     )
