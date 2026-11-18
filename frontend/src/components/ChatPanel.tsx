@@ -8,7 +8,8 @@ import type { PendingAction, PreferenceChange } from "../types/models";
 import { BUTTONS, CANCEL, CONFIRM, chosen, openActions, parseSelection, resolveConfirm } from "../services/pendingActions";
 import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
-import { CHAT_WIDTH, chatFullscreenStore, chatPanelStore, chatWidthStore, useChatFullscreen, useChatPanelOpen, useChatWidth } from "../services/uiState";
+import { CHAT_WIDTH, chatFullscreenStore, chatPanelStore, chatTabStore, chatWidthStore, useChatFullscreen, useChatPanelOpen, useChatTab, useChatWidth } from "../services/uiState";
+import DraftReview from "./DraftReview";
 import ResizeHandle from "./ResizeHandle";
 import { dockedWidth } from "../utils/layout";
 import { draftsReply, firstOpenQuestion, IMAGE_TYPES, isChatter, looksLikePlanEntry, readImage } from "../services/planEntry";
@@ -84,7 +85,17 @@ export default function ChatPanel() {
   const context = { tasks, sessions, events, availability, connections, schedulePreview, preferences };
   const welcome = buildWelcome(context);
   const busy = thinking || working !== null || saving || reading || planBusy;
-  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working]);
+  const tab = useChatTab();
+  const reviewing = tab === "review" && planDrafts !== null;
+  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working, reviewing]);
+  // New items from a message open the Review tab beside the calendar; once they are applied or discarded, back to chat.
+  const batch = planDrafts?.batchId ?? null;
+  const shownBatch = useRef<string | null>(null);
+  useEffect(() => {
+    if (batch === shownBatch.current) return;
+    shownBatch.current = batch;
+    chatTabStore.set(batch ? "review" : "chat");
+  }, [batch]);
 
   function append(message: AssistantMessage) {
     setMessages(previous => [...previous.slice(-18), message]);
@@ -129,8 +140,8 @@ export default function ChatPanel() {
     try {
       await workspaceService.cancelAction(action.id);
       if (action.type === "create_items") {
-        window.dispatchEvent(new CustomEvent("autoplan:review-drafts"));
-        append({ id: `act-${++nextId.current}`, role: "assistant", text: "Okay, nothing was saved. Edit the items in the review panel above the calendar." });
+        chatTabStore.set("review");
+        append({ id: `act-${++nextId.current}`, role: "assistant", text: "Okay, nothing was saved. Edit the items in the Review tab." });
       } else append({ id: `act-${++nextId.current}`, role: "assistant", text: "Cancelled. Nothing was changed." });
     } catch (e) {
       setError((e as Error).message);
@@ -379,7 +390,14 @@ export default function ChatPanel() {
     )}
     <aside className={`chat-panel ${fullscreen ? "fullscreen" : ""}`} aria-label="AI chatbox" style={{ "--chat-w": `${chatWidth}px` } as CSSProperties}>
       <div className="chat-head">
-        <h2><Icon name="assistant" size={18} /> AI Chatbox</h2>
+        {planDrafts ? (
+          <div className="chat-tabs" role="tablist" aria-label="AI panel">
+            <button role="tab" id="tab-chat" aria-selected={!reviewing} aria-controls="chat-tabpanel" onClick={() => chatTabStore.set("chat")}><Icon name="assistant" size={16} /> Chat</button>
+            <button role="tab" id="tab-review" aria-selected={reviewing} aria-controls="chat-tabpanel" onClick={() => chatTabStore.set("review")}>
+              Review <span className={`tab-count ${planDrafts.views.some(v => v.draft.include && !v.ready) ? "needs-fix" : ""}`}>{planDrafts.views.length}</span>
+            </button>
+          </div>
+        ) : <h2><Icon name="assistant" size={18} /> AI Chatbox</h2>}
         <div className="chat-head-actions">
           <button className="icon-button ghost small" aria-label={fullscreen ? "Exit full screen" : "Full screen"} title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
             aria-pressed={fullscreen} onClick={() => chatFullscreenStore.set(!fullscreen)}>
@@ -388,6 +406,9 @@ export default function ChatPanel() {
           <button className="icon-button ghost small" aria-label="Hide AI chatbox" title="Hide AI chatbox" onClick={() => { chatFullscreenStore.set(false); chatPanelStore.set(false); }}><Icon name="panel" size={17} /></button>
         </div>
       </div>
+      {reviewing ? (
+        <div className="chat-review" id="chat-tabpanel" role="tabpanel" aria-labelledby="tab-review"><DraftReview /></div>
+      ) : <>
       <div className="chat-messages" ref={log} role="log" aria-live="polite" aria-label="Planning conversation">
         <p className="bubble assistant">Hi{user?.name ? ` ${user.name.split(" ")[0]}` : ""}! {welcome.text}</p>
         {messages.map(m => (
@@ -437,6 +458,7 @@ export default function ChatPanel() {
       <div className="chat-prompts">
         {PROMPTS.map(p => <button key={p} className="chip" disabled={busy} onClick={() => void ask(p)}>{p}</button>)}
       </div>
+      </>}
       <form className="composer" onSubmit={submit} onClick={e => { if (e.target === e.currentTarget) composer.current?.focus(); }}>
         {image && (
           <div className="chat-attachment">

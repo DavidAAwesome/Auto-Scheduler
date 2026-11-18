@@ -1,5 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
 import ScreenHeading from "../components/ScreenHeading";
+import ClearDataDialog from "../components/ClearDataDialog";
+import type { ClearedCounts } from "../services/workspaceStore";
 import Icon from "../components/Icon";
 import { NumberField, SaveBar, SelectField, SettingsSection, Switch } from "../components/SettingsControls";
 import { useWorkspace } from "../hooks/useWorkspace";
@@ -527,6 +529,37 @@ function AIProfileForm({ initial }: { initial: AIProfile }) {
   );
 }
 
+/** Start over: delete every task, event and session (and so the analytics), keeping the account and settings. */
+function DataSection() {
+  const { tasks, events, sessions } = useWorkspace();
+  const [confirming, setConfirming] = useState(false);
+  const [done, setDone] = useState<ClearedCounts | null>(null);
+  const empty = !tasks.length && !events.length && !sessions.length;
+  return (
+    <section className="settings-card" aria-labelledby="data-title">
+      <header className="settings-card-head">
+        <h2 id="data-title">Your data</h2>
+        <p className="muted small">Start fresh without deleting your account.</p>
+      </header>
+      <div className="danger-zone">
+        <div>
+          <h3>Delete all tasks, events and analytics</h3>
+          <p className="muted small">Removes every task, planned session, break and event, and resets your analytics. Your settings stay.</p>
+        </div>
+        <button type="button" className="button danger-outline" disabled={empty} title={empty ? "There is nothing to delete" : undefined} onClick={() => setConfirming(true)}>
+          <Icon name="trash" size={15} /> Delete all data
+        </button>
+      </div>
+      {done && (
+        <p className="clear-done" role="status"><Icon name="check" size={15} />
+          Deleted {done.tasks} task{done.tasks === 1 ? "" : "s"}, {done.sessions} session{done.sessions === 1 ? "" : "s"} and {done.events} event{done.events === 1 ? "" : "s"}.
+        </p>
+      )}
+      {confirming && <ClearDataDialog onClose={() => setConfirming(false)} onCleared={setDone} />}
+    </section>
+  );
+}
+
 export default function Settings() {
   const { availability, preferences, aiProfile } = useWorkspace();
   return (
@@ -535,6 +568,7 @@ export default function Settings() {
       {availability && <AvailabilityForm initial={normalizeAvailability(availability)} />}
       <PreferencesForm initial={preferences} />
       <AIProfileForm initial={aiProfile} />
+      <DataSection />
     </div>
   );
 }

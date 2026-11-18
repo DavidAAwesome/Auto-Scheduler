@@ -1,4 +1,4 @@
-import type { DraftIssue, DraftKind, DraftView, PlanDraft } from "../types/models.ts";
+import { DRAFT_PREFIX, type ConflictChoice, type DraftIssue, type DraftKind, type DraftView, type PlanDraft, type SchedulePreview } from "../types/models.ts";
 import { clock12, longDate } from "../utils/calendar.ts";
 
 /** Same limits as the backend (plan_extraction.MAX_IMAGE_BYTES / IMAGE_SIGNATURES). */
@@ -88,7 +88,7 @@ export function draftLine(d: PlanDraft) {
 /** Chat reply after reading drafts. It never says anything was saved: nothing is, until Apply. */
 export function draftsReply(views: DraftView[], provider: string, notes: string[] = []) {
   if (!views.length) return notes.join(" ") || "I couldn’t find any tasks or events in that. Try one per line, like “Essay, 2 hours, due Friday”.";
-  const lines = [`I read ${views.length} item${views.length === 1 ? "" : "s"}${provider === "openai" ? " (AI)" : provider === "local" ? " (built-in parser)" : ""}. Nothing is saved yet; they’re in the review panel above the calendar:`];
+  const lines = [`I read ${views.length} item${views.length === 1 ? "" : "s"}${provider === "openai" ? " (AI)" : provider === "local" ? " (built-in parser)" : ""}. Nothing is saved yet; check them in the Review tab:`];
   for (const v of views) {
     lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
     const fit = v.issues.find(i => i.code === "wont_fit");
@@ -120,4 +120,45 @@ export async function readImage(file: File): Promise<{ mediaType: string; dataBa
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return { mediaType: file.type, dataBase64: btoa(binary), name: file.name };
+}
+
+const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const span = (minutes: number) => {
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return h ? `${h} h${m ? ` ${m} min` : ""}` : `${m} min`;
+};
+/** "Tue, Nov 10" (no year), for compact card lines. */
+export const dayLabel = (date: string) => longDate(date).replace(/, \d{4}$/, "");
+
+/** One readable line for a review card, e.g. "6 h · due Wed, Nov 11, 5 PM · High". Gaps say what is missing. */
+export function draftSummary(d: PlanDraft) {
+  if (d.kind === "fixed_event") {
+    const time = d.start != null && d.end != null ? `${clock12(d.start)}–${clock12(d.end % 1440)}` : "time not set";
+    const when = d.repeat
+      ? `every ${d.repeat.weekdays.map(i => WEEKDAY_NAMES[i]).join(", ") || "?"}${d.repeat.until ? ` until ${dayLabel(d.repeat.until)}` : ""}`
+      : d.date ? dayLabel(d.date) : "date not set";
+    return [when, time, d.location].filter(Boolean).join(" · ");
+  }
+  const due = d.deadline ? `due ${dayLabel(d.deadline)}${d.dueTime != null ? `, ${clock12(d.dueTime)}` : ""}` : "no due date";
+  return [d.minutes != null ? span(d.minutes) : "length not set", due, d.priority].join(" · ");
+}
+
+/** What the current plan preview does with one draft: where its work landed, what didn't fit, and fixes offered. */
+export interface DraftOutcome { sessions: number; minutes: number; firstDate: string | null; unscheduled: number; reasons: string[]; choices: ConflictChoice[]; eventDates: string[] }
+export function draftOutcome(id: string, preview: SchedulePreview | null): DraftOutcome | null {
+  if (!preview || preview.mode !== "plan") return null;
+  const key = `${DRAFT_PREFIX}${id}`;
+  const work = preview.sessions.filter(s => s.taskId === key && s.type === "work" && s.change === "new");
+  const task = preview.tasks.find(t => t.taskId === key);
+  const conflicts = preview.conflicts.filter(c => c.items.some(i => i.id === key));
+  const eventDates = (preview.proposedEvents ?? []).filter(e => e.draftId === id).map(e => e.date);
+  return {
+    sessions: work.length,
+    minutes: work.reduce((n, s) => n + s.end - s.start, 0),
+    firstDate: [...work.map(s => s.date), ...eventDates].sort()[0] ?? null,
+    unscheduled: task?.unallocatedMinutes ?? 0,
+    reasons: [...new Set([...(task?.reasons ?? []).map(r => r.message), ...conflicts.map(c => c.message)])],
+    choices: conflicts.flatMap(c => c.choices ?? []),
+    eventDates,
+  };
 }

@@ -3,7 +3,7 @@ import { DEFAULT_DUE_TIME, DRAFT_PREFIX, type CalendarEvent, type ProposedEvent,
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import { calendarViewStore, useCalendarView, useShowHolidays } from "../services/uiState";
+import { calendarViewStore, draftLinkStore, openDraft, useCalendarView, useDraftLink, useShowHolidays } from "../services/uiState";
 import { observancesBetween, type Observance } from "../utils/holidays";
 import {
   clock12, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
@@ -14,8 +14,8 @@ import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, HOUR_HEIGHT, layout
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
 import { isDerivedBreak } from "../utils/breaks";
-import { calendarSessions, draftsBeforePreview, proposedEventsOn, savedWorkChanges, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
-import DraftReview from "./DraftReview";
+import { calendarSessions, proposedEventsOn, savedWorkChanges, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
+import { useDraftAutoPreview } from "../hooks/useDraftAutoPreview";
 import SplitOptionsPanel from "./SplitOptionsPanel";
 import { accountTimeZone } from "../utils/timeZones";
 
@@ -178,25 +178,45 @@ function FreeBand({ event, date, onOpen }: { event: CalendarEvent; date: string;
 
 /** A fixed event that exists only as a draft: drawn dashed until Apply saves it. */
 function ProposedEventBlock({ event, place }: { event: ProposedEvent; place: Placed }) {
+  const link = useLinkedDraft(event.draftId);
   return (
-    <div className={`event-block kind-${event.kind.toLowerCase()} preview ${oneLine(place)}`}
-      style={laneStyle(place)} title={`Proposed event: ${event.title} · ${range(event.start, event.end)} · not saved`}>
+    <button type="button" className={`event-block kind-${event.kind.toLowerCase()} preview ${oneLine(place)} ${link.className}`} {...link.handlers}
+      style={laneStyle(place)} title={`Proposed event: ${event.title} · ${range(event.start, event.end)} · not saved. Click to edit.`}>
       <span className="event-title"><Icon name={eventIcon[event.kind]} size={13} /> ✦ {event.title}</span>
       <span className="event-meta">{range(event.start, event.end)} · proposed</span>
-    </div>
+    </button>
   );
 }
 
+/** A calendar block for an item still under review: hovering it lights its card, clicking opens the card. */
+function useLinkedDraft(draftId: string | null) {
+  const { hover } = useDraftLink();
+  if (!draftId) return { className: "", handlers: {} };
+  const set = (on: boolean) => draftLinkStore.set({ ...draftLinkStore.get(), hover: on ? draftId : null });
+  return {
+    className: hover === draftId ? "linked" : hover ? "unlinked" : "",
+    handlers: {
+      onMouseEnter: () => set(true), onMouseLeave: () => set(false),
+      onClick: (e: MouseEvent) => { e.stopPropagation(); openDraft(draftId); },
+    },
+  };
+}
+
 function PreviewBlock({ session, place }: { session: ScheduleSession; place: Placed }) {
+  const draftId = session.taskId?.startsWith(DRAFT_PREFIX) ? session.taskId.slice(DRAFT_PREFIX.length) : null;
+  const link = useLinkedDraft(draftId);
+  const Tag = draftId ? "button" : "div";
   return (
-    <div
-      className={`plan-block focus preview ${oneLine(place)}`}
+    <Tag
+      {...(draftId ? { type: "button" as const } : {})}
+      {...link.handlers}
+      className={`plan-block focus preview ${oneLine(place)} ${link.className}`}
       style={laneStyle(place)}
-      title={`Proposed: ${session.title} · ${range(session.start, session.end)}`}
+      title={`Proposed: ${session.title} · ${range(session.start, session.end)}${draftId ? " · click to edit" : ""}`}
     >
       <span className="session-title">✦ {session.title}</span>
       <span className="session-time">{range(session.start, session.end)} · proposed</span>
-    </div>
+    </Tag>
   );
 }
 
@@ -373,7 +393,7 @@ function MonthGrid({ anchor, today, onOpen, onOpenEvent, onAdd }: Pick<CalendarH
 
 export default function CalendarPane({ today, ...handlers }: CalendarHandlers & { today: string }) {
   const view = useCalendarView();
-  const { connections, schedulePreview, splitOptions, previewStale, sessions, events, saving, error } = useWorkspace();
+  const { connections, schedulePreview, previewStale, sessions, events, saving, error } = useWorkspace();
   const [scheduleError, setScheduleError] = useState("");
   const lastPreview = useRef<string | null>(null);
   const dates = visibleDates(view.mode, view.anchor);
@@ -385,6 +405,22 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
   const added = schedulePreview?.sessions.filter(s => s.change === "new") ?? [];
   const moved = schedulePreview?.removed.filter(r => r.session.type === "work") ?? [];
   const newBreaks = schedulePreview?.sessions.filter(s => s.type === "break" && (s.change === "new" || s.change === "derived")).length ?? 0;
+  const workCount = added.filter(s => s.type === "work").length;
+  const eventCount = schedulePreview?.proposedEvents?.length ?? 0;
+  const previewSummary = [
+    eventCount ? `${eventCount} event${eventCount === 1 ? "" : "s"}` : "",
+    `${workCount} session${workCount === 1 ? "" : "s"}`,
+    newBreaks ? `${newBreaks} break${newBreaks === 1 ? "" : "s"}` : "",
+    moved.length ? `${moved.length} moved` : "",
+  ].filter(Boolean).join(" · ");
+  const issueCount = unscheduled.length + (schedulePreview?.conflicts.length ?? 0);
+  // Details start closed for plan previews (each card shows its own result) and open when another preview has issues.
+  const [detailsChoice, setDetailsChoice] = useState<{ previewId: string; open: boolean } | null>(null);
+  const detailsOpen = schedulePreview
+    ? detailsChoice?.previewId === schedulePreview.previewId ? detailsChoice.open : schedulePreview.mode !== "plan" && issueCount > 0
+    : false;
+  const setDetailsOpen = (open: boolean) => schedulePreview && setDetailsChoice({ previewId: schedulePreview.previewId, open });
+  useDraftAutoPreview(setScheduleError);
   const nowIso = new Date().toISOString();
   // Saved flexible work that a newer event now overlaps: offer a local repair instead of moving it silently.
   const clashing = schedulePreview ? [] : sessions.filter(s => s.type === "work" && s.status === "saved" && s.source === "auto" && !s.locked
@@ -455,7 +491,6 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
       {/* Review area: drafts, conflicts and the schedule preview scroll here, so the calendar keeps its space and
           the Apply buttons are never pushed out of reach. */}
       <div className="calendar-review">
-      {draftsBeforePreview(splitOptions, schedulePreview) && <DraftReview />}
       {clashing.length > 0 && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule conflicts">
           <div><strong>{clashing.length} saved session{clashing.length === 1 ? "" : "s"} now overlap{clashing.length === 1 ? "s" : ""} an event.</strong> Nothing was moved yet.</div>
@@ -465,65 +500,70 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
         </div>
       )}
       <SplitOptionsPanel onError={setScheduleError} />
-      {schedulePreview && (
-        <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
-          <div className="schedule-preview-head">
-            <div><span className="preview-badge">Preview · not saved</span> <strong>{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)}</strong></div>
-            <div className="schedule-preview-actions">
-              <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : unscheduled.length ? "Apply partial plan" : "Apply schedule"}</button>
-              <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
-            </div>
-          </div>
-          <div className="schedule-preview-details">
-            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && <>{schedulePreview.proposedEvents!.length} new event occurrence{schedulePreview.proposedEvents!.length === 1 ? "" : "s"}</>}
-            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && " · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {newBreaks} break{newBreaks === 1 ? "" : "s"}
-            {moved.length > 0 && <>{" · "}{moved.length} saved session{moved.length === 1 ? "" : "s"} move</>}
-            {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
-              <div className="preview-days" aria-label="Scheduled days">
-                {schedulePreview.days.filter(d => d.newWorkMinutes > 0 || d.breakCount > 0).map(d => (
-                  <button key={d.date} className="chip" onClick={() => calendarViewStore.set({ ...view, anchor: d.date })}>
-                    {shortWeekday(d.date)} {Number(d.date.slice(8))}: {duration(d.workMinutes)} work{d.breakCount ? `, ${d.breakCount} break${d.breakCount === 1 ? "" : "s"}` : ""}
-                  </button>
-                ))}
-              </div>
-            )}
-            {unscheduled.length > 0 && (
-              <p className="form-warning small" role="status">
-                <strong>Partial plan:</strong> {unscheduled.reduce((n, t) => n + t.unallocatedMinutes, 0)} min of work can’t be placed in this window. You can still apply what fits; the rest stays on {unscheduled.length === 1 ? "its task" : "the tasks"} as unscheduled work (listed below).
-              </p>
-            )}
-            {added.length === 0 && moved.length === 0 && !(schedulePreview.proposedEvents?.length) && (
-              <p className="muted small" role="status">
-                {schedulePreview.mode === "plan"
-                  ? "No sessions could be placed in this window. Applying saves the new items with their work unscheduled."
-                  : schedulePreview.tasks.length === 0 ? "Nothing to schedule: you have no open tasks with remaining work in this window." : "Nothing changes: your saved plan already covers everything that fits."}
-              </p>
-            )}
-            {previewStale && <p className="form-warning small">{schedulePreview.mode === "plan" ? "The items under review changed after this preview. Preview again before applying." : "Your tasks, events or settings changed after this preview. Generate it again before applying."}</p>}
-            {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
-              <ul className="form-warning small">
-                {savedWorkChanges(schedulePreview).map(line => <li key={line}>{line}</li>)}
-                {schedulePreview.conflicts.map((c, i) => (
-                  <li key={`c${i}`}>{c.message}
-                    {(c.choices ?? []).length > 0 && (
-                      <span className="conflict-choices">
-                        {c.choices!.map(choice => <button key={choice.id} className="chip" disabled={saving} onClick={() => void choose(c, choice.id)}>{choice.label}</button>)}
-                      </span>
-                    )}
-                  </li>
-                ))}
-                {unscheduled.map(t => <li key={t.taskId}>{unscheduledLine(t)}</li>)}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
-      {!draftsBeforePreview(splitOptions, schedulePreview) && <DraftReview />}
       {(scheduleError || error) && <p role="alert" className="form-error">{scheduleError || error}</p>}
       </div>
       {view.mode === "month"
         ? <MonthGrid anchor={view.anchor} today={today} onOpen={handlers.onOpen} onOpenEvent={handlers.onOpenEvent} onAdd={handlers.onAdd} />
         : <TimeGrid dates={dates} today={today} {...handlers} />}
+      {schedulePreview && (
+        <div className={`preview-dock ${detailsOpen ? "open" : ""}`} role="region" aria-label="Schedule preview">
+            {detailsOpen && (
+            <div className="schedule-preview-details preview-dock-details" id="preview-details">
+              <p className="preview-dock-range"><strong>{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)}</strong></p>
+              {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
+                <div className="preview-days" aria-label="Scheduled days">
+                  {schedulePreview.days.filter(d => d.newWorkMinutes > 0 || d.breakCount > 0).map(d => (
+                    <button key={d.date} className="chip" onClick={() => calendarViewStore.set({ ...view, anchor: d.date })}>
+                      {shortWeekday(d.date)} {Number(d.date.slice(8))}: {duration(d.workMinutes)} work{d.breakCount ? `, ${d.breakCount} break${d.breakCount === 1 ? "" : "s"}` : ""}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {unscheduled.length > 0 && (
+                <p className="form-warning small" role="status">
+                  <strong>Partial plan:</strong> {unscheduled.reduce((n, t) => n + t.unallocatedMinutes, 0)} min of work can’t be placed in this window. You can still apply what fits; the rest stays on {unscheduled.length === 1 ? "its task" : "the tasks"} as unscheduled work (listed below).
+                </p>
+              )}
+              {added.length === 0 && moved.length === 0 && !(schedulePreview.proposedEvents?.length) && (
+                <p className="muted small" role="status">
+                  {schedulePreview.mode === "plan"
+                    ? "No sessions could be placed in this window. Applying saves the new items with their work unscheduled."
+                    : schedulePreview.tasks.length === 0 ? "Nothing to schedule: you have no open tasks with remaining work in this window." : "Nothing changes: your saved plan already covers everything that fits."}
+                </p>
+              )}
+              {previewStale && <p className="form-warning small">{schedulePreview.mode === "plan" ? "The items under review changed after this preview. Preview again before applying." : "Your tasks, events or settings changed after this preview. Generate it again before applying."}</p>}
+              {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
+                <ul className="form-warning small">
+                  {savedWorkChanges(schedulePreview).map(line => <li key={line}>{line}</li>)}
+                  {schedulePreview.conflicts.map((c, i) => (
+                    <li key={`c${i}`}>{c.message}
+                      {(c.choices ?? []).length > 0 && (
+                        <span className="conflict-choices">
+                          {c.choices!.map(choice => <button key={choice.id} className="chip" disabled={saving} onClick={() => void choose(c, choice.id)}>{choice.label}</button>)}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                  {unscheduled.map(t => <li key={t.taskId}>{unscheduledLine(t)}</li>)}
+                </ul>
+              )}
+            </div>
+            )}
+          <div className="preview-dock-bar">
+            <span className="preview-badge">Preview · not saved</span>
+            <button type="button" className="preview-dock-summary" aria-expanded={detailsOpen} aria-controls="preview-details" onClick={() => setDetailsOpen(!detailsOpen)}
+              title={detailsOpen ? "Hide details" : "Show details"}>
+              <span>{previewSummary}</span>
+              {issueCount > 0 && <span className="issue-pill">{issueCount} to check</span>}
+              <Icon name={detailsOpen ? "chevronDown" : "chevronUp"} size={15} />
+            </button>
+            <div className="schedule-preview-actions">
+              <button className="button small" disabled={saving || previewStale} title={previewStale ? schedulePreview.mode === "plan" ? "Updating the preview…" : "Things changed after this preview. Generate it again." : undefined} onClick={() => void applySchedule()}>{saving ? "Applying…" : previewStale && schedulePreview.mode === "plan" ? "Updating…" : unscheduled.length ? "Apply partial plan" : "Apply"}</button>
+              <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="calendar-legend">
         <span><i className="swatch event" /> Event</span>
         <span><i className="swatch session" /> Saved work session</span>

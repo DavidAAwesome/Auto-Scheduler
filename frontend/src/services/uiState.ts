@@ -75,3 +75,22 @@ export function useChatFullscreen() { return useSyncExternalStore(chatFullscreen
 /** Show built-in holidays, observances and daylight-saving changes on the calendar (on by default). */
 export const holidaysStore = createStore<boolean>(read('autoplan.holidays') !== 'false', on => write('autoplan.holidays', String(on)));
 export function useShowHolidays() { return useSyncExternalStore(holidaysStore.subscribe, holidaysStore.get); }
+
+/** Which tab the right-hand panel shows. "review" lists items read from chat until they are applied or discarded. */
+export type ChatTab = 'chat' | 'review';
+export const chatTabStore = createStore<ChatTab>('chat');
+export function useChatTab() { return useSyncExternalStore(chatTabStore.subscribe, chatTabStore.get); }
+
+/**
+ * Links a review card and its blocks on the calendar: `hover` highlights both, `focus` opens a card from the calendar.
+ * Not remembered.
+ */
+export interface DraftLink { hover: string | null; focus: string | null }
+export const draftLinkStore = createStore<DraftLink>({ hover: null, focus: null });
+export function useDraftLink() { return useSyncExternalStore(draftLinkStore.subscribe, draftLinkStore.get); }
+/** Shows a draft's card: opens the panel on the Review tab and expands that card. */
+export function openDraft(id: string) {
+  chatPanelStore.set(true);
+  chatTabStore.set('review');
+  draftLinkStore.set({ hover: id, focus: id });
+}

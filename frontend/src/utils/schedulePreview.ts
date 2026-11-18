@@ -173,7 +173,7 @@ export function splitOptionSummary(option: SplitOption) {
 export function splitOptionsText(split: SplitOptions) {
   const count = split.options.length;
   const lines = [count > 1
-    ? `Here are ${count} ways to split ${split.title}. Not saved yet. Pick one above the calendar, then Apply:`
+    ? `Here are ${count} ways to split ${split.title}. Not saved yet. Pick one above the calendar, then Apply below it:`
     : `I found one way to split ${split.title}. It’s on the calendar and not saved yet:`];
   for (const option of split.options) lines.push(`• ${option.label}: ${splitOptionSummary(option)}`);
   lines.push(...split.notes);

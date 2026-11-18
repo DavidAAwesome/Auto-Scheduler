@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import { kindPatch, needsMoreOptions, shortHint, tooShortToSplit, visibleRows } from "../services/planEntry";
+import { dayLabel, draftOutcome, draftSummary, kindPatch, needsMoreOptions, shortHint, tooShortToSplit } from "../services/planEntry";
+import { calendarViewStore, draftLinkStore, useDraftLink } from "../services/uiState";
+import { duration } from "../utils/taskDisplay";
 import type { DraftIssue, DraftKind, DraftView, EventKind, FitOption, PlanDraft, Priority } from "../types/models";
 import { clock12 } from "../utils/calendar";
 import Icon from "./Icon";
@@ -98,113 +100,164 @@ function MoreOptions({ view, others, red }: { view: DraftView; others: DraftView
   );
 }
 
-function DraftRow({ view, others }: { view: DraftView; others: DraftView[] }) {
+
+/** The preview's result for one card: where the work landed, or what didn't fit and the fixes offered. */
+function CardOutcome({ view, onError }: { view: DraftView; onError: (message: string) => void }) {
+  const { schedulePreview, previewStale } = useWorkspace();
+  const outcome = draftOutcome(view.draft.id, schedulePreview);
+  if (!outcome || !view.draft.include || previewStale) return null;
+  const show = () => { if (outcome.firstDate) calendarViewStore.set({ ...calendarViewStore.get(), anchor: outcome.firstDate }); };
+  const choose = (choice: string) => {
+    if (choice === "raise_focus_limit") { window.location.assign("#/settings"); return; }
+    try {
+      workspaceService.updateDraft(view.draft.id, choice === "allow_split" ? { allowSplit: true } : { kind: "flexible_event", allowSplit: false });
+    } catch (e) { onError((e as Error).message); }
+  };
+  const placed = view.draft.kind === "fixed_event"
+    ? outcome.eventDates.length ? `On the calendar${outcome.eventDates.length > 1 ? ` · ${outcome.eventDates.length}×` : ""}` : null
+    : outcome.sessions ? `${outcome.sessions} session${outcome.sessions === 1 ? "" : "s"} · ${duration(outcome.minutes)}` : null;
+  return (
+    <div className={`card-outcome ${outcome.unscheduled || outcome.choices.length ? "warn" : "ok"}`}>
+      {placed && (
+        <button type="button" className="card-outcome-line" onClick={show} title="Show on the calendar">
+          <Icon name="calendar" size={13} /> {placed}{outcome.firstDate ? ` · ${dayLabel(outcome.firstDate)}` : ""}
+        </button>
+      )}
+      {outcome.unscheduled > 0 && <p className="card-outcome-line"><Icon name="alert" size={13} /> {duration(outcome.unscheduled)} won’t fit before it’s due</p>}
+      {(outcome.unscheduled > 0 || outcome.choices.length > 0) && outcome.reasons.slice(0, 2).map(r => <p key={r} className="card-outcome-reason">{r}</p>)}
+      {outcome.choices.length > 0 && (
+        <div className="card-outcome-choices">
+          {outcome.choices.map(c => <button key={c.id} type="button" className="chip" onClick={() => choose(c.id)}>{c.label}</button>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One item as a card: a summary line to scan, the full editor only when opened. Hovering lights its calendar blocks. */
+function DraftCard({ view, others }: { view: DraftView; others: DraftView[] }) {
   const d = view.draft;
+  const link = useDraftLink();
+  const [open, setOpen] = useState(false);
   const [more, setMore] = useState(false);
   const [error, setError] = useState("");
+  const card = useRef<HTMLLIElement>(null);
   const set = (patch: Partial<PlanDraft>) => workspaceService.updateDraft(d.id, patch);
   const fixed = d.kind === "fixed_event";
   const blocking = view.issues.filter(i => i.blocking);
   const fit = view.issues.find(i => i.code === "wont_fit") ?? view.issues.find(i => i.code === "past");
   const red = (field: string) => (blocking.some(i => i.field === field) ? "is-blocking" : "");
-  const needed = needsMoreOptions(view);  // the field to fix is behind "More options": its row cell and link turn red
-  const eventTime = d.start != null && d.end != null ? `${clock12(d.start)}–${clock12(d.end % 1440)}` : "Set time";
+  const needed = needsMoreOptions(view);
+  // Opened from a calendar block: this card stays expanded until it is closed or another one is opened.
+  const focused = link.focus === d.id;
+  useEffect(() => {
+    if (focused) requestAnimationFrame(() => card.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }, [focused]);
+  // A card that needs a fix opens itself, so the red field is visible without hunting for it.
+  const expanded = open || focused || (blocking.length > 0 && d.include);
+  const toggle = () => {
+    if (focused) draftLinkStore.set({ ...draftLinkStore.get(), focus: null });
+    setOpen(!expanded);
+  };
+  const hover = (on: boolean) => draftLinkStore.set({ ...draftLinkStore.get(), hover: on ? d.id : null });
   return (
-    <li id={`draft-${d.id}`} className={`draft-item ${d.include ? "" : "skipped"}`} aria-label={d.title ?? "Untitled item"}>
-      <div className="draft-line">
+    <li ref={card} id={`draft-${d.id}`} aria-label={d.title ?? "Untitled item"}
+      className={`draft-card kind-${d.kind} ${d.include ? "" : "skipped"} ${blocking.length ? "needs-fix" : ""} ${link.hover === d.id ? "linked" : ""}`}
+      onMouseEnter={() => hover(true)} onMouseLeave={() => hover(false)} onFocus={() => hover(true)} onBlur={() => hover(false)}>
+      <div className="draft-card-head">
         <input type="checkbox" className="draft-tick" aria-label={`Include ${d.title ?? "this item"}`} checked={d.include} onChange={e => set({ include: e.target.checked })} />
-        <input className={`draft-title ${red("title")}`} value={d.title ?? ""} placeholder="Name" maxLength={80} aria-label="Name" onChange={e => set({ title: e.target.value || null })} />
-        <select className="draft-chip" value={d.kind} aria-label="Kind" onChange={e => set(kindPatch(e.target.value as DraftKind))}>
-          {(Object.keys(KIND_LABEL) as DraftKind[]).map(k => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
-        </select>
-        {fixed
-          ? <button type="button" className={`draft-value ${red("start") || red("end")}`} onClick={() => setMore(true)}>{eventTime}</button>
-          : <label className="draft-minutes"><input type="number" min={5} step={5} max={6000} className={red("minutes")} aria-label="Minutes" value={d.minutes ?? ""} onChange={e => set({ minutes: e.target.value ? Number(e.target.value) : null })} /><span>min</span></label>}
-        {fixed && d.repeat
-          ? <button type="button" className={`draft-value ${red("repeat.weekdays") || red("repeat.startDate") || red("repeat.until")}`} onClick={() => setMore(true)}>{d.repeat.weekdays.map(i => WEEKDAYS[i]).join(", ") || "Set days"}</button>
-          : <input type="date" className={`draft-date ${fixed ? red("date") || (fit ? "is-blocking" : "") : red("deadline") || (fit ? "is-blocking" : "")}`} aria-label={fixed ? "Date" : "Due date"} value={(fixed ? d.date : d.deadline) ?? ""} onChange={e => set(fixed ? { date: e.target.value || null } : { deadline: e.target.value || null })} />}
-        {fixed
-          ? <span className="draft-chip-space" />
-          : <select className={`draft-chip priority-${d.priority.toLowerCase()}`} value={d.priority} aria-label="Priority" onChange={e => set({ priority: e.target.value as Priority })}>
-              {["High", "Medium", "Low"].map(p => <option key={p}>{p}</option>)}
-            </select>}
-        <button type="button" className={`draft-link draft-more-link ${needed && !more ? "is-blocking" : ""}`} aria-expanded={more} onClick={() => setMore(!more)}>{more ? "Fewer options" : "More options"}</button>
-        <button className="icon-button ghost small" aria-label={`Remove ${d.title ?? "item"}`} onClick={() => workspaceService.removeDraft(d.id)}><Icon name="close" size={15} /></button>
-        <RowHint view={view} issue={blocking[0]} fit={fit} onError={setError} onShow={needed && !more ? () => setMore(true) : undefined} />
+        <button type="button" className="draft-card-toggle" aria-expanded={expanded} onClick={toggle}>
+          <span className="draft-card-title">
+            <span className={`draft-kind kind-${d.kind}`}>{KIND_LABEL[d.kind]}</span>
+            <strong>{d.title ?? "Untitled"}</strong>
+            {blocking.length > 0 && <Icon name="alert" size={14} />}
+          </span>
+          <span className="draft-card-summary">{draftSummary(d)}</span>
+        </button>
+        <button className="icon-button ghost small" aria-label={`Remove ${d.title ?? "item"}`} title="Remove" onClick={() => workspaceService.removeDraft(d.id)}><Icon name="close" size={15} /></button>
       </div>
+      <RowHint view={view} issue={blocking[0]} fit={fit} onError={setError} onShow={needed && !more ? () => { setOpen(true); setMore(true); } : undefined} />
+      <CardOutcome view={view} onError={setError} />
+      {expanded && (
+        <div className="draft-card-body">
+          <label className="draft-field wide">Name
+            <input className={`draft-title ${red("title")}`} value={d.title ?? ""} placeholder="Name" maxLength={80} onChange={e => set({ title: e.target.value || null })} />
+          </label>
+          <label className="draft-field">Kind
+            <select value={d.kind} onChange={e => set(kindPatch(e.target.value as DraftKind))}>
+              {(Object.keys(KIND_LABEL) as DraftKind[]).map(k => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+            </select>
+          </label>
+          {fixed ? (
+            !d.repeat && (
+              <label className="draft-field date">Date
+                <input type="date" className={red("date") || (fit ? "is-blocking" : "")} value={d.date ?? ""} onChange={e => set({ date: e.target.value || null })} />
+              </label>
+            )
+          ) : (
+            <>
+              <label className="draft-field">Length
+                <span className="draft-minutes"><input type="number" min={5} step={5} max={6000} className={red("minutes")} value={d.minutes ?? ""} onChange={e => set({ minutes: e.target.value ? Number(e.target.value) : null })} /><span>min</span></span>
+              </label>
+              <label className="draft-field date">Due date
+                <input type="date" className={red("deadline") || (fit ? "is-blocking" : "")} value={d.deadline ?? ""} onChange={e => set({ deadline: e.target.value || null })} />
+              </label>
+              <label className="draft-field">Priority
+                <select className={`priority-${d.priority.toLowerCase()}`} value={d.priority} onChange={e => set({ priority: e.target.value as Priority })}>
+                  {["High", "Medium", "Low"].map(p => <option key={p}>{p}</option>)}
+                </select>
+              </label>
+            </>
+          )}
+          {fixed || more
+            ? <MoreOptions view={view} others={others} red={red} />
+            : <button type="button" className={`draft-link draft-more-link ${needed ? "is-blocking" : ""}`} onClick={() => setMore(true)}>Due time, splitting and more</button>}
+        </div>
+      )}
       {error && <p role="alert" className="draft-hint">{error}</p>}
-      {more && <MoreOptions view={view} others={others} red={red} />}
     </li>
   );
 }
 
-/** Items read from chat or an image, one row each. Nothing is saved until a preview of them is applied. */
+/**
+ * Items read from chat or an image, as cards in the right-hand panel beside the calendar. The calendar previews
+ * them on its own as soon as every included item is complete (see useDraftAutoPreview); nothing is saved until Apply.
+ */
 export default function DraftReview() {
   const { planDrafts, planBusy, saving, schedulePreview, previewStale } = useWorkspace();
   const [error, setError] = useState("");
-  // Open by default. A preview needs the calendar, so the rows step aside for it until the header is pressed.
-  const [choice, setChoice] = useState<{ previewId: string | null; open: boolean } | null>(null);
-  const [showAll, setShowAll] = useState(false);
-  const lastReviewed = useRef("");
-  const panel = useRef<HTMLElement>(null);
-  const busy = planBusy || saving;
-  const key = JSON.stringify(planDrafts?.views.map(v => v.draft) ?? []);
-  const planPreview = schedulePreview?.mode === "plan";
-  const previewId = planPreview ? schedulePreview.previewId : null;
-  const open = choice?.previewId === previewId ? choice.open : !planPreview;
-  const setOpen = (value: boolean) => setChoice({ previewId, open: value });
-  // "Edit" in the chat opens the panel at the first item.
-  useEffect(() => {
-    const show = () => {
-      setChoice(current => ({ previewId: current?.previewId ?? null, open: true }));
-      requestAnimationFrame(() => {
-        panel.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-        panel.current?.querySelector<HTMLInputElement>(".draft-title")?.focus({ preventScroll: true });
-      });
-    };
-    window.addEventListener("autoplan:review-drafts", show);
-    return () => window.removeEventListener("autoplan:review-drafts", show);
-  }, []);
-  // Edits are re-checked by the backend shortly after typing stops.
-  useEffect(() => {
-    if (!planDrafts || key === lastReviewed.current) return;
-    const timer = setTimeout(() => {
-      lastReviewed.current = key;
-      workspaceService.reviewDrafts().catch(e => setError((e as Error).message));
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [key, planDrafts]);
-  if (!planDrafts) return null;
+  if (!planDrafts) return <p className="review-empty muted">Items you describe in the chat appear here to check before anything is saved.</p>;
   const views = planDrafts.views;
   const included = views.filter(v => v.draft.include);
   const blocked = included.filter(v => !v.ready);
-  const { rows, hidden } = visibleRows(views, showAll);
+  const planPreview = schedulePreview?.mode === "plan";
+  const status = blocked.length
+    ? `Fix ${blocked.length} item${blocked.length === 1 ? "" : "s"} to see ${included.length === 1 ? "it" : "them"} on the calendar`
+    : !included.length ? "Tick an item to preview it"
+    : planBusy || (planPreview && previewStale) ? "Updating the calendar preview…"
+    : planPreview ? "Shown on the calendar as dashed blocks. Apply below the calendar saves them."
+    : "Not previewed";
   async function preview() {
     setError("");
     try { await workspaceService.previewDrafts(); } catch (e) { setError((e as Error).message); }
   }
   return (
-    <section ref={panel} className="draft-review" aria-label="Review new items">
-      <button className="draft-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <Icon name={open ? "chevronDown" : "chevronRight"} size={16} />
+    <section className="draft-review" aria-label="Review new items">
+      <header className="draft-review-head">
         <strong>{views.length} new item{views.length === 1 ? "" : "s"}</strong>
-        <span className="muted small">not saved{blocked.length ? ` · ${blocked.length} need${blocked.length === 1 ? "s" : ""} a fix` : ""}</span>
-      </button>
-      {open && (
-        <>
-          <ol className="draft-list">
-            {rows.map(v => <DraftRow key={v.draft.id} view={v} others={views} />)}
-            {hidden > 0 && <li><button type="button" className="draft-link" onClick={() => setShowAll(true)}>+{hidden} more</button></li>}
-          </ol>
-          {error && <p role="alert" className="draft-hint">{error}</p>}
-          <div className="draft-actions">
-            <button className="button small" disabled={busy || !included.length || blocked.length > 0} title={blocked.length ? "Fix the red fields first" : undefined} onClick={() => void preview()}>
-              {planPreview && previewStale ? "Preview again" : "Preview on calendar"}
-            </button>
-            <button type="button" className="draft-link" disabled={busy} onClick={() => workspaceService.clearDrafts()}>Discard</button>
-          </div>
-        </>
-      )}
+        <span className="muted small">not saved yet</span>
+      </header>
+      <p className={`draft-review-status ${blocked.length ? "needs-fix" : ""}`} role="status" aria-live="polite">{status}</p>
+      <ol className="draft-cards">
+        {views.map(v => <DraftCard key={v.draft.id} view={v} others={views} />)}
+      </ol>
+      {error && <p role="alert" className="draft-hint">{error}</p>}
+      <div className="draft-actions">
+        {!planPreview && !blocked.length && included.length > 0 && (
+          <button className="button small" disabled={planBusy || saving} onClick={() => void preview()}>Preview on calendar</button>
+        )}
+        <button type="button" className="draft-link" disabled={planBusy || saving} onClick={() => workspaceService.clearDrafts()}>Discard all</button>
+      </div>
     </section>
   );
 }
