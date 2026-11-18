@@ -447,3 +447,83 @@ def test_an_item_the_cross_check_makes_identical_is_kept_once():
                           'kind': 'flexible_event'})
     drafts = drafts_from_extraction(Extraction(items=[event, flexible], notes=[]), date(2026, 11, 17))
     assert [(d.kind, d.date, d.start, d.end) for d in drafts] == [('fixed_event', '2026-11-18', 720, 780)]
+
+
+def llm_event(title, source, day=None, start=None, end=None, deadline=None):
+    return LlmItem(**{**llm_task(title, source, minutes=None, deadline=deadline).model_dump(),
+                      'kind': 'fixed_event', 'date': day, 'startTime': start, 'endTime': end})
+
+
+def test_hollow_events_and_renamed_twins_are_dropped():
+    """Nov 17 suite: "Gym: fixed, ? time ?" beside the real Gym item, a "due Friday" event lifted out of a task line,
+    a hollow "Meeting" lifted out of "before the meeting on Friday", and "Dentist" returned twice under two names."""
+    from app.plan_extraction import drafts_from_extraction
+    today = date(2026, 11, 17)
+    gym = LlmItem(**{**llm_task('Gym', 'Gym 30 min sometime today, low priority', minutes=30, deadline='2026-11-17')
+                     .model_dump(), 'kind': 'flexible_event'})
+    items = [gym, llm_event('Gym', 'Gym'),
+             llm_task('Read chapter 3', 'Read chapter 3 after class, 1 hour, due Friday', deadline='2026-11-20'),
+             llm_event('due Friday', 'due Friday'),
+             llm_task('Write report', 'Write report before the meeting on Friday, 2 hours', minutes=120, deadline='2026-11-18'),
+             llm_event('Meeting', 'before the meeting on Friday', start='15:00', end='16:00')]
+    drafts = drafts_from_extraction(Extraction(items=items, notes=[]), today)
+    assert [d.title for d in drafts] == ['Gym', 'Read chapter 3', 'Write report']
+    assert drafts[2].deadline == '2026-11-20'  # "before the meeting on Friday" is due Friday, not the model's Wednesday
+    twins = [llm_event('Dentist', 'Dentist tomorrow at 9am', '2026-11-18', '09:00', '10:00'),
+             llm_event('Dentist appointment', 'Dentist tomorrow at 9am', '2026-11-18', '09:00', '10:00')]
+    assert [d.title for d in drafts_from_extraction(Extraction(items=twins, notes=[]), today)] == ['Dentist']
+    # Two named events that happen to share a time are both kept.
+    pair = [llm_event('Dentist', 'Dentist tomorrow at 9am', '2026-11-18', '09:00', '10:00'),
+            llm_event('Standup', 'Standup tomorrow at 9am', '2026-11-18', '09:00', '10:00')]
+    assert len(drafts_from_extraction(Extraction(items=pair, notes=[]), today)) == 2
+
+
+def test_event_day_in_deadline_field_assumed_day_and_pm_due_time_are_stated():
+    from app.plan_extraction import drafts_from_extraction
+    today = date(2026, 11, 17)
+    doctor = llm_event('Doctor appt', 'Doctor appt next Tuesday at 2:30', start='14:30', end='15:30', deadline='2026-11-24')
+    mom = llm_event('Call mom', 'Call mom at noon', start='12:00', end='13:00', deadline='2026-11-18')
+    pset = LlmItem(**{**llm_task('Problem set', 'Problem set due Friday at 5, 2 hours', minutes=120,
+                                 deadline='2026-11-20').model_dump(), 'deadlineTime': '17:00'})
+    essay = LlmItem(**{**llm_task('Essay', 'Essay due next Friday 3 hours', minutes=180, deadline='2026-11-24')
+                       .model_dump(), 'unreadableFields': ['title']})
+    week = llm_task('Laundry', 'Laundry, 1 hour, low priority, sometime this week', deadline='2026-11-20')
+    d = {x.title: x for x in drafts_from_extraction(Extraction(items=[doctor, mom, pset, essay, week], notes=[]), today)}
+    assert (d['Doctor appt'].date, d['Doctor appt'].deadline, d['Doctor appt'].ambiguous) == ('2026-11-24', None, ['date'])
+    assert (d['Call mom'].date, d['Call mom'].ambiguous) == ('2026-11-18', ['date'])
+    assert d['Problem set'].dueTime == 17 * 60 and 'dueTimeMeridiem' in d['Problem set'].assumed
+    assert (d['Essay'].deadline, d['Essay'].unreadable) == ('2026-11-27', [])
+    assert 'deadline' in d['Laundry'].ambiguous
+    views = {v.draft.title: v for v in review_all(list(d.values()), datetime(2026, 11, 17, 15, tzinfo=NY), NY, set())}
+    notes = {t: [i.question for i in v.issues if not i.blocking] for t, v in views.items()}
+    assert any('Tue, Nov 24' in n for n in notes['Doctor appt'])
+    assert any('as 5:00 PM' in n and '5:00 AM' in n for n in notes['Problem set'])
+    assert all(v.ready for v in views.values())  # every reading above is a note, never a blocking question
+
+
+def test_one_line_read_two_ways_is_one_item_and_an_invented_meeting_is_dropped():
+    from app.plan_extraction import drafts_from_extraction
+    today = date(2026, 11, 17)
+    coffee_text = 'Coffee with Mia sometime this weekend, 1 hour'
+    coffee = LlmItem(**{**llm_task('Coffee with Mia', coffee_text, deadline='2026-11-22').model_dump(),
+                        'kind': 'flexible_event', 'earliestStart': '2026-11-21T00:00:00'})
+    bare = llm_task('Coffee with Mia', coffee_text, deadline=None)
+    drafts = drafts_from_extraction(Extraction(items=[bare, coffee], notes=[]), today)
+    assert [(d.kind, d.deadline) for d in drafts] == [('flexible_event', '2026-11-22')]
+    club = llm_event('Book club', 'Book club on the 28th at 6pm', '2026-11-28', '18:00', '19:00')
+    shell = llm_task('Book club', 'Book club on the 28th at 6pm', minutes=None, deadline=None)
+    assert [d.kind for d in drafts_from_extraction(Extraction(items=[club, shell], notes=[]), today)] == ['fixed_event']
+    report = llm_task('Write report', 'Write report before the meeting on Friday, 2 hours', minutes=120)
+    meeting = llm_event('Meeting', 'before the meeting on Friday', '2026-11-18', '14:00', '15:00')
+    assert [d.title for d in drafts_from_extraction(Extraction(items=[report, meeting], notes=[]), today)] == ['Write report']
+    cover = llm_task('Cover letter', 'Write cover letter half an hour by end of week', minutes=30, deadline='2026-11-18')
+    (draft,) = drafts_from_extraction(Extraction(items=[cover], notes=[]), today)
+    assert (draft.deadline, draft.ambiguous) == ('2026-11-20', ['deadline'])
+
+
+def test_an_item_with_a_made_up_name_is_not_from_the_message():
+    from app.plan_extraction import _mentioned
+    text = 'Book club on the 28th at 6pm'
+    assert _mentioned(llm_event('Book club', text, '2026-11-28', '18:00', '19:00'), text)
+    assert not _mentioned(llm_task('Check availability', text, minutes=None, deadline=None), text)
+    assert _mentioned(llm_task('Essay revisions', 'essay revisons 2hrs due tmrw', minutes=120), 'essay revisons 2hrs due tmrw')

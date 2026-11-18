@@ -17,7 +17,10 @@ export function emptyDraft(id: string, patch: Partial<PlanDraft> = {}): PlanDraf
 const DURATION = /\b\d+(?:\.\d+)?\s*(?:h|hrs?|hours?|m|mins?|minutes?)\b|\b(?:half an hour|an hour)\b/i;
 const WHEN = /\b(?:due|by|deadline|today|tomorrow|tonight|mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}(?::\d{2})?\s*[-–]\s*\d{1,2}(?::\d{2})?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d/i;
 const CLOCK = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}(?::\d{2})?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}\b|\bnoon\b/i;
-const DAY = /\b(?:today|tomorrow|tonight|(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2})\b/i;
+const DAY = /\b(?:today|tomorrow|tonight|(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}|every (?:week)?day|weekdays|daily|(?:on )?the \d{1,2}(?:st|nd|rd|th)|\d{1,2}\/\d{1,2})\b/i;
+// "Doctor appt next Tuesday at 2:30", "Call mom at noon": an appointment word with a clock time is an event to add.
+const AT_CLOCK = /\bat\s+(?:\d{1,2}(?::\d{2})?(?!\s*(?:%|percent|hours?|hrs?|mins?|minutes?)\b)|noon|midnight)\b/i;
+const APPOINTMENT = /\b(?:meeting|appt|appointment|dentist|doctor|call|lunch|dinner|breakfast|coffee|interview|class|lecture|practice|session|party|standup|stand-up|sync|club)\b/i;
 const SETTINGS_TALK = /\b(focus|breaks?|limit|max(?:imum)?|daily|per day|a day|blocks?|prefer(?:ence)?s?|usually|always|set|change|worked|spent|took|ago|i'?m|i am|i was|feel(?:ing)?|tired|later|earlier|sooner|move|push|delay)\b/i;
 const ADD = /^\s*(?:please\s+)?(?:add|create|schedule|plan|put|remind me to|i (?:need|have) to)\b/i;
 const QUESTION = /\?\s*$|^\s*(?:what|when|why|how|which|who|show|can you explain|explain)\b/i;
@@ -32,7 +35,8 @@ export function looksLikePlanEntry(text: string) {
   const lines = trimmed.split(/\n|;/).map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) return lines.filter(l => DURATION.test(l) || WHEN.test(l)).length >= 1;
   // "Soccer practice Sat and Sun 9-10am": a day and a clock time read as an event, even without "add".
-  const eventLike = CLOCK.test(trimmed) && DAY.test(trimmed);
+  const eventLike = ((CLOCK.test(trimmed) || AT_CLOCK.test(trimmed)) && DAY.test(trimmed))
+    || (APPOINTMENT.test(trimmed) && (CLOCK.test(trimmed) || AT_CLOCK.test(trimmed)) && !SETTINGS_TALK.test(trimmed));
   // "Essay draft 2 hours in one sitting, then proofread 30 min": work with a length is new work to review, even with
   // no day yet (the review asks for the deadline). Settings talk ("set focus blocks to 45 minutes") is not.
   const workWithLength = DURATION.test(trimmed) && !SETTINGS_TALK.test(trimmed);

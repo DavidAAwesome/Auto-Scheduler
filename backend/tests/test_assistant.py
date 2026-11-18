@@ -233,3 +233,18 @@ def test_a_weekday_with_the_wrong_date_is_corrected_from_the_calendar():
     assert fix('On Saturday, November 18, you have soccer.', snapshot) == 'On Saturday, November 21, you have soccer.'
     assert fix('Friday, November 17th at 3 PM', snapshot) == 'Friday, November 20th at 3 PM'
     assert fix('Wednesday, November 18 is free.', snapshot) == 'Wednesday, November 18 is free.'
+
+
+def test_plan_views_only_answer_requests_to_see_the_plan():
+    """Nov 17 suite: "I'm overwhelmed…" and a Vietnamese question about tomorrow were answered with today's plan list."""
+    from datetime import datetime, timezone
+    snapshot = {'tasks': [], 'preferences': {}}
+    now = datetime(2026, 11, 18, 3, tzinfo=timezone.utc)
+    def check(message, intent='show_today'):
+        parsed = assistant.ChatResponseModel(reply='Words.', intent=intent, params=assistant.IntentParams())
+        return assistant.validate_intent(parsed, snapshot, now, message=message).intent
+    assert check("I'm feeling overwhelmed with everything due this week") == 'none'
+    assert check('Tôi có gì vào ngày mai?') == 'none'
+    assert check("What's my plan for today?") == 'show_today'
+    assert check('show my schedule', 'show_plan') == 'show_plan'
+    assert assistant.ANSI.sub('', '\x1b[1mGym\x1b[0m') == 'Gym'

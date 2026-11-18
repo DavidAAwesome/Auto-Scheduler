@@ -213,6 +213,10 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
     if 'dueTime' in draft.assumed and draft.dueTime is not None:
         ask('dueTime', f'"{name}" is due by {clock(draft.dueTime)}: you gave only a part of the day, so I used its start. '
             'Change the due time if it\'s later.', 'warning', blocking=False)
+    if 'dueTimeMeridiem' in draft.assumed and draft.dueTime is not None:
+        other = clock((draft.dueTime + 720) % 1440)
+        ask('dueTime', f'I read the due time of "{name}" as {clock(draft.dueTime)}. Change it if you meant {other}.',
+            'warning', blocking=False)
     if 'earliestStart' in draft.assumed and draft.earliestStart:
         ask('earliestStart', f'"{name}" starts no earlier than {draft.earliestStart[11:16]} on '
             f'{short_date(_iso(draft.earliestStart[:10]))}. Change it if you meant AM.', 'warning', blocking=False)

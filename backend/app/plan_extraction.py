@@ -168,6 +168,10 @@ def _date(value: str | None) -> str | None:
 
 def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraft:
     unreadable = [FIELD_MAP.get(f, f) for f in item.unreadableFields]
+    title_text = (item.title or '').strip().lower()
+    if title_text and title_text in (item.sourceText or '').lower():
+        # "Essay due next Friday": the model flags a name it just copied from the text as unreadable.
+        unreadable = [f for f in unreadable if f != 'title']
     ambiguous = [FIELD_MAP.get(f, f) for f in item.ambiguousFields]
     if not re.search(r'\bafter\b', item.sourceText or '', re.I):
         ambiguous = [f for f in ambiguous if f != 'earliestStart']  # the "after …" question needs an "after"
@@ -243,9 +247,17 @@ def _fill_from_text(item: LlmItem, today: date) -> tuple[LlmItem, str | None]:
     Returns the item and the parser's "after <x>" text, if any."""
     if not (item.sourceText or '').strip():
         return item, None
+    if item.kind == 'fixed_event' and not item.date and item.deadlineDate and not item.repeatWeekdays:
+        # "Doctor appt next Tuesday at 2:30": the model put the event's day in deadlineDate.
+        item = item.model_copy(update={'date': item.deadlineDate, 'deadlineDate': None, 'deadlineTime': None})
     flagged = set(item.ambiguousFields) | set(item.unreadableFields)
     parsed, after = parse_item(item.sourceText, 0, today)
     update: dict = {}
+    said_next_day = re.search(rf'\bnext\s+{WD}', item.sourceText, re.I) is not None
+    if item.kind == 'fixed_event' and item.date and not item.repeatWeekdays and not parsed.date and not parsed.repeat \
+            and parsed.deadline is None and not re.search(DATE, item.sourceText, re.I):
+        # "Call mom at noon": no day was given, so the model picked one. Say which.
+        update['ambiguousFields'] = sorted(set(item.ambiguousFields) | {'date'})
     if not (item.title or '').strip() and 'title' not in flagged and parsed.title:
         update['title'] = parsed.title
     date_field = 'date' if item.kind == 'fixed_event' else 'deadlineDate'
@@ -256,8 +268,11 @@ def _fill_from_text(item: LlmItem, today: date) -> tuple[LlmItem, str | None]:
         update[date_field] = parsed_date
     # Turning a day name into a date is arithmetic the parser gets right and the model often doesn't ("Sat" read as
     # Thu Nov 19, or as a weekly series). A one-time event the parser dates clearly keeps the parser's day.
-    if parsed.kind == 'fixed_event' and parsed.date and not parsed.repeat and 'date' not in parsed.ambiguous \
+    if parsed.kind == 'fixed_event' and parsed.date and not parsed.repeat \
+            and ('date' not in parsed.ambiguous or said_next_day) \
             and parsed.start is not None and parsed.end is not None and 'date' not in item.unreadableFields:
+        if said_next_day:
+            update['ambiguousFields'] = sorted(set(update.get('ambiguousFields', item.ambiguousFields)) | {'date'})
         if item.kind != 'fixed_event' or item.date != parsed.date or item.repeatWeekdays:
             update.update(kind='fixed_event', date=parsed.date, repeatWeekdays=[], repeatStartDate=None,
                           repeatUntil=None, deadlineDate=None, deadlineTime=None)
@@ -265,12 +280,16 @@ def _fill_from_text(item: LlmItem, today: date) -> tuple[LlmItem, str | None]:
                 update.update(startTime=f'{parsed.start // 60:02d}:{parsed.start % 60:02d}',
                               endTime=f'{parsed.end // 60:02d}:{parsed.end % 60:02d}')
     elif item.kind != 'fixed_event' and parsed.kind == item.kind and parsed.deadline and item.deadlineDate != parsed.deadline:
-        said_next = re.search(rf'\bnext\s+{WD}', item.sourceText, re.I) is not None
+        said_next = re.search(rf'\bnext\s+{WD}|\bend\s+of\s+(?:the\s+|this\s+)?week\b|\bthis\s+week\b',
+                              item.sourceText, re.I) is not None
         if said_next or ('deadline' not in parsed.ambiguous and 'deadlineDate' not in item.ambiguousFields):
             # "next Friday" is resolved by rule (the Friday of next week); the review states the date as a note.
             update['deadlineDate'] = parsed.deadline
             if said_next:
                 update['ambiguousFields'] = sorted(set(item.ambiguousFields) | {'deadlineDate'})
+    if item.kind != 'fixed_event' and 'deadline' in parsed.ambiguous and (update.get('deadlineDate') or item.deadlineDate):
+        # "by end of week", "3/4": a best reading the review states as a note, whichever side read it.
+        update['ambiguousFields'] = sorted(set(update.get('ambiguousFields', item.ambiguousFields)) | {'deadlineDate'})
     if item.kind != 'fixed_event' and parsed.kind == item.kind:
         if item.minutes is None and parsed.minutes:
             update['minutes'] = parsed.minutes
@@ -292,7 +311,7 @@ def _fill_from_text(item: LlmItem, today: date) -> tuple[LlmItem, str | None]:
     settled = {f for f, (pf, value) in clear.items()
                if value is not None and pf not in parsed.ambiguous and getattr(parsed, pf) == _hm(value)}
     if settled & set(item.ambiguousFields):
-        update['ambiguousFields'] = [f for f in item.ambiguousFields if f not in settled]
+        update['ambiguousFields'] = [f for f in update.get('ambiguousFields', item.ambiguousFields) if f not in settled]
     if parsed.allowSplit is not None and item.allowSplit is not parsed.allowSplit:
         update['allowSplit'] = parsed.allowSplit  # "in one sitting" / "can be split" were said explicitly
     elif item.kind == 'flexible_event' and item.allowSplit and parsed.allowSplit is not True:
@@ -321,7 +340,66 @@ def drafts_from_extraction(extraction: Extraction, today: date | None = None) ->
         return any(other is not item and (other.title or '').strip().lower() == name
                    and text in (other.sourceText or '').lower() and len(text) < len((other.sourceText or '').strip())
                    and not differs(other) for other in items)
-    items = [item for item in items if not fragment(item)][:MAX_ITEMS]
+    items = [item for item in items if not fragment(item)]
+    # A hollow event next to the real item ("Gym: fixed, ? time ?" beside "Gym 30 min sometime today", or
+    # "due Friday" pulled out of "Read chapter 3 …, due Friday"): no date, time, length or repeat, and its name or
+    # its text belongs to another item. Asking three questions about it would be noise.
+    def hollow(item: LlmItem) -> bool:
+        if item.kind != 'fixed_event' or item.repeatWeekdays:
+            return False
+        name, text = (item.title or '').strip().lower(), (item.sourceText or '').strip().lower()
+        if text and not re.search(TIME, text) and any(
+                other is not item and text in (other.sourceText or '').lower()
+                and len(text) < len((other.sourceText or '').strip())
+                and (not item.date or (other.title or '').strip().lower() != name) for other in items):
+            return True  # "before the meeting on Friday" lifted out of "Write report before the meeting on Friday"
+        if item.date or item.startTime or item.endTime or item.minutes:
+            return False
+        return any(other is not item and (other.date or other.startTime or other.minutes or other.deadlineDate
+                                          or other.repeatWeekdays)
+                   and ((other.title or '').strip().lower() == name
+                                          or (text and text in (other.sourceText or '').lower()))
+                   for other in items)
+    items = [item for item in items if not hollow(item)]
+    # The same item twice under two names ("Dentist" and "Dentist appointment", same day and time): keep the one
+    # whose name the user actually typed.
+    def same_slot(a: LlmItem, b: LlmItem) -> bool:
+        if a.kind != b.kind:
+            return False
+        if a.kind == 'fixed_event':
+            return bool(a.date and a.startTime) and (a.date, a.startTime, a.endTime, tuple(a.repeatWeekdays)) == \
+                (b.date, b.startTime, b.endTime, tuple(b.repeatWeekdays))
+        return a.minutes is not None and (a.minutes, a.deadlineDate, a.deadlineTime) == (b.minutes, b.deadlineDate, b.deadlineTime)
+    def words(item: LlmItem) -> set[str]:
+        return set(re.findall(r'[a-z0-9]+', (item.title or '').lower()))
+    def typed(item: LlmItem) -> bool:
+        return bool((item.title or '').strip()) and (item.title or '').strip().lower() in (item.sourceText or '').lower()
+    def filled(item: LlmItem) -> int:
+        return sum(bool(getattr(item, f)) for f in ('date', 'startTime', 'endTime', 'deadlineDate', 'minutes',
+                                                     'earliestStart', 'repeatWeekdays'))
+    def same_reading(a: LlmItem, b: LlmItem) -> bool:
+        # "Coffee with Mia" twice from one line, once as a dated flexible event and once as a bare task with no
+        # deadline: one item read two ways. Items with their own different days stay separate.
+        if (a.title or '').strip().lower() != (b.title or '').strip().lower() or not (a.sourceText or '').strip():
+            return False
+        if (a.sourceText or '').strip().lower() != (b.sourceText or '').strip().lower():
+            return False
+        return not any(getattr(a, f) and getattr(b, f) and getattr(a, f) != getattr(b, f) for f in ('date', 'startTime'))
+    kept: list[LlmItem] = []
+    for item in items:
+        twin = next((k for k in kept if (same_slot(k, item) and words(k) and words(item)
+                     and (words(k) <= words(item) or words(item) <= words(k)))), None)
+        if twin is None:
+            twin = next((k for k in kept if same_reading(k, item)), None)
+            if twin is not None:
+                if filled(item) > filled(twin):
+                    kept[kept.index(twin)] = item
+                continue
+        if twin is None:
+            kept.append(item)
+        elif typed(item) and not typed(twin):
+            kept[kept.index(twin)] = item
+    items = kept[:MAX_ITEMS]
     titles = {(item.title or '').strip().lower(): f'd{i + 1}' for i, item in enumerate(items) if item.title}
     for i, item in enumerate(items):
         # "Lab slides … after Lab report": link it when the model didn't, as the built-in parser does.
@@ -356,6 +434,10 @@ def drafts_from_extraction(extraction: Extraction, today: date | None = None) ->
             if 'dueTime' in parsed.assumed and parsed.dueTime == draft.dueTime:
                 draft.assumed = sorted(set(draft.assumed) | {'dueTime'})
                 draft.ambiguous = [f for f in draft.ambiguous if f != 'dueTime']
+            elif 'dueTime' in parsed.ambiguous and 'dueTime' not in draft.ambiguous and parsed.dueTime is not None \
+                    and parsed.dueTime % 720 == draft.dueTime % 720:
+                # "due Friday at 5": the model picked 5 PM without asking. Fine, but say so.
+                draft.assumed = sorted(set(draft.assumed) | {'dueTimeMeridiem'})
     return drafts
 
 
@@ -364,9 +446,10 @@ def _mentioned(item: LlmItem, text: str) -> bool:
     context ("Lab report") as a new item when the message only said "Lunch with Sam at noon tomorrow"."""
     said = re.sub(r'\s+', ' ', text.lower())
     source = re.sub(r'\s+', ' ', (item.sourceText or '').lower()).strip(' .,')
-    if source and source in said:
-        return True
     words = [w for w in re.findall(r'[a-z0-9]+', (item.title or '').lower()) if len(w) > 2]
+    if source and source in said:
+        # ...unless its name is made up: "Check availability" with the source text of "Book club on the 28th at 6pm".
+        return not words or any(w in said for w in words)
     return bool(words) and sum(w in said for w in words) * 2 >= len(words)
 
 
@@ -623,6 +706,9 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
     if rec:
         take(rec)
         weekdays = sorted({WEEKDAYS[w if w in WEEKDAYS else w[:3]] for w in re.findall(WD, rec[1])})
+    elif every_weekday := re.search(r'\b(?:every|each)\s+(weekday|day)\b|\bdaily\b', lower):
+        take(every_weekday)  # "Team standup every weekday 9:30-9:45am"
+        weekdays = [0, 1, 2, 3, 4] if every_weekday[1] == 'weekday' else [0, 1, 2, 3, 4, 5, 6]
     until = re.search(rf'\b(?:until|till|through|thru|ends?)\s+({DATE})', lower)
     starts = re.search(rf'\b(?:from|starting|starts|beginning)\s+({DATE})', lower)
 
@@ -655,6 +741,12 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         weekend_days = None
     due = re.search(rf'\b(?:due|by|before|deadline)\s*(?:on\s+|is\s+)?({DATE})(?:\s*,?\s*(?:at|@)\s*({TIME_AT})|\s*,?\s*({TIME}))?', lower) or \
         _TimeFirst.search(rf'\b(?:due|by|before)\s*(?:at\s+)?({TIME})\s*,?\s*(?:on\s+)?({DATE})', lower)  # "by noon tomorrow"
+    # "before the meeting on Friday": the day it's due by, named after the thing it comes before.
+    due = due or re.search(rf'\bbefore\s+(?:the\s+|my\s+|our\s+)?[a-z0-9\' -]{{2,30}}?\s+on\s+({DATE})()()', lower)
+    week_end = None
+    if not due and (week_end := re.search(r'\b(?:by\s+|before\s+)?(?:the\s+)?end\s+of\s+(?:the\s+|this\s+)?week\b|'
+                                         r'\b(?:some ?time\s+|by\s+)?this\s+week\b', lower)):
+        take(week_end)  # "by end of week", "sometime this week": by Friday (Sunday once it's the weekend), noted
     on = re.search(rf'\b(?:on\s+)?({DATE})(?:\s*(?:at|@)\s*({TIME}))?', lower)
     at_time = re.search(rf'\b(?:at|@)\s*({TIME})', lower)
     duration, duration_span = parse_duration(lower if not time_range else lower[:time_range.start()] + ' ' * (
@@ -710,6 +802,10 @@ def parse_item(text: str, index: int, today: date) -> tuple[PlanDraft, str | Non
         draft['kind'] = 'flexible_event' if flex else 'task'
         draft['minutes'] = duration
         target = due or (on if flex else None)
+        if week_end and not target:
+            friday = today + timedelta(days=4 - today.weekday()) if today.weekday() <= 4 else today + timedelta(days=6 - today.weekday())
+            draft['deadline'] = friday.isoformat()
+            ambiguous.append('deadline')
         if weekend_days and not target:
             # "sometime this weekend": between Saturday and Sunday; "due this weekend": by Sunday night.
             draft['deadline'] = weekend_days[1].isoformat()

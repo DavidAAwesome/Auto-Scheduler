@@ -172,3 +172,48 @@ test("questions about one day are answered from the calendar", async () => {
   assert.match(busyDayText(events, [], [], "2026-11-13", 600), /at 10 AM is free/);
   assert.match(busyDayText(events, [], [], "2026-11-14", null), /Sat, Nov 14, 2026 is free/);
 });
+
+test("Nov 17 suite: appointments with a clock time are plan entry; weather and finished tasks are not calendar asks", async () => {
+  const { looksLikePlanEntry } = await import("../src/services/planEntry.ts");
+  for (const text of ["Doctor appt next Tuesday at 2:30", "Call mom at noon", "Team standup every weekday 9:30-9:45am", "Book club on the 28th at 6pm"]) {
+    assert.ok(looksLikePlanEntry(text), text);
+  }
+  for (const text of ["I usually take a break around noon", "set my focus blocks to 45 minutes", "what's at 3pm?"]) {
+    assert.ok(!looksLikePlanEntry(text), text);
+  }
+  assert.equal(ask("What's the weather tomorrow?"), null);
+  assert.equal(ask("what's the weather like today"), null);
+  assert.equal(ask("What's on tomorrow?")?.command, "busy_day");
+  const gym = { id: "t9", title: "Gym", done: true, deadline: "2026-11-10" } as Task;
+  const pick = ask("remove task gym", { tasks: [essay, lab, gym] });
+  assert.ok(pick?.command === "pick_tasks" && /“Gym” is already done/.test(pick.prompt));
+});
+
+test("Nov 17 suite: 'did I finish X?' is answered from the task list", () => {
+  const gym = { id: "t9", title: "Gym", done: true, deadline: "2026-11-10" } as Task;
+  const done = ask("Did I finish the gym task?", { tasks: [essay, lab, gym] });
+  assert.ok(done?.command === "clarify" && /Yes, “Gym” is marked done/.test(done.question));
+  const open = ask("is the lab report done?", { tasks: [essay, lab, gym] });
+  assert.ok(open?.command === "clarify" && /Not yet: “Lab report” is still open, due 2026-11-16/.test(open.question));
+  assert.equal(ask("did I finish everything?", { tasks: [essay, lab, gym] }), null);
+});
+
+test("Nov 17 suite: 'what first' and 'how many left' come from the task list", () => {
+  const essayDraft = { id: "t3", title: "Essay draft", done: false, deadline: "2026-11-13", dueTime: 1439, priority: "High", remainingMinutes: 120, dependsOn: [] } as unknown as Task;
+  const proof = { id: "t4", title: "Proofread", done: false, deadline: "2026-11-13", dueTime: 1439, priority: "High", remainingMinutes: 30, dependsOn: ["t3"] } as unknown as Task;
+  const report = { id: "t5", title: "Lab report", done: false, deadline: "2026-11-12", dueTime: 1439, priority: "High", remainingMinutes: 90, dependsOn: [] } as unknown as Task;
+  const gym = { id: "t9", title: "Gym", done: true, deadline: "2026-11-10", dueTime: 1439, priority: "Low", remainingMinutes: 0, dependsOn: [] } as unknown as Task;
+  const tasks = [proof, essayDraft, report, gym];
+  const first = ask("What should I work on first?", { tasks });
+  assert.ok(first?.command === "clarify");
+  if (first?.command !== "clarify") return;
+  assert.match(first.question, /^Start with “Lab report”/);
+  assert.match(first.question, /1\. Lab report: due today at 11:59 PM, 1 h 30 min left\n2\. Essay draft: due tomorrow at 11:59 PM, 2 h left\n3\. Proofread: due tomorrow at 11:59 PM, 30 min left \(after Essay draft\)/);
+  const left = ask("How many tasks do I have left?", { tasks });
+  assert.ok(left?.command === "clarify" && /^You have 3 open tasks:/.test(left.question));
+  assert.ok(ask("what's next?", { tasks })?.command === "clarify");
+});
+
+test("tasks left for today is still today's plan", () => {
+  assert.equal(ask("What tasks are left for today?")?.command, "show_today");
+});

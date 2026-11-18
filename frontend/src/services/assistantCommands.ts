@@ -64,6 +64,30 @@ const BREAK_LATER = /\b(at \d|at noon|\d\s*(am|pm)|tomorrow|later|tonight|this (
 const HABIT = /\b(usually|always|normally|often|sometimes|every day|daily|tend to|like to)\b/i;
 const EDIT_TASK = /\b(change|move|push|extend|set|update|edit|make)\b.*\b(deadline|due date|due time)\b|\b(deadline|due date)\b.*\b(to|until|be)\b\s+\w|\b(change|edit|update|set)\b.*\b(duration|length|estimate)\b/i;
 const DAY_QUESTION = /^\s*(?:what(?:'?s| is| do i have| have i got| am i doing)|anything|am i (?:free|busy)|is\b.*\b(?:free|busy|open|available)\b|do i have anything)\b.*\b(?:today|tomorrow|tonight|(?:next |this )?(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun))\b|^\s*(?:is|am i)\b.*\b(?:free|busy|open|available)\b/i;
+const DONE_QUESTION = /^\s*(?:did i (?:finish|complete|do|submit)|have i (?:finished|completed|done|submitted)|is (?:my |the )?.+\b(?:done|finished|complete|completed)\b)/i;
+const WHAT_FIRST = /\b(?:what|which)(?: task)? (?:should|do) i (?:work on|do|start(?: with)?|tackle|focus on)(?: first| next| now)\b|\bwhat(?:'?s| is) (?:first|next|my next task|most urgent)\b|\bwhere (?:should|do) i start\b/i;
+const TASKS_LEFT = /\bhow many (?:open |more )?tasks\b|\bwhat tasks (?:do i have )?(?:are )?(?:left|remaining|open)\b|\b(?:list|show) (?:my )?(?:open |remaining )?tasks\b/i;
+const PRIORITY_RANK: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
+
+function minutesText(minutes: number) {
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return h && m ? `${h} h ${m} min` : h ? `${h} h` : `${m} min`;
+}
+
+/** By deadline, then priority; a task never comes before a task it depends on. */
+export function orderedTasks(tasks: Task[]): Task[] {
+  const key = (t: Task) => `${t.deadline} ${String(t.dueTime).padStart(4, "0")} ${PRIORITY_RANK[t.priority] ?? 1}`;
+  const pending = [...tasks].sort((a, b) => key(a).localeCompare(key(b)));
+  const ids = new Set(tasks.map(t => t.id));
+  const placed: Task[] = [];
+  while (pending.length) {
+    const i = pending.findIndex(t => t.dependsOn.every(d => !ids.has(d) || placed.some(p => p.id === d)));
+    placed.push(...pending.splice(i < 0 ? 0 : i, 1)); // a dependency loop falls back to deadline order
+  }
+  return placed;
+}
+// "What's the weather tomorrow?" names a day but isn't about the calendar.
+const NOT_CALENDAR = /\b(weather|forecast|rain|snow|temperature|news|score|game on tv)\b/i;
 const MOVE = /\b(move|push|postpone|shift|reschedule|delay)\b/i;
 const REPLAN = /\breplan\b|\bre-plan\b|\brepair\b|\bfix (my |the )?(plan|schedule)\b|\breschedule (my|the|this)? ?(plan|schedule|week|work)\b/i;
 const EXPLAIN = /\bwhy\b.*\b(fit|scheduled|planned|placed|unscheduled|left out|missing)\b|didn.?t fit|doesn.?t fit|unscheduled|not scheduled|couldn.?t (fit|schedule)|unallocated|what.*\bleft\b.*\b(schedule|plan|fit)\b/i;
@@ -277,7 +301,12 @@ export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
   if (wanted && exact.length === 1) return { command: "delete_task", taskIds: [exact[0].id] };
   const close = wanted ? open.filter(t => t.title.toLowerCase().includes(wanted) || wanted.includes(t.title.toLowerCase())) : open;
   if (close.length === 1 && !exact.length) return { command: "pick_tasks", prompt: `Did you mean this task? Reply 1 to choose it.`, options: [label(close[0])] };
-  if (!close.length) return { command: "pick_tasks", prompt: `I couldn’t find a task named “${name}”. Which one should I delete?`, options: open.slice(0, 12).map(label) };
+  if (!close.length) {
+    // "remove task gym" when Gym is already done: say that, rather than "couldn't find".
+    const finished = tasks.find(t => t.done && t.title.trim().toLowerCase() === wanted);
+    const prompt = finished ? `“${finished.title}” is already done, so it isn’t in your open tasks. Did you mean one of these?` : `I couldn’t find a task named “${name}”. Which one should I delete?`;
+    return { command: "pick_tasks", prompt, options: open.slice(0, 12).map(label) };
+  }
   return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
 }
 
@@ -345,11 +374,38 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
   // "Delete the task called Essay", "remove task essay", "delete a task": exact ids, or a numbered list to pick from.
   const del = text.match(/^\s*(?:please\s+)?(?:delete|remove)\s+(?:the\s+|a\s+|my\s+)?tasks?\b\s*(?:called\s+|named\s+)?(.*?)[.!]?\s*$/i);
   if (del) return deleteRequest(del[1].trim(), state.tasks);
+  // "Did I finish the gym task?": answered from the task list (the model mixed up a done task and an event).
+  if (DONE_QUESTION.test(text)) {
+    const lower = text.toLowerCase();
+    const task = state.tasks.filter(t => lower.includes(t.title.toLowerCase())).sort((a, b) => b.title.length - a.title.length)[0];
+    if (task) {
+      return { command: "clarify", question: task.done
+        ? `Yes, “${task.title}” is marked done.`
+        : `Not yet: “${task.title}” is still open${task.deadline ? `, due ${task.deadline}` : ""}. Mark it done in the task list when you finish.` };
+    }
+  }
+  // "What should I work on first?" / "How many tasks do I have left?": counted and ordered from the task list
+  // (the model got the counts and remaining minutes wrong).
+  if (WHAT_FIRST.test(text) || (TASKS_LEFT.test(text) && !/\b(today|tonight|tomorrow)\b/i.test(text))) {
+    const today = dateInZone(zone, now);
+    const tasks = orderedTasks(open.filter(t => (t.kind ?? "task") === "task"));
+    if (!tasks.length) return { command: "clarify", question: "You have no open tasks. Nice work!" };
+    const line = (t: Task, i: number) => {
+      const after = t.dependsOn.map(id => open.find(o => o.id === id)?.title).filter(Boolean);
+      return `${i + 1}. ${t.title}: due ${dayWord(t.deadline, today)} at ${clock12(t.dueTime >= 1439 ? 1439 : t.dueTime)}, ${minutesText(t.remainingMinutes)} left${after.length ? ` (after ${after.join(", ")})` : ""}`;
+    };
+    const lines = tasks.map(line).join("\n");
+    const late = tasks.filter(t => t.deadline < today);
+    const lateNote = late.length ? `\n${late.map(t => `“${t.title}”`).join(", ")} ${late.length === 1 ? "is" : "are"} past due.` : "";
+    return { command: "clarify", question: WHAT_FIRST.test(text)
+      ? `Start with “${tasks[0].title}”. In order of deadline:\n${lines}${lateNote}`
+      : `You have ${tasks.length} open task${tasks.length === 1 ? "" : "s"}:\n${lines}${lateNote}` };
+  }
   if (EXPLAIN.test(text)) return { command: "explain_unscheduled" };
-  if (TODAY.test(text)) return { command: "show_today" };
+  if (TODAY.test(text) && !NOT_CALENDAR.test(text)) return { command: "show_today" };
   if (SHOW_PLAN.test(text)) return { command: "show_plan" };
   // A question about one named day is answered from the calendar, not by the model (it mislabels weekdays).
-  if (DAY_QUESTION.test(text) && !/\b(due|deadline)\b/i.test(text)) {
+  if (DAY_QUESTION.test(text) && !/\b(due|deadline)\b/i.test(text) && !NOT_CALENDAR.test(text)) {
     const today = dateInZone(zone, now);
     const date = parseDate(text, today);
     if (date) {

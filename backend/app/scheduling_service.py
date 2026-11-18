@@ -464,6 +464,7 @@ def schedule_snapshot(user, db, now: datetime, preview_id: str | None = None, da
         return date_cls.fromisoformat(value).strftime('%A') if value else None
 
     local_now = now.astimezone(ctx.zone)
+    titles = {t.id: t.title for t in ctx.tasks if not t.done}
     return {
         'timeZone': ctx.availability.timeZone,
         'now': local_now.isoformat(timespec='minutes'),
@@ -478,6 +479,8 @@ def schedule_snapshot(user, db, now: datetime, preview_id: str | None = None, da
             'estimatedMinutes': t.minutes, 'completedMinutes': t.completedMinutes, 'remainingMinutes': t.remainingMinutes,
             'savedFutureWorkMinutes': sum(int((s.endAt - s.startAt).total_seconds() // 60) for s in saved
                                           if s.taskId == t.id and s.type == 'work' and s.status == 'saved' and s.endAt > now),
+            # "Proofread after Essay draft": a task listed here can't start until those are done.
+            'after': [titles[d] for d in t.dependsOn if d in titles],
         } for t in ctx.tasks if not t.done],
         # Finished tasks, by name only: never listed as due.
         'completedTasks': [t.title for t in ctx.tasks if t.done][-10:],
