@@ -112,7 +112,8 @@ def _iso(value: str | None) -> date | None:
 
 def short_date(value: date | None) -> str:
     """"Fri, Nov 20" for questions and notes."""
-    return value.strftime('%a, %b %-d') if value else 'that date'
+    # No '%-d': it removes the leading zero on Mac/Linux but raises ValueError on Windows.
+    return f'{value:%a, %b} {value.day}' if value else 'that date'
 
 
 def clock(minute: int) -> str:
