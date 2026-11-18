@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import Icon from "../components/Icon";
 import { authSession } from "../services/authSession";
 import { PASSWORD_RULES, passwordProblem } from "../utils/passwordRules";
+import SignupCodeStep, { type PendingSignup } from "../components/SignupCodeStep";
 import "./LoginPage.css";
 
 function LoginBrand() {
@@ -20,6 +21,8 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [password, setPassword] = useState("");
+  // Sign-up waits here for the emailed code; the account is created only after it is verified.
+  const [pending, setPending] = useState<PendingSignup | null>(null);
   async function google() {
     if (loading) return;
     setError(""); setNotice(""); setLoading(true);
@@ -49,8 +52,12 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
     if (signup && !String(data.get("name") ?? "").trim()) { setError("Enter your name."); return; }
     setLoading(true);
     try {
-      if (signup) await authSession.signup(String(data.get("name")).trim(), email, password);
-      else await authSession.login(email, password);
+      if (signup) {
+        const sent = await authSession.requestSignupCode(email);
+        setPending({ name: String(data.get("name")).trim(), email: sent.email, password, sent, sentAt: Date.now() });
+        return;
+      }
+      await authSession.login(email, password);
       window.location.hash = "/home";
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to sign in. Please try again."); }
     finally { setLoading(false); }
@@ -84,6 +91,9 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
         </div>
       </section>
       <section className="login-right" aria-labelledby="login-heading">
+        {pending ? (
+          <SignupCodeStep pending={pending} onResent={setPending} onBack={() => { setPending(null); setPassword(""); }} />
+        ) : (
         <form className="prototype-login-form" onSubmit={submit}>
           <LoginBrand />
           <p className="login-eyebrow">{signup ? "WELCOME TO AUTOPLAN" : "WELCOME BACK"}</p>
@@ -147,7 +157,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
           </div>
           {notice && <p className="login-notice" role="status">{notice}</p>}
           <button className="login-submit" type="submit" disabled={loading}>
-            {loading ? "Please wait…" : signup ? "Create account" : "Sign in"} <Icon name="arrow" size={16} />
+            {loading ? "Please wait…" : signup ? "Email me a code" : "Sign in"} <Icon name="arrow" size={16} />
           </button>
           <div className="login-divider"><span>or</span></div>
           <button type="button" className="google-button" disabled={loading} onClick={() => void google()}>
@@ -158,6 +168,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
             {signup ? "Already have an account?" : "New to AutoPlan?"}{" "}<a className="text-link" href={signup ? "#/login" : "#/signup"}>{signup ? "Sign in" : "Create an account"}</a>
           </p>
         </form>
+        )}
       </section>
     </main>
   );

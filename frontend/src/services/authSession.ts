@@ -13,7 +13,9 @@ export interface User {
   /** From Firebase: whether the address is confirmed, and when the account was created (ISO), if known. */
   emailVerified: boolean; createdAt: string | null;
 }
-type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null };
+type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null; emailVerified?: boolean };
+/** What POST /auth/signup-code returns after emailing a 6-digit code. */
+export type SignupCodeSent = { email: string; expiresInSeconds: number; resendInSeconds: number };
 type Session = { status: 'loading' | 'authenticated' | 'anonymous' | 'error'; user: User | null; error: string };
 let session: Session = firebaseConfigError
   ? { status: 'error', user: null, error: firebaseConfigError }
@@ -34,7 +36,8 @@ function toUser(profile: ServerProfile, firebaseUser: FirebaseUser): User {
     photoURL: profile.avatarUrl ? apiUrl(profile.avatarUrl) : firebaseUser.photoURL,
     hasCustomAvatar: Boolean(profile.avatarUrl),
     provider: firebaseUser.providerData.some(p => p.providerId === 'google.com') ? 'google' : 'password',
-    emailVerified: firebaseUser.emailVerified,
+    // Confirmed by a sign-up code (server) or by Firebase/Google.
+    emailVerified: Boolean(profile.emailVerified) || firebaseUser.emailVerified,
     createdAt: creationTime(firebaseUser),
   };
 }
@@ -107,6 +110,15 @@ export const authSession = {
   async loginWithGoogle() {
     try { await signInWithPopup(requireAuth(), googleProvider); } catch (e) { throw friendlyError(e); }
   },
+  /** Step 1 of sign-up: email a 6-digit code (valid 5 minutes) before any account exists. */
+  async requestSignupCode(email: string) {
+    return apiRequest<SignupCodeSent>('/auth/signup-code', { method: 'POST', body: JSON.stringify({ email }) });
+  },
+  /** Step 2: check the code. Only a verified address can then create its account. */
+  async verifySignupCode(email: string, code: string) {
+    await apiRequest<{ verified: boolean }>('/auth/signup-code/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+  },
+  /** Step 3, after a correct code: create the Firebase account and open the app. */
   async signup(name: string, email: string, password: string) {
     try {
       const { user } = await createUserWithEmailAndPassword(requireAuth(), email, password);
@@ -151,7 +163,7 @@ export const authSession = {
     if (!firebaseUser || session.status !== 'authenticated' || !session.user) return;
     try { await firebaseUser.reload(); } catch { return; }
     if (session.status === 'authenticated' && session.user)
-      publish({ ...session, user: { ...session.user, emailVerified: firebaseUser.emailVerified, createdAt: creationTime(firebaseUser) } });
+      publish({ ...session, user: { ...session.user, emailVerified: session.user.emailVerified || firebaseUser.emailVerified, createdAt: creationTime(firebaseUser) } });
   },
   async logout() {
     await signOut(requireAuth());

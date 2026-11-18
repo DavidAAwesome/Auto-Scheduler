@@ -16,6 +16,14 @@ class Settings:
     allowed_origins: tuple[str, ...]
     openai_api_key: str
     openai_model: str
+    # Sign-up codes are emailed over SMTP (e.g. Gmail with an App Password). No host = email is not set up.
+    smtp_host: str = ''
+    smtp_port: int = 587
+    smtp_username: str = ''
+    smtp_password: str = ''
+    smtp_from: str = ''
+    # Development only: print sign-up codes to the server log instead of failing when SMTP isn't set up.
+    email_codes_to_log: bool = False
 
 
 @lru_cache
@@ -38,4 +46,11 @@ def get_settings() -> Settings:
         origins,
         os.getenv('OPENAI_API_KEY', '').strip(),
         os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip() or 'gpt-4o-mini',
+        os.getenv('SMTP_HOST', '').strip(),
+        int(os.getenv('SMTP_PORT', '587').strip() or 587),
+        os.getenv('SMTP_USERNAME', '').strip(),
+        # Gmail shows App Passwords in groups of four; the spaces are not part of the password.
+        os.getenv('SMTP_PASSWORD', '').replace(' ', ''),
+        os.getenv('SMTP_FROM', '').strip(),
+        os.getenv('EMAIL_CODES_TO_LOG', '').strip().lower() in {'1', 'true', 'yes'},
     )

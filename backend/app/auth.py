@@ -13,6 +13,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.config import get_settings
 from app.database import get_database
+from app.signup_codes import is_verified
 
 router = APIRouter(prefix='/auth', tags=['auth'])
 security = HTTPBearer(auto_error=False)
@@ -24,6 +25,8 @@ class PublicUser(BaseModel):
     name: str
     email: str
     avatarUrl: str | None = None
+    # True once the address was confirmed by a sign-up code or by Google/Firebase.
+    emailVerified: bool = False
 
 
 def public_user(user):
@@ -34,6 +37,7 @@ def public_user(user):
         name=user['name'],
         email=user['email'],
         avatarUrl=f'/avatars/{avatar_id}' if avatar_id else None,
+        emailVerified=bool(user.get('email_verified')),
     )
 
 
@@ -74,12 +78,22 @@ def verify_firebase_token(token):
 
 
 def sync_user(claims, db):
-    """Creates the user on first sight and keeps name/email in step with Firebase."""
+    """Creates the user on first sight and keeps name/email in step with Firebase.
+
+    A new account needs a confirmed address: Firebase/Google says so (email_verified), or the address entered a
+    correct sign-up code (app/signup_codes.py). Accounts that already exist are not affected.
+    """
     email = (claims.get('email') or '').strip().lower()
     updates = {'email': email}
     if claims.get('name'):
         updates['name'] = claims['name'].strip()[:80]
     query = {'firebase_uid': claims['sub']}
+    if claims.get('email_verified') is True:
+        updates['email_verified'] = True
+    if not db.users.find_one(query, {'_id': 1}):
+        if claims.get('email_verified') is not True and not is_verified(db, email):
+            raise HTTPException(status_code=403, detail='Verify your email with the code we sent before creating an account.')
+        updates['email_verified'] = True
     change = {'$set': updates, '$setOnInsert': {'created_at': datetime.now(timezone.utc)}}
     if 'name' not in updates:
         change['$setOnInsert']['name'] = email.split('@')[0] or 'AutoPlan user'

@@ -158,8 +158,8 @@ def test_availability_ignores_stored_fields_from_other_versions(environment):
     data = client.get('/availability').json()
     data['timeZone'] = 'America/New_York'
     client.put('/availability', json=data)
-    db.availability.update_one({'user_id': user['id']}, {'$set': {'reminderMinutes': 15}})
+    db.availability.update_one({'user_id': user['id']}, {'$set': {'settingFromAnotherBranch': 15}})
     response = client.get('/availability')
     assert response.status_code == 200, response.text
-    assert 'reminderMinutes' not in response.json()
+    assert 'settingFromAnotherBranch' not in response.json()
     assert response.json()['timeZone'] == 'America/New_York'

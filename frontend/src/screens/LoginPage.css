@@ -289,3 +289,11 @@
 @media (max-width: 420px) {
   .password-rules { grid-template-columns: 1fr; }
 }
+
+/* Sign-up step 2: the emailed code. */
+.signup-code-step .code-input { font-size: 22px; font-weight: 700; letter-spacing: 8px; text-align: center; font-variant-numeric: tabular-nums; }
+.code-timer { margin: 2px 0 0; font-size: 12px; color: var(--login-muted); }
+.code-timer.expired { color: #b6504e; }
+.code-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.code-actions .forgot-link { margin: 0; }
+.code-actions .forgot-link:disabled { color: var(--login-muted); cursor: default; text-decoration: none; }
