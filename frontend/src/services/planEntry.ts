@@ -1,5 +1,5 @@
-import type { DraftView, PlanDraft } from "../types/models.ts";
-import { clock12 } from "../utils/calendar.ts";
+import { DRAFT_PREFIX, type ConflictChoice, type DraftIssue, type DraftKind, type DraftView, type PlanDraft, type SchedulePreview } from "../types/models.ts";
+import { clock12, longDate } from "../utils/calendar.ts";
 
 /** Same limits as the backend (plan_extraction.MAX_IMAGE_BYTES / IMAGE_SIGNATURES). */
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
@@ -23,11 +23,13 @@ const AT_CLOCK = /\bat\s+(?:\d{1,2}(?::\d{2})?(?!\s*(?:%|percent|hours?|hrs?|min
 const APPOINTMENT = /\b(?:meeting|appt|appointment|dentist|doctor|call|lunch|dinner|breakfast|coffee|interview|class|lecture|practice|session|party|standup|stand-up|sync|club)\b/i;
 const SETTINGS_TALK = /\b(focus|breaks?|limit|max(?:imum)?|daily|per day|a day|blocks?|prefer(?:ence)?s?|usually|always|set|change|worked|spent|took|ago|i'?m|i am|i was|feel(?:ing)?|tired|later|earlier|sooner|move|push|delay)\b/i;
 const ADD = /^\s*(?:please\s+)?(?:add|create|schedule|plan|put|remind me to|i (?:need|have) to)\b/i;
+const CLOCK_RANGE = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i;
 const QUESTION = /\?\s*$|^\s*(?:what|when|why|how|which|who|show|can you explain|explain)\b/i;
 
 /**
  * True when a chat message describes tasks or events to add (rather than asking a question): several
- * lines, or one line with a length or time plus a date, or an explicit "add …".
+ * lines, one line with a length or time plus a date, a day with a time range ("Gym every Monday 9-5"), or an
+ * explicit "add …".
  */
 export function looksLikePlanEntry(text: string) {
   const trimmed = text.trim();
@@ -40,34 +42,79 @@ export function looksLikePlanEntry(text: string) {
   // "Essay draft 2 hours in one sitting, then proofread 30 min": work with a length is new work to review, even with
   // no day yet (the review asks for the deadline). Settings talk ("set focus blocks to 45 minutes") is not.
   const workWithLength = DURATION.test(trimmed) && !SETTINGS_TALK.test(trimmed);
-  return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed)) || eventLike || workWithLength;
+  return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed)) || eventLike || workWithLength
+    || (DAY.test(trimmed) && CLOCK_RANGE.test(trimmed));
 }
+
+const ADD_HINT: Record<string, string> = {
+  title: "Add a name", minutes: "Add a length", deadline: "Add a due date", date: "Add a date", start: "Add a start time", end: "Add an end time",
+  "repeat.startDate": "Add a first date", "repeat.until": "Add a last date", "repeat.weekdays": "Pick the days", earliestStart: "Check this date",
+};
+const INVALID_HINT: Record<string, string> = { end: "Must end after it starts", start: "Check the times", "repeat.until": "Check the last date", deadline: "Check the due date", minutes: "Use 5-minute steps" };
+
+/** The few words shown beside a field that blocks scheduling. The full question stays in chat. */
+export function shortHint(issue: DraftIssue) {
+  if (issue.code === "ambiguous") return issue.field === "start" || issue.field === "end" ? "AM or PM?" : "Is this right?";
+  if (issue.code === "invalid") return INVALID_HINT[issue.field] ?? "Check this";
+  return ADD_HINT[issue.field] ?? "Check this";
+}
+
+const MORE_FIELDS = new Set(["start", "end", "location", "repeat", "repeat.startDate", "repeat.until", "repeat.weekdays", "dueTime", "earliestStart", "minSessionMinutes", "dependsOn"]);
+/** Whether a blocking field sits behind "More options", so the row has to point there. */
+export const needsMoreOptions = (view: DraftView) => view.issues.some(i => i.blocking && MORE_FIELDS.has(i.field));
+
+/** Rows to show: anything blocking first, so it is never hidden behind "+N more". */
+export function visibleRows(views: DraftView[], showAll: boolean, limit = 3) {
+  const blocked = views.filter(v => v.draft.include && !v.ready);
+  const ordered = [...blocked, ...views.filter(v => !blocked.includes(v))];
+  return { rows: showAll ? ordered : ordered.slice(0, limit), hidden: showAll ? 0 : Math.max(0, ordered.length - limit) };
+}
+
+/** Same rule as the backend: the work cannot make two sessions of the shortest allowed length. */
+export function tooShortToSplit(minutes: number, minSession?: number | null) {
+  return minutes < 2 * (minSession || 15);
+}
+
+/** Changing an item's kind: a fixed event has no length, deadline or "not before", and only a fixed event can repeat. */
+export function kindPatch(kind: DraftKind): Partial<PlanDraft> {
+  return kind === "fixed_event" ? { kind, minutes: null, deadline: null, dueTime: null, earliestStart: null } : { kind, repeat: null };
+}
+
+const CHATTER = /^\s*(?:hi|hello|hey|thanks|thank you|thx|ok|okay|cool|great|nice|got it|sure)\b[\s!.,]*(?:there|so much|you)?[\s!.,]*$/i;
+/** A greeting or acknowledgement is not an answer to the draft question that happens to be open. */
+export function isChatter(text: string) { return CHATTER.test(text); }
 
 /** One line per draft for chat: what was read, with deadlines kept apart from fixed times. */
 export function draftLine(d: PlanDraft) {
   const name = d.title ?? "Untitled";
   if (d.kind === "fixed_event") {
     const times = d.start != null && d.end != null ? `${clock12(d.start)}–${clock12(d.end % 1440)}` : "time ?";
-    if (d.repeat) return `${name}: weekly event (${times}), ${d.repeat.startDate ?? "start ?"} to ${d.repeat.until ?? "end ?"}`;
-    return `${name}: fixed event, ${d.date ?? "date ?"} ${times}`;
+    if (d.repeat) return `${name}: weekly event (${times}), ${d.repeat.startDate ? longDate(d.repeat.startDate) : "start ?"} to ${d.repeat.until ? longDate(d.repeat.until) : "end ?"}`;
+    return `${name}: fixed event, ${d.date ? longDate(d.date) : "date ?"}, ${times}`;
   }
-  const due = d.deadline ? `due ${d.deadline}${d.dueTime != null ? ` ${clock12(d.dueTime)}` : ""}` : "no deadline yet";
+  const due = d.deadline ? `due ${longDate(d.deadline)}${d.dueTime != null ? `, ${clock12(d.dueTime)}` : ""}` : "no deadline yet";
   // A preferred start is when work may begin; it is shown apart from the deadline so the two are never confused.
-  const from = d.earliestStart && d.kind === "task" ? `, work starts no earlier than ${d.earliestStart.slice(0, 10)}${d.earliestStart.slice(11, 16) !== "00:00" ? ` ${clock12(Number(d.earliestStart.slice(11, 13)) * 60 + Number(d.earliestStart.slice(14, 16)))}` : ""}` : "";
+  const from = d.earliestStart && d.kind === "task" ? `, work starts no earlier than ${longDate(d.earliestStart.slice(0, 10))}${d.earliestStart.slice(11, 16) !== "00:00" ? `, ${clock12(Number(d.earliestStart.slice(11, 13)) * 60 + Number(d.earliestStart.slice(14, 16)))}` : ""}` : "";
   return `${name}: ${d.kind === "flexible_event" ? "flexible event" : "task"}, ${d.minutes ?? "?"} min, ${due}${from}, ${d.priority}`;
 }
 
 /** Chat reply after reading drafts. It never says anything was saved: nothing is, until Apply. */
 export function draftsReply(views: DraftView[], provider: string, notes: string[] = []) {
   if (!views.length) return notes.join(" ") || "I couldn’t find any tasks or events in that. Try one per line, like “Essay, 2 hours, due Friday”.";
-  const lines = [`I read ${views.length} item${views.length === 1 ? "" : "s"}${provider === "openai" ? " (AI)" : provider === "local" ? " (built-in parser)" : ""}. Nothing is saved yet; they’re in the review panel above the calendar:`];
-  for (const v of views) lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
+  const lines = [`I read ${views.length} item${views.length === 1 ? "" : "s"}${provider === "openai" ? " (AI)" : provider === "local" ? " (built-in parser)" : ""}. Nothing is saved yet; check them in the Review tab:`];
+  for (const v of views) {
+    lines.push(`• ${draftLine(v.draft)}${v.ready ? "" : " — needs an answer"}`);
+    const fit = v.issues.find(i => i.code === "wont_fit");
+    const past = v.issues.find(i => i.code === "past");
+    if (fit) lines.push(`  ${fit.question} The draft has options for this.`);
+    else if (past) lines.push(`  ${past.question} Change it in the draft if that’s wrong.`);
+  }
   const open = views.flatMap(v => v.issues.filter(i => i.blocking).map(i => i.question));
   // Assumptions that change the plan (a date read from "next Friday", a due time from "morning") are stated, briefly.
   const assumed = views.flatMap(v => v.issues.filter(i => !i.blocking && i.field !== "priority").map(i => i.question)).slice(0, 2);
   lines.push(...assumed.map(a => `Note: ${a}`));
   if (open.length) lines.push(`First question: ${open[0]} (Answer here or in the panel.)`);
-  else lines.push("Use “Can this fit?” or “Preview on calendar”, then Apply to save.");
+  else lines.push("Use “Preview on calendar”, then Apply to save.");
   lines.push(...notes);
   return lines.join("\n");
 }
@@ -92,4 +139,45 @@ export async function readImage(file: File): Promise<{ mediaType: string; dataBa
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return { mediaType: file.type, dataBase64: btoa(binary), name: file.name };
+}
+
+const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const span = (minutes: number) => {
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return h ? `${h} h${m ? ` ${m} min` : ""}` : `${m} min`;
+};
+/** "Tue, Nov 10" (no year), for compact card lines. */
+export const dayLabel = (date: string) => longDate(date).replace(/, \d{4}$/, "");
+
+/** One readable line for a review card, e.g. "6 h · due Wed, Nov 11, 5 PM · High". Gaps say what is missing. */
+export function draftSummary(d: PlanDraft) {
+  if (d.kind === "fixed_event") {
+    const time = d.start != null && d.end != null ? `${clock12(d.start)}–${clock12(d.end % 1440)}` : "time not set";
+    const when = d.repeat
+      ? `every ${d.repeat.weekdays.map(i => WEEKDAY_NAMES[i]).join(", ") || "?"}${d.repeat.until ? ` until ${dayLabel(d.repeat.until)}` : ""}`
+      : d.date ? dayLabel(d.date) : "date not set";
+    return [when, time, d.location].filter(Boolean).join(" · ");
+  }
+  const due = d.deadline ? `due ${dayLabel(d.deadline)}${d.dueTime != null ? `, ${clock12(d.dueTime)}` : ""}` : "no due date";
+  return [d.minutes != null ? span(d.minutes) : "length not set", due, d.priority].join(" · ");
+}
+
+/** What the current plan preview does with one draft: where its work landed, what didn't fit, and fixes offered. */
+export interface DraftOutcome { sessions: number; minutes: number; firstDate: string | null; unscheduled: number; reasons: string[]; choices: ConflictChoice[]; eventDates: string[] }
+export function draftOutcome(id: string, preview: SchedulePreview | null): DraftOutcome | null {
+  if (!preview || preview.mode !== "plan") return null;
+  const key = `${DRAFT_PREFIX}${id}`;
+  const work = preview.sessions.filter(s => s.taskId === key && s.type === "work" && s.change === "new");
+  const task = preview.tasks.find(t => t.taskId === key);
+  const conflicts = preview.conflicts.filter(c => c.items.some(i => i.id === key));
+  const eventDates = (preview.proposedEvents ?? []).filter(e => e.draftId === id).map(e => e.date);
+  return {
+    sessions: work.length,
+    minutes: work.reduce((n, s) => n + s.end - s.start, 0),
+    firstDate: [...work.map(s => s.date), ...eventDates].sort()[0] ?? null,
+    unscheduled: task?.unallocatedMinutes ?? 0,
+    reasons: [...new Set([...(task?.reasons ?? []).map(r => r.message), ...conflicts.map(c => c.message)])],
+    choices: conflicts.flatMap(c => c.choices ?? []),
+    eventDates,
+  };
 }

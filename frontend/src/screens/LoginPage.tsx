@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from "react";
 import Icon from "../components/Icon";
 import { authSession } from "../services/authSession";
+import { PASSWORD_RULES, passwordProblem } from "../utils/passwordRules";
+import SignupCodeStep, { type PendingSignup } from "../components/SignupCodeStep";
+import ResetPasswordStep from "../components/ResetPasswordStep";
 import "./LoginPage.css";
 
 function LoginBrand() {
@@ -18,6 +21,12 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
+  const [password, setPassword] = useState("");
+  // Sign-up waits here for the emailed code; the account is created only after it is verified.
+  const [pending, setPending] = useState<PendingSignup | null>(null);
+  // "Forgot password?" swaps the sign-in form for the reset screen; the email carries across both ways.
+  const [resetting, setResetting] = useState(false);
+  const [email, setEmail] = useState("");
   async function google() {
     if (loading) return;
     setError(""); setNotice(""); setLoading(true);
@@ -25,12 +34,10 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
     catch (err) { setError(err instanceof Error ? err.message : "Google sign-in failed."); }
     finally { setLoading(false); }
   }
-  async function forgotPassword(form: HTMLFormElement | null) {
-    const email = String(new FormData(form ?? undefined).get("email") ?? "").trim();
+  function forgotPassword(form: HTMLFormElement | null) {
+    setEmail(String(new FormData(form ?? undefined).get("email") ?? "").trim());
     setError(""); setNotice("");
-    if (!email) { setError("Enter your email address first, then choose Forgot password."); return; }
-    try { await authSession.resetPassword(email); setNotice(`If an account exists for ${email}, a reset link is on its way.`); }
-    catch (err) { setError(err instanceof Error ? err.message : "Could not send a reset email."); }
+    setResetting(true);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,12 +46,20 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
     const email = String(data.get("email") ?? "").trim();
     const password = String(data.get("password") ?? "");
     setError(""); setNotice("");
+    if (signup) {
+      const problem = passwordProblem(password);
+      if (problem) { setError(problem); return; }
+    }
     if (signup && password !== data.get("confirmPassword")) { setError("Passwords do not match."); return; }
     if (signup && !String(data.get("name") ?? "").trim()) { setError("Enter your name."); return; }
     setLoading(true);
     try {
-      if (signup) await authSession.signup(String(data.get("name")).trim(), email, password);
-      else await authSession.login(email, password);
+      if (signup) {
+        const sent = await authSession.requestSignupCode(email);
+        setPending({ name: String(data.get("name")).trim(), email: sent.email, password, sent, sentAt: Date.now() });
+        return;
+      }
+      await authSession.login(email, password);
       window.location.hash = "/home";
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to sign in. Please try again."); }
     finally { setLoading(false); }
@@ -78,6 +93,11 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
         </div>
       </section>
       <section className="login-right" aria-labelledby="login-heading">
+        {pending ? (
+          <SignupCodeStep pending={pending} onResent={setPending} onBack={() => { setPending(null); setPassword(""); }} />
+        ) : resetting && !signup ? (
+          <ResetPasswordStep initialEmail={email} onBack={address => { setEmail(address); setResetting(false); }} />
+        ) : (
         <form className="prototype-login-form" onSubmit={submit}>
           <LoginBrand />
           <p className="login-eyebrow">{signup ? "WELCOME TO AUTOPLAN" : "WELCOME BACK"}</p>
@@ -92,6 +112,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
               id="login-email"
               name="email"
               type="email"
+              defaultValue={email}
               autoComplete="username"
               maxLength={254}
               disabled={loading}
@@ -108,14 +129,27 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
               name="password"
               type="password"
               autoComplete={signup ? "new-password" : "current-password"}
-              minLength={signup ? 8 : undefined}
               maxLength={128}
               disabled={loading}
               required
-              placeholder={signup ? "At least 8 characters" : "Enter your password"}
-              aria-describedby="login-error"
+              placeholder={signup ? "Create a strong password" : "Enter your password"}
+              aria-describedby={signup ? "password-rules login-error" : "login-error"}
               aria-invalid={!!error}
+              onChange={e => setPassword(e.target.value)}
             />
+            {signup && (
+              <ul id="password-rules" className="password-rules" aria-label="Password requirements">
+                {PASSWORD_RULES.map(rule => {
+                  const met = rule.test(password);
+                  return (
+                    <li key={rule.id} className={met ? "met" : ""}>
+                      <span aria-hidden="true">{met ? "✓" : "•"}</span> {rule.label}
+                      <span className="sr-only">{met ? " (met)" : " (not met yet)"}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
           {signup && <div className="login-field"><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirmPassword" type="password" autoComplete="new-password" required maxLength={128} disabled={loading} aria-describedby="login-error" /></div>}
           {!signup && <button type="button" className="forgot-link" disabled={loading} onClick={e => void forgotPassword(e.currentTarget.form)}>Forgot password?</button>}
@@ -128,7 +162,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
           </div>
           {notice && <p className="login-notice" role="status">{notice}</p>}
           <button className="login-submit" type="submit" disabled={loading}>
-            {loading ? "Please wait…" : signup ? "Create account" : "Sign in"} <Icon name="arrow" size={16} />
+            {loading ? "Please wait…" : signup ? "Email me a code" : "Sign in"} <Icon name="arrow" size={16} />
           </button>
           <div className="login-divider"><span>or</span></div>
           <button type="button" className="google-button" disabled={loading} onClick={() => void google()}>
@@ -139,6 +173,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
             {signup ? "Already have an account?" : "New to AutoPlan?"}{" "}<a className="text-link" href={signup ? "#/login" : "#/signup"}>{signup ? "Sign in" : "Create an account"}</a>
           </p>
         </form>
+        )}
       </section>
     </main>
   );

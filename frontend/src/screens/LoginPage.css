@@ -271,3 +271,33 @@
     min-height: 100svh;
   }
 }
+
+/* Sign-up password checklist: each rule turns green as it is met. */
+.password-rules {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+  font-size: 11.5px;
+  color: var(--login-muted);
+}
+.password-rules li { display: flex; align-items: baseline; gap: 5px; }
+.password-rules li > span[aria-hidden] { width: 10px; text-align: center; font-weight: 700; }
+.password-rules li.met { color: #3f7a52; }
+@media (max-width: 420px) {
+  .password-rules { grid-template-columns: 1fr; }
+}
+
+/* Sign-up step 2: the emailed code. */
+.signup-code-step .code-input { font-size: 22px; font-weight: 700; letter-spacing: 8px; text-align: center; font-variant-numeric: tabular-nums; }
+.code-timer { margin: 2px 0 0; font-size: 12px; color: var(--login-muted); }
+.code-timer.expired { color: #b6504e; }
+.code-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.code-actions .forgot-link { margin: 0; }
+.code-actions .forgot-link:disabled { color: var(--login-muted); cursor: default; text-decoration: none; }
+
+/* "Back to sign in" on the reset screen: a button that looks like the other text links. */
+.link-button { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
+.reset-password-step .login-notice strong { font-weight: 700; overflow-wrap: anywhere; }

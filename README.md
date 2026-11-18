@@ -49,6 +49,8 @@ Backend (`backend/.env`; never expose these with a `VITE_` prefix):
 - `ALLOWED_ORIGINS`: comma-separated exact frontend origins, without paths. Examples include localhost and 127.0.0.1 on ports 5173/5174. Wildcards are rejected.
 - `OPENAI_API_KEY`: optional. Enables `/assistant/chat`, `/schedule/interpret` and AI reading of text and images in `/plan/interpret` via the OpenAI Responses API (without it, typed plans use the built-in parser and images are refused). Never commit a real key; leave blank to use structured scheduling without AI.
 - `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`; it must accept images for timetable photos).
+- `SMTP_HOST`, `SMTP_PORT` (default 587; 465 uses SSL), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`: email for sign-up codes. For Gmail use `smtp.gmail.com` and an [App Password](https://myaccount.google.com/apppasswords) (Google Account → Security → 2-Step Verification → App passwords). Without them, sign-up cannot send a code.
+- `EMAIL_CODES_TO_LOG`: development only; `true` prints sign-up codes to the API log instead of emailing them when SMTP is not set up.
 
 Frontend (`frontend/.env`):
 
@@ -75,6 +77,14 @@ The API checks the token's RS256 signature against Google's published keys, plus
 
 The frontend restores sessions through Firebase on refresh, gates workspace screens, shows API errors, and supports logout from the user menu (top right) and the Account page. Signup shares the responsive two-column Login design.
 
+
+### Sign-up email codes
+
+Creating an account takes three steps: the form (name, email, a password meeting the rules) → `POST /auth/signup-code` emails a 6-digit code → `POST /auth/signup-code/verify` checks it, then the browser creates the Firebase account and opens Home.
+
+- Codes are valid **5 minutes**, stored only as salted hashes, and work once. A new code can be requested after 60 seconds (at most 5 an hour); it replaces the old one. Five wrong tries lock the code.
+- A correct code marks the address verified for 30 minutes. The first `/auth/me` creates the AutoPlan user only for a verified address, or one Google/Firebase already confirmed (`email_verified`); otherwise it returns 403. Existing accounts are unaffected.
+- `409` if the email already has an account, `429` for too many requests or tries, `410` for an expired code, `503` if email sending isn't configured.
 ## Validation
 
 From the repository root:
@@ -101,9 +111,9 @@ All workspace routes use the Firebase authentication dependency. Owners are take
 - `PUT /tasks/{id}`: edit its fields, preserving completion.
 - `PATCH /tasks/{id}/completion`: `{done: true}` or `{done: false}`.
 - `DELETE /tasks/{id}`: delete owned task and its work sessions; returns 204.
-- `GET /sessions`: the user's sessions in the canonical shape `{id, taskId, title, type, status, locked, source, scheduleVersion, startAt, endAt, date, start, end}`. `type` is `work` or `break` (`taskId` is null for breaks); `status` is `saved`, `completed` or `cancelled` (`proposed` exists only inside previews). `startAt`/`endAt` are UTC instants and are the source of truth; `date`/`start`/`end` are the same instants in the user's time zone, for display.
+- `GET /sessions`: the user's saved sessions in the canonical shape `{id, taskId, title, type, status, locked, source, scheduleVersion, startAt, endAt, date, start, end}`. `type` is `work` or `break` (`taskId` is null for breaks); `status` is `saved`, `completed` or `cancelled` (`proposed` exists only inside previews). `startAt`/`endAt` are UTC instants and are the source of truth; `date`/`start`/`end` are the same instants in the user's time zone, for display.
 - `POST /sessions`: plan work time `{taskId, date, start, end, locked?}` in local wall-clock time; returns 201 with `source: "manual"`. A task can have any number of sessions on different days. Sessions must end by the task's due time (422) and cannot overlap another live session or an event (409).
-- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned work session. Breaks are managed by the scheduler and are not editable here.
+- `PUT /sessions/{id}`, `DELETE /sessions/{id}`: edit or remove an owned work session.
 - `PATCH /sessions/{id}/status` `{status}`: mark a work session `completed` (its minutes are added to the task's `completedMinutes`), back to `saved`, or `cancelled`.
 - `GET /events`: the user's events. Events are fixed-time commitments you attend (classes, meetings, appointments, meetups); they have no due date.
 - `POST /events`: create `{title, kind, date, start, end, location?, repeat?}`; returns 201 with `{id, ..., skipDates, source}`. `kind` is `Class`, `Meeting`, `Appointment`, `Social`, or `Other`. `repeat` is `{weekdays, until}` (Monday = 0) for a weekly series such as a class schedule, up to one year long.
@@ -154,7 +164,7 @@ Work is placed in this order: **priority tier first** (High, Medium, Low), then 
 
 After the earliest-fit pass, a bounded **local repair** looks at each task that is still short, in priority order. It may move unlocked, automatic, future sessions of the same or lower tier (at most 4 victims per attempt, 20 attempts in total, 6 per task), re-places the victims afterwards, and keeps the change only when the lexicographic score strictly improves: for each tier from High to Low, (number of fully scheduled tasks, which tasks are fully scheduled in deadline order, scheduled minutes). So a repair can never trade a High task for Medium work, or an earlier deadline for more total minutes. Locked, manual and in-progress sessions and all events are never moved. Displaced work keeps its task; its lost minutes are listed as unscheduled with the reason `displaced_by_priority`.
 
-Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, `displaced_by_priority`, and others). This is a heuristic: an unplaced task is **not** proof that no schedule exists. “Can this fit?” separates what is proven from what is not (below).
+Minutes that cannot be placed are reported per task with reason codes (`deadline_passed`, `insufficient_capacity`, `daily_limit`, `no_contiguous_slot`, `unsplit_exceeds_focus_limit`, `beyond_planning_window`, `dependency_unallocated`, `displaced_by_priority`, and others). This is a heuristic: an unplaced task is **not** proof that no schedule exists. The fit check API separates what is proven from what is not (below).
 
 **Why not a solver?** OR-Tools is in `requirements.txt` but unused. At this project's scale (a student's week: tens of tasks, a few hundred five-minute slots per day) the deterministic heuristic plus bounded repair finishes in milliseconds and its decisions can be explained line by line. The focus/break rules (a run may cross task boundaries, a free gap counts as rest but a meeting does not, breaks are reserved during allocation) are awkward to express in CP-SAT, and an optimal-but-opaque answer would be harder to explain in chat. The cost is that the result is not guaranteed optimal; that is why only input-based facts are ever called proof.
 
@@ -170,13 +180,56 @@ For every open task: `remaining = estimated − completed`, and `retained + new 
 - Unlocked automatic future work is flexible: Generate replaces it, Repair keeps it when it is still valid and only moves what must change.
 - Automatic breaks are recalculated.
 
+### Breaks
+
+Automatic breaks are not saved. The engine keeps the gap free, previews show the break, and the client draws it from the saved sessions (`frontend/src/utils/breaks.ts`, the same rule as the engine's `_materialise_breaks`). So a break can't outlive its work: when a session or task is deleted, completed or moved, its break goes with it. Only a break you ask for ("I need a 15-minute break now") is saved, as a protected break.
+
+Loading the schedule (`GET /schedule`) removes automatic breaks saved by older versions, for the signed-in user. In chat, "delete breaks" lists your saved breaks and deletes them after you confirm (`POST /actions/delete-breaks`); if there are none, it explains the automatic ones.
+
+### What review checks
+
+Questions come from a draft's current values: a field that holds a value is not reported as missing or unreadable, whatever the reader flagged, and its question clears as soon as it is filled in. AM/PM and vague dates are still confirmed, because there the value itself is in doubt. Notes in parentheses that aren't task details, such as "(I'm so tired)", are removed before an item is read; "(2 hours)", "(due Friday)" and "(Room 204)" stay.
+
+A task shorter than two of its shortest sessions (30 minutes with the default 15) can't be split: "Can split" is off, it is planned as one session, and split options aren't offered.
+
+### Dates
+
+Dates are worked out in code from the user's words and local time, on both read paths and for chat events, replacing what the AI computed; a date with no date words keeps the reader's value. A bare weekday is its next occurrence, and today counts only if its time hasn't passed. A due date or event date that has passed is flagged on the draft and in chat. It doesn't block, so it can still be reported or changed.
+
+### Drafts that cannot fit
+
+A task or flexible event whose work can't fit before its deadline is flagged on the draft as soon as it is read or edited, for example "Only 30 min left before the deadline, so 3 h can't fit." The check measures that item alone: time left, your available hours, events, fixed sessions, needed breaks and the daily limit. It is a warning, not a block. The draft offers **Move the deadline** (to the first deadline with enough time), **Shorten**, and **Schedule what fits**, which is a partial preview. Other flexible work can still leave an item short, which the preview shows. Nothing is ever placed after a deadline.
+
+### Fixed or flexible
+
+Any item with a stated day and a start and end time is a fixed event, whatever the activity. "Gym every Monday and Wednesday 9–5" is a weekly fixed event on those days, and "Gym Monday 9-5" is one event. Fixed events have no length, deadline or "not before", so none of those are asked for or shown. A deadline is only asked for items without set times. A range such as "9-5" can only start in the morning and end in the afternoon, so it needs no AM/PM question; "9-10" does. Weekly events still need a first and last date.
+
+### Preferred times
+
+An item's preferred times (for example “weekday evenings”) are optional. Without them it can use any time you are available. Times the AI could not read are dropped with a note on the draft; they never block it. When given, they are limits: work is placed only inside them. (In the API and code the field is `windows`.)
+
+### Split options
+
+On a task's card, **Compare ways to split** asks the engine for up to three shapes of the same work and shows them above the calendar. In chat, phrases such as “show me different ways to split them” do the same: a named task is used first, then the drafts under review, then all open tasks. With several tasks, each option applies the same shape to all of them. The first is drawn on the calendar straight away, next to existing tasks and events; picking another swaps the preview, and **Apply schedule** saves the one shown.
+
+- **Front-loaded**: the normal earliest fit, so the work finishes as early as possible.
+- **Spread evenly**: equal minutes on evenly spaced days up to the deadline, using fewer days rather than sessions under 30 minutes.
+- **Fewer, longer blocks**: only blocks of the longest length the task and focus limit allow, one a day while days remain, skipping gaps too short for a full block.
+
+The AI takes no part: these are deterministic strategies in `scheduling_engine.py`. A strategy only chooses days and lengths and then calls the same placement code, in the same priority order, so availability, breaks, events, locked work, dependencies and limits all still apply, and it falls back to earliest fit for anything it cannot place. Only the chosen task's unlocked automatic sessions are released; other saved sessions stay unless higher-priority work needs their time, and each option says if it moves them or schedules other tasks' unplaced work.
+
+Each option is stored as its own preview, checked by the validator and applied by the usual `POST /schedule/apply`, so applying one makes the others stale (409). An alternative is left out, with a note saying why, if it would schedule any task less than front-loaded does, if it matches an earlier option, or if "fewer" would not use fewer sessions. So a short task, or one due today, may get a single option. Options always plan 21 days, and a later deadline is noted.
+
+Drafts go through `POST /plan/split-options` (same body as `/plan/preview`) and need no open questions. Their options are plan previews, so Apply saves the tasks, events and sessions together.
+
 ### Schedule API
 
 - `GET /schedule` → `{scheduleVersion, timeZone, sessions}`, the saved schedule.
 - `POST /schedule/preview` `{horizonDays?}`: generate a fresh plan.
 - `POST /schedule/repair` (alias `/schedule/replan`) `{horizonDays?, moves?: [{taskId, notBefore}]}`: a local repair. `moves` asks for a task to start no earlier than an instant ("move Asm to tomorrow").
 - `POST /schedule/break` `{minutes}`: a protected break starting now, with the schedule repaired around it. If an event or locked work is in the way the break is shortened or refused, and the preview says why.
-- Each preview returns `{previewId, mode, sessions, removed, tasks, conflicts, days, firstProposedDate, note, ...}`. `sessions` is the complete future schedule in the window if applied, with `change` = `retained`, `kept`, `new` or `truncated`. `removed` lists saved sessions Apply deletes (or shortens, when `newEndAt` is set) with a reason.
+- Each preview returns `{previewId, mode, sessions, removed, tasks, conflicts, days, firstProposedDate, note, ...}`. `sessions` is the complete future schedule in the window if applied, with `change` = `retained`, `kept`, `new`, `truncated` or `derived` (an automatic break, shown but never saved). `removed` lists saved sessions Apply deletes (or shortens, when `newEndAt` is set) with a reason.
+- `POST /schedule/split-options` `{taskIds}` → `{taskIds, title, remainingMinutes, options, notes}`: ways to divide saved tasks' work (see below). Each option carries a complete preview with mode `split`. A task that can't be split (done, past its deadline, splitting off, a flexible event) is listed in `notes`; it is a 422 if none can, or if nothing could be placed.
 - `POST /schedule/apply` `{previewId}` → `{previewId, status, duplicate, schedule}`. Returns 409 for a stale or invalid preview.
 - `GET /schedule/preview/{id}`: a stored preview.
 - `POST /schedule/interpret`: OpenAI interpretation of a scheduling request.
@@ -202,7 +255,9 @@ The composer in the chat takes multi-line text (Enter sends, Shift+Enter adds a 
 3. **Scheduling and validation**: drafts go through the same service, engine and independent validator as Generate/Repair. Draft tasks appear as `draft:<id>` and draft fixed events as busy time.
 4. **Preview and Apply**: the preview (mode `plan`) shows new sessions, reserved breaks, proposed events, moves, removals and unscheduled minutes. Apply creates the tasks, events and sessions in one transaction, after the usual staleness check. Each draft gets a unique `draft_key` (`owner:batch:draft`), so a double submit cannot save it twice.
 
-### Can this fit?
+### Fit check API
+
+`POST /plan/feasibility` is the check below. The app no longer has a button for it, because Preview shows what doesn't fit.
 
 `POST /plan/feasibility` changes no saved data (not even a stored proposal; the response says `savedDataChanged: false`). It runs the engine three times on one snapshot: saved work alone, the drafts with no displacement, and the drafts with bounded displacement. The status is one of:
 
@@ -221,7 +276,7 @@ Each item lists its causes marked proven or not proven. The planning horizon and
 - `POST /plan/feasibility` `{drafts, horizonDays}` → the result above
 - `POST /plan/preview` `{drafts, horizonDays, batchId}` → a schedule preview (mode `plan`), applied with `POST /schedule/apply`
 
-Drafts with open questions are refused with 422 by feasibility and preview. Only selected (ticked) items are checked: an unticked incomplete item never blocks the others, but a selected item may not depend on an unticked one. In the review panel, editing a field makes its value the answer: its "unclear" flag and question are cleared at once and the backend re-checks; an answer for drafts that changed meanwhile is ignored. Questions appear next to their fields, a summary links to each item that still needs something, and disabled buttons say what is missing. Not enough time is a scheduling result (a partial plan with its unscheduled minutes listed, which can be applied), not a question.
+Drafts with open questions are refused with 422 by feasibility and preview. Only selected (ticked) items are checked: an unticked incomplete item never blocks the others, but a selected item may not depend on an unticked one. In the review panel, editing a field makes its value the answer: its "unclear" flag and question are cleared at once and the backend re-checks; an answer for drafts that changed meanwhile is ignored. The panel shows one compact row per item (at most three, then "+N more", with anything blocked first). Other fields are under **More options**, a field that blocks scheduling turns red with a short hint, and the panel collapses so a preview has the calendar to itself. Drafts are always planned over 21 days. Not enough time is a scheduling result (a partial plan with its unscheduled minutes listed, which can be applied), not a question.
 
 ### Manual check (the acceptance scenario)
 
@@ -241,10 +296,10 @@ In the app (MongoDB replica set needed for Apply):
 
 1. Set availability to 9 AM–12 PM every day in America/New_York.
 2. In the chat, type three lines and press Enter: `Lab report 90 min due tomorrow high priority`, `Advisor meeting today 11-11:30am`, `Gym 30 min sometime today, low priority`. The review panel above the calendar shows a task, a fixed event and a flexible event; nothing is saved.
-3. Press **Can this fit?** (“fits without moving existing work”), then **Preview on calendar**. The calendar shows the dashed proposed sessions, the reserved break and the proposed meeting; ask the chat “Today’s tasks” to see the same items.
+3. Press **Preview on calendar**. The calendar shows the dashed proposed sessions, the reserved break and the proposed meeting; ask the chat “Today’s tasks” to see the same items.
 4. **Apply**, refresh, sign out and in: the tasks, the event and the sessions are still there. Pressing Apply twice writes nothing extra.
 5. With `OPENAI_API_KEY` set, attach a timetable photo. Check that each class is weekly, that unclear times and missing semester dates are asked about, answer in the chat, then preview.
-6. Add `Problem set 100 min due today 12pm high priority` on a day already planned with Low work, press **Can this fit?**, and see which sessions would move and how many minutes the Low task loses.
+6. Add `Problem set 100 min due today 12pm high priority` on a day already planned with Low work, press **Preview on calendar**, and see which sessions would move and how many minutes the Low task loses.
 
 ### Known limitations
 
@@ -259,7 +314,7 @@ In the app (MongoDB replica set needed for Apply):
 
 Sprint 1 includes Firebase login/signup (email/password and Google), password reset, logout, and account deletion; MongoDB task CRUD and completion; saved weekday availability and time zone; and the sketch-based workspace: a top bar (menu, month title, reminders bell, user menu with theme toggle), a Today's Tasks sidebar with Add Task, a day/week/month calendar, and an AI chatbox panel. New accounts start empty.
 
-Tasks have a due date and an optional due time (11:59 PM if left blank), remaining duration, split limits, optional earliest start, and dependencies. The user can place **work sessions** manually or generate them with **Generate Schedule**. Sessions and breaks show as blocks in the time grid; proposed sessions are drawn dashed until Apply; locked/manual sessions are preserved when replanning.
+Tasks have a due date and an optional due time (11:59 PM if left blank), remaining duration, split limits, optional earliest start, and dependencies. The user can place **work sessions** manually or generate them with **Generate Schedule**. Sessions and breaks show as blocks in the time grid, which opens at your first available hour (hours are 80px tall, 64px on phones). A block is at least 28px tall with a 2px gap: a short block takes its extra height from the longer one above it, so work keeps its true start time. Blocks too short for two lines show the title only, with the details on hover and in the block's card; proposed sessions are drawn dashed until Apply; locked/manual sessions are preserved when replanning.
 
 **Events** (classes, meetings, appointments, meetups) are fixed blocks of time with an optional location and an optional weekly repeat until a last date. They block work sessions and auto-scheduling. Google Calendar and Outlook import is available on the Calendars page. Reminder delivery remains limited to the bell list for due today/tomorrow.
 

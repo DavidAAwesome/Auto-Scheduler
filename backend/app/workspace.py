@@ -199,30 +199,7 @@ def delete_task(task_id: str, user=Depends(get_current_user), db=Depends(get_dat
     if not db.tasks.delete_one(owned_task(task_id, user)).deleted_count:
         raise HTTPException(404, 'Task not found.')
     db.sessions.delete_many({'user_id': str(user['_id']), 'task_id': task_id})
-    prune_orphan_breaks(db, user)
     bump(db, user)
-
-
-def prune_orphan_breaks(db, user):
-    """Deletes scheduler-placed breaks that no longer sit between two pieces of work on the same day.
-
-    The engine only reserves a break between work runs, so once a task (and its sessions) is gone, the breaks
-    around it are left resting between nothing. Breaks the user asked for (locked) are kept."""
-    zone = user_zone(db, user)
-    docs = [doc for doc in list_session_docs(db, user) if doc.get('status') != 'cancelled']
-    spans = []
-    for doc in docs:
-        try:
-            spans.append((doc, session_output(doc, zone)))
-        except (KeyError, TypeError, ValueError):
-            continue  # an incomplete legacy document is left alone
-    work = [s for doc, s in spans if s.type == 'work']
-    orphans = [doc['_id'] for doc, s in spans
-               if s.type == 'break' and s.source == 'auto' and not s.locked
-               and not (any(w.date == s.date and w.end <= s.start for w in work)
-                        and any(w.date == s.date and w.start >= s.end for w in work))]
-    if orphans:
-        db.sessions.delete_many({'_id': {'$in': orphans}, 'user_id': str(user['_id'])})
 
 
 class SessionInput(BaseModel):
@@ -501,6 +478,8 @@ class Availability(BaseModel):
     weekOverrides: list[WeekOverride] = Field(default_factory=list)
     timeZone: str = Field(min_length=1, max_length=100)
     reminders: bool = Field(strict=True)
+    # Minutes before a work session or event starts to remind; 0 means when it starts. Older saved documents default to 15.
+    reminderMinutes: int = Field(default=15, ge=0, le=1440, strict=True)
 
     @field_validator('timeZone')
     @classmethod
@@ -544,6 +523,7 @@ def default_availability():
         weekOverrides=[],
         timeZone='Etc/GMT',
         reminders=False,
+        reminderMinutes=15,
     )
 
 
@@ -555,11 +535,26 @@ def resolve_available_day(availability: Availability, day: date) -> AvailableDay
     return next(row for row in availability.days if row.day == day.weekday())
 
 
+@router.delete('/data')
+def clear_data(user=Depends(get_current_user), db=Depends(get_database)):
+    """Starts the user over: deletes tasks, work sessions and breaks, events, calendar connections (with their
+    imported events), unsaved previews and pending confirmations. Analytics is computed from tasks and sessions, so it
+    resets too. The account, availability, scheduling preferences and assistant settings are kept."""
+    uid = str(user['_id'])
+    deleted = {name: db[name].delete_many({'user_id': uid}).deleted_count
+               for name in ('tasks', 'sessions', 'events', 'calendar_connections')}
+    for name in ('plans', 'schedule_previews', 'pending_actions'):
+        db[name].delete_many({'user_id': uid})
+    bump(db, user)  # any preview built before this can no longer be applied
+    return deleted
+
+
 @router.get('/availability', response_model=AvailabilityView)
 def get_availability(user=Depends(get_current_user), db=Depends(get_database)):
     doc = db.availability.find_one({'user_id': str(user['_id'])}, {'_id': 0, 'user_id': 0})
     if doc:
-        return AvailabilityView(**doc)
+        # Ignore stored settings this version doesn't know (e.g. saved by a newer branch on the same database).
+        return AvailabilityView(**{key: value for key, value in doc.items() if key in AvailabilityView.model_fields})
     return AvailabilityView(**default_availability().model_dump(), saved=False)
 
 

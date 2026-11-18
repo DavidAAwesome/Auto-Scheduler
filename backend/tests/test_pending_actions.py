@@ -4,6 +4,9 @@ On the mock database the confirm step runs without a transaction (the mock has n
 a transaction on a replica set, which `test_confirm_over_a_real_transaction` covers when TEST_MONGODB_URI is set.
 Every deletion here targets disposable records created by the test itself.
 """
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from app import pending_actions
@@ -160,3 +163,60 @@ def test_confirm_over_a_real_transaction(transaction_environment, monkeypatch):
     action = propose_delete(client, task['id'])
     assert client.post(f"/actions/{action['id']}/confirm", json={'version': action['version']}).status_code == 200
     assert db.tasks.count_documents({'user_id': str(owner(db)['_id'])}) == 0 and db.sessions.count_documents({}) == 0
+
+
+# ------------------------------------------------------------------ deleting breaks
+
+def protected_break(db, start=600, user_id=None):
+    owner = user_id or str(db.users.find_one()['_id'])
+    day = datetime(2026, 10, 26, tzinfo=ZoneInfo('America/New_York'))
+    return str(db.sessions.insert_one({
+        'user_id': owner, 'type': 'break', 'task_id': None, 'status': 'saved', 'locked': True, 'source': 'manual', 'date': '2026-10-26',
+        'start': start, 'end': start + 15, 'start_at': (day + timedelta(minutes=start)).astimezone(timezone.utc),
+        'end_at': (day + timedelta(minutes=start + 15)).astimezone(timezone.utc), 'schedule_version': 1}).inserted_id)
+
+
+def test_deleting_breaks_needs_confirmation(transaction_environment, monkeypatch):
+    client, db = transaction_environment
+    setup_user(client, monkeypatch)
+    ids = [protected_break(db, 600), protected_break(db, 660)]
+    proposal = client.post('/actions/delete-breaks')
+    assert proposal.status_code == 201, proposal.text
+    action = proposal.json()
+    assert action['type'] == 'delete_breaks' and action['status'] == 'awaiting_confirmation'
+    assert action['summary'].startswith('Delete 2 saved breaks?')
+    assert [t['id'] for t in action['targets']] == ids
+    assert db.sessions.count_documents({'type': 'break'}) == 2  # nothing happens before Confirm
+
+    confirmed = client.post(f"/actions/{action['id']}/confirm", json={'version': action['version']})
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()['deletedSessionIds'] == ids
+    assert db.sessions.count_documents({'type': 'break'}) == 0
+    assert client.post(f"/actions/{action['id']}/confirm", json={'version': action['version']}).json()['duplicate'] is True
+
+
+def test_cancelling_a_break_deletion_keeps_the_breaks(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    protected_break(db)
+    action = client.post('/actions/delete-breaks').json()
+    assert client.post(f"/actions/{action['id']}/cancel").json()['status'] == 'cancelled'
+    assert db.sessions.count_documents({'type': 'break'}) == 1
+
+
+def test_break_deletion_is_refused_after_the_schedule_changes(transaction_environment, monkeypatch):
+    client, db = transaction_environment
+    setup_user(client, monkeypatch)
+    protected_break(db)
+    action = client.post('/actions/delete-breaks').json()
+    add_task(client, 'Asm', 'High')
+    assert client.post(f"/actions/{action['id']}/confirm", json={'version': action['version']}).status_code == 409
+    assert db.sessions.count_documents({'type': 'break'}) == 1
+
+
+def test_there_is_nothing_to_delete_without_saved_breaks_and_other_users_are_not_listed(environment, monkeypatch):
+    client, db = environment
+    setup_user(client, monkeypatch)
+    protected_break(db, user_id='someone-else')
+    response = client.post('/actions/delete-breaks')
+    assert response.status_code == 422 and 'no saved breaks' in response.json()['detail']

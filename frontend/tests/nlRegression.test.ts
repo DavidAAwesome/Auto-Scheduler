@@ -108,7 +108,7 @@ test("draft replies state assumptions and keep a preferred start apart from the 
     { field: "deadline", code: "ambiguous", question: 'I read the deadline of "Work on essay" as Fri, Nov 13. Change it if you meant another day.', blocking: false },
     { field: "priority", code: "warning", question: "Priority was not stated", blocking: false },
   ] }], "local");
-  assert.match(text, /due 2026-11-13, work starts no earlier than 2026-11-13 3 PM/);
+  assert.match(text, /due Fri, Nov 13, 2026, work starts no earlier than Fri, Nov 13, 2026, 3 PM/);
   assert.match(text, /Note: I read the deadline of "Work on essay" as Fri, Nov 13/);
   assert.doesNotMatch(text, /Priority was not stated/);
 });
@@ -125,8 +125,9 @@ test("a day and a clock time read as events, one per named day, never a model-pi
   const both = add("2026-11-19", "Soccer practice Sat and Sun 9-10am");
   assert.equal(both?.command, "clarify");
   assert.match(both && "question" in both ? both.question : "", /each of Saturday and Sunday/);
+  // A model-picked Thursday for "Saturday" is replaced by the day the user named.
   const wrong = add("2026-11-19", "Soccer practice Saturday 9-10am");
-  assert.match(wrong && "question" in wrong ? wrong.question : "", /you said Saturday/);
+  assert.equal(wrong && "action" in wrong ? (wrong.action as { input: { date: string } }).input.date : "", "2026-11-14");
   assert.notEqual(add("2026-11-21", "Soccer practice Saturday 9-10am")?.command, "clarify");
 });
 

@@ -12,7 +12,8 @@ PUBLIC_KEY = PRIVATE_KEY.public_key()
 def make_token(uid='alice-uid', email='alice@example.com', name='Alice', key=PRIVATE_KEY, **overrides):
     now = datetime.now(timezone.utc)
     claims = {'iss': f'https://securetoken.google.com/{PROJECT_ID}', 'aud': PROJECT_ID, 'sub': uid,
-              'iat': now, 'exp': now + timedelta(hours=1), 'auth_time': int(now.timestamp()), 'email': email}
+              'iat': now, 'exp': now + timedelta(hours=1), 'auth_time': int(now.timestamp()), 'email': email,
+              'email_verified': True}  # Pass email_verified=None to act as an unconfirmed address.
     if name is not None:
         claims['name'] = name
     claims.update(overrides)

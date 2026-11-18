@@ -8,8 +8,10 @@ from fastapi import HTTPException
 
 from app import plan_extraction
 from app.config import get_settings
-from app.plan_drafts import review_all, review_draft
-from app.plan_extraction import Extraction, LlmItem, apply_answer, parse_text
+from app.plan_drafts import PlanDraft, draft_task, review_all, review_draft
+from app.plan_extraction import (
+    Extraction, LlmItem, LlmWindow, _convert_item, apply_answer, drafts_from_extraction, parse_text, without_asides,
+)
 from schedule_fixtures import NOW, setup_user
 
 NY = ZoneInfo('America/New_York')
@@ -527,3 +529,266 @@ def test_an_item_with_a_made_up_name_is_not_from_the_message():
     assert _mentioned(llm_event('Book club', text, '2026-11-28', '18:00', '19:00'), text)
     assert not _mentioned(llm_task('Check availability', text, minutes=None, deadline=None), text)
     assert _mentioned(llm_task('Essay revisions', 'essay revisons 2hrs due tmrw', minutes=120), 'essay revisons 2hrs due tmrw')
+
+
+# ------------------------------------------------------------------ preferred times are optional
+
+def flexible_item(windows, ambiguous=()):
+    return LlmItem(kind='task', title='Essay', sourceText='Essay', minutes=120, deadlineDate='2026-10-30', deadlineTime=None,
+                   earliestStart=None, priority='High', allowSplit=None, maxSessionMinutes=None, date=None, startTime=None,
+                   endTime=None, eventKind=None, location=None, repeatWeekdays=[], repeatStartDate=None, repeatUntil=None,
+                   windows=windows, dependsOnTitles=[], ambiguousFields=list(ambiguous), unreadableFields=[])
+
+
+@pytest.mark.parametrize('windows', [[], [LlmWindow(weekdays=[], start='', end='')]])
+def test_missing_preferred_times_never_block_a_draft_and_leave_it_on_availability(windows):
+    draft = _convert_item(flexible_item(windows), 0, {})
+    view = review_draft(draft, NOW, NY)
+    assert view.ready and not any(i.field == 'windows' for i in view.issues)
+    assert draft.windows == [] and draft_task(draft, {draft.id}).windows == []
+
+
+def test_unreadable_preferred_times_are_a_note_not_a_question():
+    draft = _convert_item(flexible_item([LlmWindow(weekdays=[0], start='evening', end='late')]), 0, {})
+    assert draft.windows == [] and 'windows' in draft.unreadable
+    view = review_draft(draft, NOW, NY)
+    issue = next(i for i in view.issues if i.field == 'windows')
+    assert view.ready and not issue.blocking
+    assert 'preferred times' in issue.question and 'windows' not in issue.question
+
+
+@pytest.mark.parametrize('field', ['unreadable', 'ambiguous'])
+def test_drafts_already_flagged_on_windows_are_released(field):
+    """Drafts held in a browser from before this change still carry the flag."""
+    draft = PlanDraft(id='d1', title='Essay', minutes=120, deadline='2026-10-30', **{field: ['windows']})
+    assert review_draft(draft, NOW, NY).ready
+
+
+# ------------------------------------------------------------------ one-time events
+
+def event_extraction(source, weekdays=(1,), **extra):
+    return Extraction(notes=[], items=[LlmItem(**{**flexible_item([]).model_dump(), 'kind': 'fixed_event', 'title': 'Class', 'sourceText': source,
+                                                  'minutes': None, 'deadlineDate': None, 'startTime': '10:00', 'endTime': '11:30',
+                                                  'eventKind': 'Class', 'repeatWeekdays': list(weekdays), **extra})])
+
+
+def extract(monkeypatch, extraction, image=None):
+    monkeypatch.setattr(plan_extraction, 'call_model', lambda inputs: extraction)
+    text = '\n'.join(i.sourceText for i in extraction.items)  # what the user typed
+    return plan_extraction.extract_with_model(text, image, NOW, NY, [])[0][0]
+
+
+def test_one_weekday_with_no_repeat_wording_is_one_event(monkeypatch):
+    draft = extract(monkeypatch, event_extraction('class Tue 10-11:30', ambiguousFields=['repeatUntil']))
+    assert draft.repeat is None and draft.date == '2026-10-27' and draft.ambiguous == []
+    assert review_draft(draft, NOW, NY).ready
+
+
+@pytest.mark.parametrize('source, weekdays, image', [
+    ('class every Tue 10-11:30', (1,), None), ('class Tuesdays 10-11:30', (1,), None),
+    ('class Tue/Thu 10-11:30', (1, 3), None), ('CS101 Tu 10:00-11:30', (1,), ('image/png', b'x')),
+])
+def test_stated_repeats_and_timetables_stay_weekly(monkeypatch, source, weekdays, image):
+    assert extract(monkeypatch, event_extraction(source, weekdays), image).repeat.weekdays == list(weekdays)
+
+
+# ------------------------------------------------------------------ values the user did not state
+
+@pytest.mark.parametrize('stated, kept', [
+    ('2026-10-26', None),  # today: already passed at 8 AM
+    ('2026-10-20T09:00', None),
+    ('2026-10-29', '2026-10-29T00:00:00'),
+    ('2026-10-29T14:00:00', '2026-10-29T14:00:00'),
+])
+def test_not_before_is_kept_only_when_it_limits_anything(monkeypatch, stated, kept):
+    item = {**flexible_item([]).model_dump(), 'earliestStart': stated}
+    assert extract(monkeypatch, Extraction(notes=[], items=[LlmItem(**item)])).earliestStart == kept
+
+
+@pytest.mark.parametrize('limit, kept', [(120, None), (240, None), (45, 45)])
+def test_a_session_limit_of_the_whole_task_is_not_a_limit(monkeypatch, limit, kept):
+    item = {**flexible_item([]).model_dump(), 'maxSessionMinutes': limit}
+    assert extract(monkeypatch, Extraction(notes=[], items=[LlmItem(**item)])).maxSessionMinutes == kept
+
+
+@pytest.mark.parametrize('kind, expected', [('Class', 'Class'), ('Meeting', 'Meeting'), ('Other', None)])
+def test_an_unnamed_event_takes_the_name_of_its_kind(monkeypatch, kind, expected):
+    extraction = event_extraction('class Tue 10-11:30', title='', eventKind=kind, ambiguousFields=['title'])
+    draft = extract(monkeypatch, extraction)
+    assert draft.title == expected
+    assert ('title' in draft.ambiguous) == (expected is None)
+
+
+def test_an_item_the_model_returns_twice_becomes_one_draft():
+    lab = {**flexible_item([]).model_dump(), 'title': 'Lab report', 'minutes': 180}
+    extraction = Extraction(notes=[], items=[LlmItem(**flexible_item([]).model_dump()), LlmItem(**lab),
+                                             LlmItem(**{**lab, 'title': 'lab report '}),
+                                             LlmItem(**{**lab, 'minutes': 60, 'sourceText': 'Second lab report 1 hour'})])
+    assert [(d.id, d.title, d.minutes) for d in drafts_from_extraction(extraction)] == [
+        ('d1', 'Essay', 120), ('d2', 'Lab report', 180), ('d3', 'Lab report', 60)]
+
+
+# ------------------------------------------------------------------ set times make a fixed event
+
+def parsed(text):
+    drafts = parse_text(text, NOW, NY, {})
+    assert len(drafts) == 1
+    return drafts[0]
+
+
+@pytest.mark.parametrize('text, weekdays, start, end', [
+    ('Gym every Monday and Wednesday 9–5', [0, 2], 540, 1020),
+    ('Gym every Monday and Wednesday 9-5', [0, 2], 540, 1020),
+    ('gym every mon and wed 9 to 5', [0, 2], 540, 1020),
+    ('Gym every Friday 6-7pm', [4], 1080, 1140),
+    ('Yoga Mondays and Wednesdays 10:30-11:30am', [0, 2], 630, 690),
+])
+def test_every_weekday_with_times_is_a_weekly_fixed_event(text, weekdays, start, end):
+    draft = parsed(text)
+    assert draft.kind == 'fixed_event' and draft.repeat.weekdays == weekdays and (draft.start, draft.end) == (start, end)
+    assert (draft.minutes, draft.deadline, draft.earliestStart) == (None, None, None)
+    asked = {i.field for i in review_draft(draft, NOW, NY).issues if i.blocking}
+    assert 'deadline' not in asked and 'repeat' not in asked and asked <= {'repeat.startDate', 'repeat.until'}
+
+
+def test_a_stated_day_with_times_is_a_one_time_fixed_event():
+    draft = parsed('Gym Monday 9-5')
+    assert (draft.kind, draft.date, draft.start, draft.end, draft.repeat) == ('fixed_event', '2026-10-26', 540, 1020, None)
+    assert review_draft(draft, NOW, NY).ready
+
+
+def test_a_range_that_could_be_morning_or_evening_is_still_asked_about():
+    draft = parsed('Gym every Monday 9-10')
+    assert draft.kind == 'fixed_event' and {'start', 'end'} <= set(draft.ambiguous)
+
+
+@pytest.mark.parametrize('text, kind', [
+    ('Read chapters 2-3 by Friday', 'task'), ('Review chapters 2-3 on Friday 1 hour', 'task'),
+    ('Essay 2-3 hours due Friday', 'task'), ('gym sometime Saturday 1 hour', 'flexible_event'),
+])
+def test_numbers_that_are_not_clock_times_stay_as_they_were(text, kind):
+    draft = parsed(text)
+    assert draft.kind == kind and draft.start is None and draft.end is None
+
+
+def gym_item(**extra):
+    return LlmItem(**{**flexible_item([]).model_dump(), 'kind': 'flexible_event', 'title': 'Gym', 'minutes': 480, 'deadlineDate': None,
+                      'priority': None, 'sourceText': 'Gym every Monday and Wednesday 9–5', **extra})
+
+
+@pytest.mark.parametrize('extra', [
+    {'repeatWeekdays': [0, 2], 'startTime': '09:00', 'endTime': '17:00'},
+    {'repeatWeekdays': [0, 2], 'windows': [LlmWindow(weekdays=[0, 2], start='09:00', end='17:00')]},
+    {'windows': [LlmWindow(weekdays=[0, 2], start='09:00', end='17:00')]},
+    {'repeatWeekdays': [0, 2], 'startTime': '09:00', 'endTime': '05:00', 'ambiguousFields': ['startTime', 'endTime', 'minutes']},
+])
+def test_the_ai_reading_gym_as_flexible_becomes_a_weekly_fixed_event(extra):
+    draft = _convert_item(gym_item(**extra), 0, {})
+    assert draft.kind == 'fixed_event' and draft.repeat.weekdays == [0, 2] and (draft.start, draft.end) == (540, 1020)
+    assert (draft.minutes, draft.deadline, draft.windows, draft.ambiguous, draft.assumed) == (None, None, [], [], [])
+    issues = review_draft(draft, NOW, NY).issues
+    assert {i.field for i in issues if i.blocking} == {'repeat.startDate', 'repeat.until'}
+    assert not any('Repeating flexible' in i.question or 'By when' in i.question for i in issues)
+
+
+def test_every_weekday_with_no_time_asks_for_the_time_instead_of_refusing():
+    draft = _convert_item(gym_item(minutes=None, repeatWeekdays=[0]), 0, {})
+    assert draft.kind == 'fixed_event'
+    assert {'start', 'end'} <= {i.field for i in review_draft(draft, NOW, NY).issues if i.blocking}
+
+
+def test_the_ai_reading_a_dated_time_range_as_a_task_becomes_a_one_time_fixed_event():
+    item = gym_item(kind='task', date='2026-10-27', startTime='09:00', endTime='10:00', minutes=60, sourceText='Gym Tue 9-10am')
+    draft = _convert_item(item, 0, {})
+    assert (draft.kind, draft.date, draft.start, draft.end, draft.minutes) == ('fixed_event', '2026-10-27', 540, 600, None)
+
+
+@pytest.mark.parametrize('extra', [
+    {'minutes': 60, 'windows': [LlmWindow(weekdays=[0, 1, 2, 3, 4], start='17:00', end='21:00')], 'sourceText': 'Gym 1 hour weekday evenings', 'deadlineDate': '2026-10-30'},
+    {'minutes': 60, 'deadlineDate': '2026-10-31', 'sourceText': 'Gym 1 hour sometime Saturday'},
+])
+def test_activities_with_a_length_and_no_set_time_stay_flexible(extra):
+    assert _convert_item(gym_item(**extra), 0, {}).kind == 'flexible_event'
+
+
+def test_a_task_with_a_deadline_stays_a_task_and_still_needs_one_without():
+    assert _convert_item(flexible_item([]), 0, {}).kind == 'task'
+    no_deadline = LlmItem(**{**flexible_item([]).model_dump(), 'deadlineDate': None})
+    assert any(i.field == 'deadline' and i.blocking for i in review_draft(_convert_item(no_deadline, 0, {}), NOW, NY).issues)
+
+
+@pytest.mark.parametrize('field', ['deadline', 'minutes', 'earliestStart', 'dueTime'])
+@pytest.mark.parametrize('flag', ['unreadable', 'ambiguous'])
+def test_a_fixed_event_is_never_asked_about_fields_it_does_not_have(field, flag):
+    draft = PlanDraft(id='d1', kind='fixed_event', title='Gym', date='2026-10-27', start=540, end=600, **{flag: [field]})
+    view = review_draft(draft, NOW, NY)
+    assert view.ready and view.issues == []
+
+
+# ------------------------------------------------------------------ checks use the current values
+
+@pytest.mark.parametrize('flag', ['unreadable', 'ambiguous'])
+def test_a_field_with_a_value_is_never_asked_about(flag):
+    draft = PlanDraft(id='d1', title='Read chapter', minutes=10, deadline='2026-10-30', location='Library', **{flag: ['title', 'minutes', 'location']})
+    view = review_draft(draft, NOW, NY)
+    assert view.ready and view.issues == []
+    assert (view.draft.unreadable, view.draft.ambiguous) == ([], [])  # the highlight goes too
+
+
+def test_the_ai_flagging_a_name_it_also_returned_needs_no_answer():
+    item = LlmItem(**{**flexible_item([]).model_dump(), 'title': 'Read chapter', 'unreadableFields': ['title']})
+    assert review_draft(_convert_item(item, 0, {}), NOW, NY).ready
+
+
+def test_a_flagged_field_with_no_value_is_still_asked_about():
+    draft = PlanDraft(id='d1', title=None, minutes=None, deadline='2026-10-30', unreadable=['title', 'minutes'])
+    view = review_draft(draft, NOW, NY)
+    assert {i.field for i in view.issues if i.blocking} == {'title', 'minutes'} and not view.ready
+    filled = review_draft(view.draft.model_copy(update={'title': 'Read', 'minutes': 30}), NOW, NY)
+    assert filled.ready and filled.issues == []
+
+
+def test_a_value_that_is_itself_in_doubt_is_still_confirmed():
+    extra = {'kind': 'fixed_event', 'title': 'Class', 'date': '2026-10-27', 'start': 600, 'end': 690}
+    view = review_draft(PlanDraft(id='d1', ambiguous=['start'], **extra), NOW, NY)
+    assert any(i.field == 'start' and i.blocking for i in view.issues)
+
+
+def test_a_deadline_in_doubt_is_stated_as_a_note():
+    # A best reading of the day ("next Friday", "3/4") is stated so it can be changed, without blocking the save.
+    view = review_draft(PlanDraft(id='d1', ambiguous=['deadline'], title='Essay', minutes=60, deadline='2026-10-30'), NOW, NY)
+    assert any(i.field == 'deadline' and not i.blocking and 'Fri, Oct 30' in i.question for i in view.issues)
+
+
+# ------------------------------------------------------------------ too short to split
+
+@pytest.mark.parametrize('minutes, shortest, can_split', [(10, None, False), (25, None, False), (30, None, True), (60, 40, False), (80, 40, True)])
+def test_short_tasks_become_one_session(minutes, shortest, can_split):
+    draft = PlanDraft(id='d1', title='Read', minutes=minutes, deadline='2026-10-30', allowSplit=True, minSessionMinutes=shortest)
+    task = draft_task(draft, {'d1'})
+    assert task.allowSplit is can_split
+    if not can_split:
+        assert task.maxSessionMinutes >= minutes
+
+
+# ------------------------------------------------------------------ parenthetical notes
+
+@pytest.mark.parametrize('text, expected', [
+    ("Read chapter, 10 minutes, due Friday (I'm so tired)", 'Read chapter, 10 minutes, due Friday'),
+    ('Essay (ugh) 2 hours due Friday (wish me luck!)', 'Essay 2 hours due Friday'),
+    ('Essay (2 hours) due Friday', 'Essay (2 hours) due Friday'),
+    ('Lab report (due Friday)', 'Lab report (due Friday)'),
+    ('Review (high priority) 1 hour due Monday', 'Review (high priority) 1 hour due Monday'),
+    ('Class 10-11am Tuesday (Room 204)', 'Class 10-11am Tuesday (Room 204)'),
+    ('Essay 2 hours due Friday', 'Essay 2 hours due Friday'),
+])
+def test_notes_in_parentheses_go_unless_they_are_details(text, expected):
+    assert without_asides(text) == expected
+
+
+def test_a_note_never_reaches_the_task_name(environment, monkeypatch):
+    client, _ = environment
+    setup_user(client, monkeypatch)
+    view = client.post('/plan/interpret', json={'text': "Read chapter, 10 minutes, due Friday (I'm so tired)", 'batchId': 'b'}).json()['drafts'][0]
+    assert (view['draft']['title'], view['draft']['minutes']) == ('Read chapter', 10)
+    assert 'tired' not in view['draft']['sourceText']

@@ -151,3 +151,33 @@ test("the follow-up suggested for duplicate names works when typed back", () => 
   const quoted = parseEventRequest(`remove event "Project sync" on ${addDays(tomorrow, 2)}`, state(twins));
   assert.deepEqual(quoted?.action, { type: "delete_event", eventId: "e2", title: "Project sync" });
 });
+
+// ------------------------------------------------------------------ dates from the user's words, Thursday Nov 5 3 PM New York
+
+const THURSDAY = "2026-11-05";
+const THU_NOW = new Date("2026-11-05T20:00:00Z");
+const WEEK: [string, string][] = [["Monday", "2026-11-09"], ["Tuesday", "2026-11-10"], ["Wednesday", "2026-11-11"], ["Thursday", "2026-11-05"],
+  ["Friday", "2026-11-06"], ["Saturday", "2026-11-07"], ["Sunday", "2026-11-08"]];
+const ny = { events: [], availability: { timeZone: "America/New_York" } } as unknown as Parameters<typeof eventFromIntent>[2];
+
+for (const [name, expected] of WEEK) {
+  test(`chat: ${name} from a Thursday is ${expected}`, () => {
+    assert.equal(parseDate(name, THURSDAY), expected);
+    const proposal = parseEventRequest(`Add a meeting called Sync ${name} 5-6pm`, ny, THU_NOW);
+    assert.equal(proposal?.action?.type === "add_event" ? proposal.action.input.date : null, expected);
+  });
+}
+
+test("chat: a weekday naming today means next week once its time has gone", () => {
+  const proposal = parseEventRequest("Add a meeting called Sync Thursday 10-11am", ny, THU_NOW);
+  assert.equal(proposal?.action?.type === "add_event" ? proposal.action.input.date : null, "2026-11-12");
+  assert.equal(parseDate("Thursday", THURSDAY, true), "2026-11-12");
+});
+
+test("chat: the user's words outrank the date the model sent", () => {
+  const params = { eventTitle: "Team meeting", eventDate: "2026-11-07", eventStart: "10:00", eventEnd: "11:00" };
+  const proposal = eventFromIntent("add_event", params, ny, "team meeting Monday 10-11 AM", THU_NOW);
+  assert.equal(proposal.action?.type === "add_event" ? proposal.action.input.date : null, "2026-11-09");
+  const noWords = eventFromIntent("add_event", params, ny, "that meeting we talked about", THU_NOW);
+  assert.equal(noWords.action?.type === "add_event" ? noWords.action.input.date : null, "2026-11-07");
+});

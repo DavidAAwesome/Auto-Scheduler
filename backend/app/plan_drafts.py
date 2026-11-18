@@ -25,7 +25,12 @@ FIELD_LABELS = {
     'title': 'name', 'minutes': 'length', 'deadline': 'deadline', 'dueTime': 'due time', 'date': 'date',
     'start': 'start time', 'end': 'end time', 'repeat.until': 'last date', 'repeat.startDate': 'first date',
     'repeat.weekdays': 'weekdays', 'priority': 'priority', 'earliestStart': 'earliest start', 'location': 'location',
+    'windows': 'preferred times',
 }
+DEFAULT_MIN_SESSION = 15
+UNCERTAIN_WITH_A_VALUE = {'start', 'end', 'date', 'deadline', 'dueTime', 'repeat.startDate', 'repeat.until'}  # "10" or "next Friday"
+NOT_FOR_TASKS = {'date', 'start', 'end', 'location', 'repeat.startDate', 'repeat.until', 'repeat.weekdays'}
+NOT_FOR_FIXED_EVENTS = {'minutes', 'deadline', 'dueTime', 'earliestStart'}  # flagged by the extractor, never asked about
 WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 
@@ -71,12 +76,21 @@ class PlanDraft(BaseModel):
         return (value or '').strip() or None
 
 
+class FitOption(BaseModel):
+    """A way out of a draft that cannot fit. `patch` is applied to the draft; nothing happens until the user picks it."""
+    model_config = ConfigDict(extra='forbid')
+    id: Literal['move_deadline', 'shorten', 'schedule_what_fits']
+    label: str
+    patch: dict = {}
+
+
 class DraftIssue(BaseModel):
     model_config = ConfigDict(extra='forbid')
     field: str
-    code: Literal['missing', 'ambiguous', 'unreadable', 'invalid', 'warning']
+    code: Literal['missing', 'ambiguous', 'unreadable', 'invalid', 'warning', 'wont_fit', 'past']
     question: str
     blocking: bool = True
+    options: list[FitOption] = []
 
 
 class DraftView(BaseModel):
@@ -98,7 +112,8 @@ def _iso(value: str | None) -> date | None:
 
 def short_date(value: date | None) -> str:
     """"Fri, Nov 20" for questions and notes."""
-    return value.strftime('%a, %b %-d') if value else 'that date'
+    # No '%-d': it removes the leading zero on Mac/Linux but raises ValueError on Windows.
+    return f'{value:%a, %b} {value.day}' if value else 'that date'
 
 
 def clock(minute: int) -> str:
@@ -116,8 +131,34 @@ def parse_local_instant(value: str | None, zone: ZoneInfo) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=zone)
 
 
+def too_short_to_split(minutes: int, min_session: int | None = None) -> bool:
+    """True when the work cannot make two sessions of the shortest allowed length."""
+    return minutes < 2 * (min_session or DEFAULT_MIN_SESSION)
+
+
+def _has_value(draft: PlanDraft, field: str) -> bool:
+    value = draft.repeat and {'repeat.startDate': draft.repeat.startDate, 'repeat.until': draft.repeat.until,
+                              'repeat.weekdays': draft.repeat.weekdays}.get(field) if field.startswith('repeat.') \
+        else getattr(draft, field, None)
+    return value not in (None, '', [])
+
+
+def _settled_flags(draft: PlanDraft) -> PlanDraft:
+    """Flags from reading the text are only a starting point: a field that holds a value was read, whoever filled it
+    in. AM/PM and vague dates stay flagged, because there the value itself is what is in doubt."""
+    unreadable = [f for f in draft.unreadable if not _has_value(draft, f)]
+    ambiguous = [f for f in draft.ambiguous if f in UNCERTAIN_WITH_A_VALUE or not _has_value(draft, f)]
+    return draft.model_copy(update={'unreadable': unreadable, 'ambiguous': ambiguous})
+
+
+def _past(day: date, minute: int, now: datetime, zone: ZoneInfo) -> bool:
+    local = now.astimezone(zone)
+    return (day, minute) <= (local.date(), local.hour * 60 + local.minute)
+
+
 def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set[str] | None = None) -> DraftView:
-    """Business rules for one draft. Blocking issues are questions the user must answer first."""
+    """Business rules for one draft, using its current values. Blocking issues are questions the user must answer first."""
+    draft = _settled_flags(draft)
     issues: list[DraftIssue] = []
     name = draft.title or 'this item'
     today = now.astimezone(zone).date()
@@ -126,9 +167,21 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
         if not any(i.field == field for i in issues):
             issues.append(DraftIssue(field=field, code=code, question=question, blocking=blocking))
 
+    # Preferred times are optional: without them an item can use any available time, so they never hold a draft up.
+    if 'windows' in {*draft.unreadable, *draft.ambiguous}:
+        ask('windows', f'The preferred times of "{name}" could not be read, so it can use any time you are available.',
+            'warning', blocking=False)
+    def skip(field: str) -> bool:
+        """Optional fields, and fields this kind of item doesn't have, are never worth stopping for."""
+        return field in {'windows', 'location'} or field in (NOT_FOR_FIXED_EVENTS if draft.kind == 'fixed_event' else NOT_FOR_TASKS)
+
     for field in draft.unreadable:
+        if skip(field):
+            continue
         ask(field, f'The {FIELD_LABELS.get(field, field)} of "{name}" could not be read. What is it?', 'unreadable')
     for field in draft.ambiguous:
+        if skip(field):
+            continue
         if field in {'start', 'end'}:
             value = draft.start if field == 'start' else draft.end
             shown = f'{(value // 60) % 12 or 12}:{value % 60:02d}' if value is not None else 'the time'
@@ -161,9 +214,8 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
         elif deadline is None:
             ask('deadline', f'When is "{name}" due?' if draft.kind == 'task'
                 else f'By when should "{name}" happen? (Give the last day it can take place.)')
-        elif deadline < today:
-            ask('deadline', f'"{name}" was due {deadline.isoformat()}, which has passed. Nothing new can be planned '
-                'before it; change the deadline or keep it to see it reported.', 'warning', blocking=False)
+        elif _past(deadline, 1440 if draft.dueTime is None else draft.dueTime, now, zone):
+            ask('deadline', f'The due date {deadline:%a, %b} {deadline.day} has passed.', 'past', blocking=False)
         earliest = parse_local_instant(draft.earliestStart, zone)
         if draft.earliestStart and earliest is None:
             ask('earliestStart', f'When may "{name}" start at the earliest?', 'invalid')
@@ -195,6 +247,8 @@ def review_draft(draft: PlanDraft, now: datetime, zone: ZoneInfo, known_ids: set
                     'invalid')
         elif first is None:
             ask('date', f'On what date is "{name}"?' if not draft.date else f'The date of "{name}" is not valid. Which date?')
+        elif _past(first, draft.end if draft.end is not None else 1440, now, zone):
+            ask('date', f'The date {first:%a, %b} {first.day} has passed.', 'past', blocking=False)
         if draft.start is None:
             ask('start', f'What time does "{name}" start?')
         if draft.end is None:
@@ -248,9 +302,10 @@ def draft_task_id(draft_id: str) -> str:
 def draft_task(draft: PlanDraft, all_draft_ids: set[str]) -> TaskOutput:
     """A ready task / flexible-event draft as a TaskOutput with id `draft:<id>` (never stored as-is)."""
     flexible_event = draft.kind == 'flexible_event'
-    split = draft.allowSplit if draft.allowSplit is not None else not flexible_event
     minutes = draft.minutes or 5
-    min_session = draft.minSessionMinutes or min(15, minutes)
+    split = (draft.allowSplit if draft.allowSplit is not None else not flexible_event) \
+        and not too_short_to_split(minutes, draft.minSessionMinutes)
+    min_session = draft.minSessionMinutes or min(DEFAULT_MIN_SESSION, minutes)
     max_session = draft.maxSessionMinutes or (minutes if (flexible_event or not split) else max(min_session, 60))
     return TaskOutput(
         id=draft_task_id(draft.id), done=False, title=draft.title or 'Untitled', deadline=draft.deadline,

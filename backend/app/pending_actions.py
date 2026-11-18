@@ -17,7 +17,7 @@ Cancel moves an open action to `cancelled` and changes nothing else.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from bson import ObjectId
@@ -33,10 +33,10 @@ from app.events import EventOutput
 from app.plan_drafts import PlanDraft, draft_task, review_all, summary
 from app.schedule_version import bump_schedule_version, current_schedule_version
 from app.scheduling_service import _create_drafts
-from app.workspace import TaskOutput, get_availability
+from app.workspace import TaskOutput, clock, get_availability, session_output, user_zone
 
 router = APIRouter(prefix='/actions', tags=['actions'])
-ActionType = Literal['delete_tasks', 'create_items']
+ActionType = Literal['delete_tasks', 'create_items', 'delete_breaks']
 ActionStatus = Literal['awaiting_confirmation', 'processing', 'succeeded', 'cancelled', 'failed']
 OPEN = ['awaiting_confirmation', 'failed']
 
@@ -70,6 +70,7 @@ class ActionResult(BaseModel):
     action: PendingAction
     duplicate: bool = False
     deletedTaskIds: list[str] = []
+    deletedSessionIds: list[str] = []
     tasks: list[TaskOutput] = []
     events: list[EventOutput] = []
     scheduleVersion: int | None = None
@@ -140,6 +141,25 @@ def propose_delete(db, user, task_ids: list[str], now: datetime) -> PendingActio
     return action_output(doc)
 
 
+def propose_delete_breaks(db, user, now: datetime) -> PendingAction:
+    """Every saved break. Automatic breaks are not saved, so they are not listed and cannot be deleted."""
+    owner = str(user['_id'])
+    zone = user_zone(db, user)
+    docs = list(db.sessions.find({'user_id': owner, 'type': 'break', 'status': 'saved'}))
+    if not docs:
+        raise HTTPException(422, 'You have no saved breaks to delete.')
+    spans = sorted((session_output(doc, zone) for doc in docs), key=lambda s: s.startAt)
+    count = len(spans)
+    text = f'Delete {count} saved break{"s" if count != 1 else ""}? Work can then be planned in {"that time" if count == 1 else "those times"}.'
+    doc = {'user_id': owner, 'type': 'delete_breaks', 'status': 'awaiting_confirmation',
+           'version': current_schedule_version(db, owner), 'summary': text,
+           'targets': [{'id': s.id, 'title': 'Break', 'detail': f'{date.fromisoformat(s.date):%a, %b} {int(s.date[8:])}, {clock(s.start)} – {clock(s.end % 1440)}'}
+                       for s in spans],
+           'session_count': count, 'payload': {'sessionIds': [s.id for s in spans]}, 'created_at': now, 'updated_at': now}
+    doc['_id'] = db.pending_actions.insert_one(doc).inserted_id
+    return action_output(doc)
+
+
 def propose_create(db, user, drafts: list[PlanDraft], batch_id: str, now: datetime) -> PendingAction:
     from zoneinfo import ZoneInfo
     owner = str(user['_id'])
@@ -178,6 +198,12 @@ def _execute(db, user, doc: dict, now: datetime, txn) -> dict:
             raise HTTPException(409, 'A task in this list no longer exists, so nothing was deleted. Ask again.')
         db.sessions.delete_many({'user_id': owner, 'task_id': {'$in': ids}}, session=txn)
         result = {'deletedTaskIds': ids, 'scheduleVersion': bump_schedule_version(db, owner, session=txn)}
+    elif doc['type'] == 'delete_breaks':
+        if current_schedule_version(db, owner, session=txn) != doc['version']:
+            raise HTTPException(409, 'Your schedule changed after this was proposed, so nothing was deleted. Ask again.')
+        ids = doc['payload']['sessionIds']
+        db.sessions.delete_many({'_id': {'$in': [ObjectId(s) for s in ids]}, 'user_id': owner, 'type': 'break'}, session=txn)
+        result = {'deletedSessionIds': ids, 'scheduleVersion': bump_schedule_version(db, owner, session=txn)}
     else:
         drafts = [PlanDraft(**d) for d in doc['payload']['drafts']]
         ids = {d.id for d in drafts}
@@ -237,6 +263,11 @@ def list_open(user=Depends(get_current_user), db=Depends(get_database)):
 @router.post('/delete-tasks', response_model=PendingAction, status_code=201)
 def delete_tasks(body: DeleteTasksRequest, user=Depends(get_current_user), db=Depends(get_database)):
     return propose_delete(db, user, body.taskIds, utc_now())
+
+
+@router.post('/delete-breaks', response_model=PendingAction, status_code=201)
+def delete_breaks(user=Depends(get_current_user), db=Depends(get_database)):
+    return propose_delete_breaks(db, user, utc_now())
 
 
 @router.post('/create-items', response_model=PendingAction, status_code=201)

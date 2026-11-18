@@ -12,7 +12,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 SessionType = Literal['work', 'break']
 SessionStatus = Literal['proposed', 'saved', 'completed', 'cancelled']
-SessionChange = Literal['retained', 'kept', 'new', 'truncated']
+SessionChange = Literal['retained', 'kept', 'new', 'truncated', 'derived']  # derived: an automatic break, never saved
 
 
 class LunchWindow(BaseModel):
@@ -142,7 +142,7 @@ class SchedulePreview(BaseModel):
     model_config = ConfigDict(extra='forbid')
     previewId: str
     status: Literal['proposed', 'applied']
-    mode: Literal['generate', 'repair', 'break', 'plan']
+    mode: Literal['generate', 'repair', 'break', 'plan', 'split']
     baseScheduleVersion: int
     generatedAt: AwareDatetime
     timeZone: str
@@ -162,6 +162,34 @@ class SchedulePreview(BaseModel):
     inputFingerprint: str
     proposedEvents: list[ProposedEvent] = []  # draft fixed events in the window (plan mode)
     horizonDays: int = 7
+
+
+class SplitOption(BaseModel):
+    """One way to divide the work of one or more tasks. `preview` is a complete stored preview, applied like any
+    other. The counts describe the split tasks' sessions in that preview, fixed ones included."""
+    model_config = ConfigDict(extra='forbid')
+    id: Literal['front_loaded', 'even', 'fewer_longer']
+    label: str
+    description: str
+    sessionCount: int
+    dayCount: int
+    longestMinutes: int
+    shortestMinutes: int
+    scheduledMinutes: int
+    unallocatedMinutes: int
+    lastEndAt: AwareDatetime | None
+    otherNewMinutes: int  # new work for tasks not being split in this preview
+    movedSessions: int  # saved work sessions of other tasks this preview moves or removes
+    preview: SchedulePreview
+
+
+class SplitOptions(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    taskIds: list[str]  # the tasks being split; draft tasks are `draft:<id>`
+    title: str
+    remainingMinutes: int
+    options: list[SplitOption]  # distinct valid options; the first is the default selection
+    notes: list[str]  # why an alternative is missing, or what limited the search
 
 
 class SavedSchedule(BaseModel):

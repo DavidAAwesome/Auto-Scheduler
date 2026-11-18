@@ -46,6 +46,16 @@ export function eventClash(events: CalendarEvent[], date: string, start: number,
 }
 
 /** How many times a repeating event happens in total (shown when creating a class schedule). */
+/** Why these times cannot be saved, or null. Shown in the form, so the disabled button is never a mystery. */
+export function eventTimeProblem(start: number, end: number) {
+  return Number.isFinite(start) && Number.isFinite(end) && end <= start ? "The event must end after it starts." : null;
+}
+
+/** Work sessions (not breaks) an event at these times would overlap. */
+export function overlappingWork<T extends { type: string; start: number; end: number; date: string }>(sessions: T[], event: CalendarEvent, start: number, end: number) {
+  return end > start ? sessions.filter(s => s.type === "work" && s.start < end && s.end > start && occursOn(event, s.date)) : [];
+}
+
 export function occurrenceCount(event: Pick<CalendarEvent, 'date' | 'repeat' | 'skipDates'>) {
   if (!event.repeat) return 1;
   let count = 0;
@@ -119,11 +129,17 @@ export function groupEvents(events: CalendarEvent[], today: string) {
   return { upcoming: mergeSpans(upcoming).sort(soonest), repeating, past: mergeSpans(past).sort((a, b) => soonest(b, a)) };
 }
 
-export interface Placed { lane: number; lanes: number }
+export interface Lane { lane: number; lanes: number }
+export interface Placed extends Lane { top: number; height: number }
+export const HOUR_HEIGHT = { desktop: 80, mobile: 64 };
+export const MIN_BLOCK_HEIGHT = 28;
+export const BLOCK_GAP = 2;
+/** Below this a block has room for its title only; the time is in its tooltip and card. */
+export const TWO_LINE_HEIGHT = 40;
 /** Side-by-side layout for overlapping blocks in one day column (classic calendar "lanes"). */
-export function layoutLanes<T extends { start: number; end: number }>(items: T[]): Map<T, Placed> {
+export function layoutLanes<T extends { start: number; end: number }>(items: T[]): Map<T, Lane> {
   const sorted = [...items].sort((a, b) => a.start - b.start || b.end - a.end);
-  const result = new Map<T, Placed>();
+  const result = new Map<T, Lane>();
   let cluster: T[] = [];
   let laneEnds: number[] = [];
   let clusterEnd = -1;
@@ -138,4 +154,37 @@ export function layoutLanes<T extends { start: number; end: number }>(items: T[]
   }
   flush();
   return result;
+}
+
+/**
+ * Lanes plus a pixel top and height for each block. Every block is at least MIN_BLOCK_HEIGHT tall with BLOCK_GAP between
+ * neighbours. A short block (a 10-minute break is 13px) takes its extra height from the longer block above it, so what
+ * follows still starts at its true time. Items only move down when there is nothing left to take from.
+ */
+export function layoutBlocks<T extends { start: number; end: number }>(items: T[], hourHeight: number): Map<T, Placed> {
+  const lanes = layoutLanes(items);
+  const boxes = [...items].sort((a, b) => a.start - b.start || b.end - a.end).map(item => {
+    const { lane, lanes: count } = lanes.get(item)!;
+    return { item, lane, count, top: (item.start / 60) * hourHeight, bottom: (item.end / 60) * hourHeight };
+  });
+  type Box = (typeof boxes)[number];
+  const sameColumn = (a: Box, b: Box) => a.lane / a.count < (b.lane + 1) / b.count && b.lane / b.count < (a.lane + 1) / a.count;
+  boxes.forEach((box, index) => {
+    const before = boxes.slice(0, index).filter(other => sameColumn(other, box));
+    const wanted = MIN_BLOCK_HEIGHT + BLOCK_GAP - (box.bottom - box.top);
+    if (wanted > 0 && before.length) {
+      const free = Math.min(...before.map(other => box.top - other.top - MIN_BLOCK_HEIGHT - BLOCK_GAP));
+      const rise = Math.min(wanted, Math.max(0, free));
+      box.top -= rise;
+      for (const other of before) other.bottom = Math.min(other.bottom, box.top - BLOCK_GAP);
+    }
+    box.bottom = Math.max(box.bottom, box.top + MIN_BLOCK_HEIGHT);
+  });
+  boxes.forEach((box, index) => {
+    const before = boxes.slice(0, index).filter(other => sameColumn(other, box));
+    for (const other of before) if (other.bottom > box.top - BLOCK_GAP) other.bottom = Math.max(other.top + MIN_BLOCK_HEIGHT, box.top - BLOCK_GAP);
+    if (before.length) box.top = Math.max(box.top, ...before.map(other => other.bottom + BLOCK_GAP));
+    box.bottom = Math.max(box.bottom, box.top + MIN_BLOCK_HEIGHT);
+  });
+  return new Map(boxes.map(({ item, lane, count, top, bottom }) => [item, { lane, lanes: count, top: Math.round(top), height: Math.round(bottom) - Math.round(top) }]));
 }

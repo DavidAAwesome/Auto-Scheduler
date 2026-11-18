@@ -3,6 +3,8 @@
 - `saved_schedule` reads the authoritative saved schedule (canonical sessions, UTC timestamps).
 - `build_preview` runs the engine in generate, repair or break mode, validates the result
   independently and stores it as a proposal. It never changes saved sessions.
+- `build_split_options` runs the same engine once per split strategy for chosen tasks and stores each
+  distinct result as its own preview, so choosing an option is choosing a preview to Apply.
 - `apply_preview` re-validates against current data inside a transaction, rejects stale or changed
   previews, and persists atomically. Repeated Apply of the same preview is idempotent.
 """
@@ -18,15 +20,15 @@ from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
 
 from app.events import blocks_time, event_output, occurs_on
-from app.plan_drafts import DRAFT_PREFIX, PlanDraft, draft_event, draft_event_doc, draft_task
+from app.plan_drafts import DRAFT_PREFIX, PlanDraft, draft_event, draft_event_doc, draft_task, too_short_to_split
 from app.schedule_model import (
     AllocationReason, ConflictChoice, ConflictItem, DaySummary, ProposedEvent, SavedSchedule, ScheduleConflict,
-    SchedulePreferences, SchedulePreview, ScheduleSession, SessionRemoval, TaskAllocation,
+    SchedulePreferences, SchedulePreview, ScheduleSession, SessionRemoval, SplitOption, SplitOptions, TaskAllocation,
 )
 from app.schedule_version import bump_schedule_version, current_schedule_version
 from app.scheduling_engine import (
-    HEURISTIC_NOTE, MAX_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_PER_TASK, Busy, EngineTask, Existing, Prefs, fingerprint,
-    from_abs, local_parts, local_span, local_to_abs, plan_schedule, resolve_windows, to_abs,
+    HEURISTIC_NOTE, MAX_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_PER_TASK, SPLIT_STRATEGIES, Busy, EngineTask, Existing,
+    Prefs, fingerprint, from_abs, local_parts, local_span, local_to_abs, plan_schedule, resolve_windows, to_abs,
 )
 from app.scheduling_validator import EventRef, SavedRef, ValidationError, validate_preview
 from app.workspace import (
@@ -200,9 +202,8 @@ def _existing_model(item: Existing, zone, version) -> ScheduleSession:
                            startAt=from_abs(item.start), endAt=from_abs(item.end), date=day, start=start, end=end)
 
 
-PLAN_NOTE = ('Search limits: earliest-fit in priority order, then at most {attempts} local repairs '
-             '({per_task} per task) over the next {days} days. Unplaced work means no plan was found within these '
-             'limits, not that none exists, unless a reason says it is impossible.')
+PLAN_NOTE = ('AutoPlan looked over the next {days} days, earliest free time first in priority order, and tried up to '
+             '{attempts} rearrangements ({per_task} per task).')
 
 
 def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, request: dict,
@@ -210,13 +211,13 @@ def run_engine(ctx: Context, now: datetime, horizon_days: int, mode: str, reques
     now_min = to_abs(now)
     requested_break = None
     if request.get('breakMinutes'):
-        # On the planner's 5-minute grid, like every other session: at 9:36 a break "now" runs 9:40-9:55. (Starting it
-        # at 9:36 put it before the planning window and the preview failed validation.)
-        start = -(-now_min // 5) * 5
-        requested_break = (start, start + int(request['breakMinutes']))
+        # A break "now" starts at the current minute, even between five-minute marks: the planning window starts at
+        # now, so it validates, and new work after it goes back on the grid.
+        requested_break = (now_min, now_min + int(request['breakMinutes']))
     result = plan_schedule(engine_tasks(ctx), ctx.availability, engine_prefs(ctx.prefs), ctx.events, ctx.existing,
                            now_min, horizon_days, 'generate' if mode == 'generate' else 'repair',
-                           requested_break, request.get('notBefore') or None, displace)
+                           requested_break, request.get('notBefore') or None, displace,
+                           (tuple(request['splitTaskIds']), request['splitStrategy']) if request.get('splitTaskIds') else None)
     sessions = [_session_model(p, ctx.zone, ctx.version, i) for i, p in enumerate(result.sessions, 1)]
     removed = [SessionRemoval(session=_existing_model(r.session, ctx.zone, ctx.version), reason=r.reason,
                               newEndAt=from_abs(r.new_end) if r.new_end is not None else None)
@@ -293,6 +294,12 @@ def build_preview(user, db, now: datetime, horizon_days: int = 7, mode: str = 'g
             if task_id not in open_ids:
                 raise HTTPException(404, 'Task not found.')
         request['notBefore'] = {task_id: to_abs(moment) for task_id, moment in sorted(moves.items())}
+    preview = validated_preview(ctx, now, horizon_days, mode, request)
+    store_preview(db, ctx, preview, now, horizon_days, mode, request)
+    return preview
+
+
+def validated_preview(ctx: Context, now: datetime, horizon_days: int, mode: str, request: dict) -> SchedulePreview:
     preview = run_engine(ctx, now, horizon_days, mode, request)
     try:
         validate_preview(preview, tasks=ctx.tasks, availability=ctx.availability, prefs=ctx.prefs,
@@ -300,6 +307,11 @@ def build_preview(user, db, now: datetime, horizon_days: int = 7, mode: str = 'g
     except ValidationError as exc:
         # The engine produced something the independent validator rejects: never show it as valid.
         raise HTTPException(500, f'The scheduler produced an invalid schedule ({exc.code}): {exc.message}') from exc
+    return preview
+
+
+def store_preview(db, ctx: Context, preview: SchedulePreview, now: datetime, horizon_days: int, mode: str,
+                  request: dict) -> None:
     preview_id = ObjectId()
     preview.previewId = str(preview_id)
     db.schedule_previews.insert_one({
@@ -307,7 +319,119 @@ def build_preview(user, db, now: datetime, horizon_days: int = 7, mode: str = 'g
         'horizon_days': horizon_days, 'request': request, 'base_version': ctx.version,
         'input_fingerprint': preview.inputFingerprint, 'preview': preview.model_dump(mode='json'),
     })
-    return preview
+
+
+SPLIT_TEXT = {
+    'front_loaded': ('Front-loaded', 'Starts right away and finishes as early as your schedule allows.'),
+    'even': ('Spread evenly', 'About the same amount of work on evenly spaced days up to the deadline.'),
+    'fewer_longer': ('Fewer, longer blocks', 'Only long, unbroken blocks, at most one a day where the days allow it.'),
+}
+
+
+def _minutes(session: ScheduleSession) -> int:
+    return to_abs(session.endAt) - to_abs(session.startAt)
+
+
+def _split_sessions(preview: SchedulePreview, task_ids: set[str]) -> list[ScheduleSession]:
+    return [s for s in preview.sessions if s.taskId in task_ids and s.type == 'work']
+
+
+def _split_option(strategy: str, preview: SchedulePreview, task_ids: set[str]) -> SplitOption:
+    mine = _split_sessions(preview, task_ids)
+    lengths = [_minutes(s) for s in mine]
+    label, description = SPLIT_TEXT[strategy]
+    return SplitOption(
+        id=strategy, label=label, description=description, sessionCount=len(mine), dayCount=len({s.date for s in mine}),
+        longestMinutes=max(lengths, default=0), shortestMinutes=min(lengths, default=0), scheduledMinutes=sum(lengths),
+        unallocatedMinutes=sum(a.unallocatedMinutes for a in preview.tasks if a.taskId in task_ids),
+        lastEndAt=max((s.endAt for s in mine), default=None),
+        otherNewMinutes=sum(_minutes(s) for s in preview.sessions
+                            if s.type == 'work' and s.change == 'new' and s.taskId not in task_ids),
+        movedSessions=sum(1 for r in preview.removed if r.session.type == 'work' and r.session.taskId not in task_ids),
+        preview=preview)
+
+
+def _split_problem(task: TaskOutput, ctx: Context, now: datetime, alone: bool = False) -> str | None:
+    """Why this task cannot be split, or None. `alone`: it is the only task asked about, so no name is needed."""
+    if task.done or task.minutes <= task.completedMinutes:
+        return f'"{task.title}" has no work left to split.'
+    if task.kind == 'flexible_event':
+        return f'"{task.title}" is a flexible event, so it has no work sessions to split.'
+    remaining = task.minutes - task.completedMinutes
+    if too_short_to_split(remaining, task.minSessionMinutes):
+        name = 'This task' if alone else f'"{task.title}"'
+        return f"{name} is too short to split, so it'll be one {remaining}-minute session."
+    if not task.allowSplit:
+        return f'Splitting is off for "{task.title}". Turn it on in the task to compare options.'
+    if task_due(task, ctx.zone) <= to_abs(now):
+        return f'The deadline for "{task.title}" has passed. Change it to plan this work.'
+    return None
+
+
+def _joined(titles: list[str]) -> str:
+    return titles[0] if len(titles) == 1 else f"{', '.join(titles[:-1])} and {titles[-1]}"
+
+
+def build_split_options(user, db, now: datetime, task_ids: list[str], drafts: list[PlanDraft] | None = None,
+                        batch_id: str | None = None) -> SplitOptions:
+    """Previews of the same work divided in different shapes, for saved tasks or for reviewed drafts (every task
+    draft is split, and Apply saves the drafts with the option). All times come from the engine, and each option
+    passes the independent validator and Apply's staleness checks like any other preview.
+
+    The plan always spans the longest window: a shorter one would drop other tasks' saved sessions beyond it, and
+    the shapes need the days up to the deadline. An alternative is left out when it schedules any task less
+    than front-loaded does, when it repeats an earlier option, or when "fewer" would not actually be fewer."""
+    base_request: dict = draft_request(drafts, batch_id or '') if drafts is not None else {}
+    ctx = load_context(user, db, now, MAX_HORIZON_DAYS, drafts=stored_drafts(base_request))
+    by_id = {t.id: t for t in ctx.tasks}
+    if drafts is not None:
+        task_ids = [t.id for t in ctx.tasks if t.id.startswith(DRAFT_PREFIX) and t.kind == 'task']
+    if any(task_id not in by_id for task_id in task_ids):
+        raise HTTPException(404, 'Task not found.')
+    unique_ids = list(dict.fromkeys(task_ids))
+    problems = {task_id: _split_problem(by_id[task_id], ctx, now, len(unique_ids) == 1) for task_id in unique_ids}
+    targets = [task_id for task_id, problem in problems.items() if problem is None]
+    notes = [problem for problem in problems.values() if problem]
+    if not targets:
+        raise HTTPException(422, notes[0] if notes else 'There are no tasks to split.')
+    title = _joined([by_id[task_id].title for task_id in targets])
+    split_ids = set(targets)
+    mode = 'split' if drafts is None else 'plan'  # plan previews also save the drafts on Apply
+
+    requests = {s: {**base_request, 'splitTaskIds': targets, 'splitStrategy': s} for s in SPLIT_STRATEGIES}
+    previews = {s: validated_preview(ctx, now, MAX_HORIZON_DAYS, mode, requests[s]) for s in SPLIT_STRATEGIES}
+    base = previews['front_loaded']
+    if not any(s.change == 'new' for s in _split_sessions(base, split_ids)):
+        reasons = [r.message for a in base.tasks if a.taskId in split_ids for r in a.reasons]
+        why = ' '.join(reasons) or 'Locked or in-progress sessions already cover its work.'
+        raise HTTPException(422, f'There is nothing to split for {title}. {why}')
+
+    def shape(preview: SchedulePreview) -> list[tuple]:
+        return [(s.startAt, s.endAt) for s in _split_sessions(preview, split_ids)]
+
+    short = {a.taskId: a.unallocatedMinutes for a in base.tasks}
+    kept = {'front_loaded': base}
+    for strategy in SPLIT_STRATEGIES[1:]:
+        preview = previews[strategy]
+        label = SPLIT_TEXT[strategy][0]
+        worse = next((a for a in preview.tasks if a.unallocatedMinutes > short.get(a.taskId, 0)), None)
+        same = next((s for s, other in kept.items() if shape(other) == shape(preview)), None)
+        if worse:
+            notes.append(f'{label} is not offered: it would leave more of "{worse.title}" unscheduled.')
+        elif same:
+            notes.append(f'{label} gives the same sessions as {SPLIT_TEXT[same][0].lower()} here.')
+        elif strategy == 'fewer_longer' and any(len(_split_sessions(preview, split_ids)) > len(_split_sessions(other, split_ids))
+                                                for other in kept.values()):
+            notes.append(f'{label} is not offered: it would not use fewer sessions here.')
+        else:
+            kept[strategy] = preview
+    if any(task_due(by_id[task_id], ctx.zone) > to_abs(base.windowEnd) for task_id in targets):
+        notes.append(f'The deadline is more than {MAX_HORIZON_DAYS} days away, so options only use the next '
+                     f'{MAX_HORIZON_DAYS} days.')
+    for strategy, preview in kept.items():
+        store_preview(db, ctx, preview, now, MAX_HORIZON_DAYS, mode, requests[strategy])
+    return SplitOptions(taskIds=targets, title=title, remainingMinutes=sum(by_id[t].minutes - by_id[t].completedMinutes for t in targets),
+                        options=[_split_option(s, p, split_ids) for s, p in kept.items()], notes=notes)
 
 
 def owned_preview(db, user, preview_id: str, session=None) -> dict:
@@ -326,6 +450,17 @@ def stored_preview(doc: dict) -> SchedulePreview:
 
 
 # ---------------------------------------------------------------- saved schedule / apply
+
+def remove_saved_auto_breaks(db, user) -> int:
+    """One-time cleanup for this user: automatic breaks are no longer stored, and older saved ones go stale as soon as
+    the work around them changes. Breaks the user asked for are kept. Safe to run on every load."""
+    owner = str(user['_id'])
+    removed = db.sessions.delete_many({'user_id': owner, 'type': 'break', 'source': 'auto',
+                                       'locked': {'$ne': True}}).deleted_count
+    if removed:
+        bump_schedule_version(db, owner)
+    return removed
+
 
 def saved_schedule(user, db, session=None) -> SavedSchedule:
     owner = str(user['_id'])
@@ -383,8 +518,8 @@ def _apply(user, db, preview_id: str, now: datetime, txn):
             raise HTTPException(409, 'A session this preview replaces has changed. Generate a new preview.')
     created = []
     for proposed in preview.sessions:
-        if proposed.change != 'new':
-            continue
+        if proposed.change != 'new' or (proposed.type == 'break' and proposed.source == 'auto'):
+            continue  # an automatic break in a preview stored before they stopped being saved
         created.append({
             '_id': ObjectId(), 'user_id': owner, 'task_id': id_map.get(proposed.taskId, proposed.taskId),
             'type': proposed.type, 'status': 'saved',
@@ -488,7 +623,7 @@ def schedule_snapshot(user, db, now: datetime, preview_id: str | None = None, da
         'todaySavedSessions': [describe(s) for s in window if s.date == today],
         'pendingPreview': None if preview is None else {
             'note': 'PROPOSED, NOT SAVED. Only Apply saves it.',
-            'sessions': [describe(s) for s in preview.sessions if s.change == 'new'],
+            'sessions': [describe(s) for s in preview.sessions if s.change in {'new', 'derived'}],
             'unallocated': [{'task': a.title, 'minutes': a.unallocatedMinutes, 'reasons': [r.message for r in a.reasons]}
                             for a in preview.tasks if a.unallocatedMinutes],
             'conflicts': [c.message for c in preview.conflicts],

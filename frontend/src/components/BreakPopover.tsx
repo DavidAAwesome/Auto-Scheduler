@@ -28,7 +28,7 @@ export default function BreakPopover({ session, anchor, onClose }: { session: Sc
       <dl>
         <div><dt>When</dt><dd>{longDate(session.date)}</dd></div>
         <div><dt>Time</dt><dd>{clock12(session.start)} – {clock12(session.end % 1440)} · {duration(session.end - session.start)}</dd></div>
-        <div><dt>Placed by</dt><dd>{session.locked ? "You asked for it" : "The scheduler, after a long stretch of work"}</dd></div>
+        <div><dt>Placed by</dt><dd>{session.locked ? "You asked for it" : "The scheduler"}</dd></div>
       </dl>
       {error && <p role="alert" className="form-error">{error}</p>}
       <div className="task-popover-actions">

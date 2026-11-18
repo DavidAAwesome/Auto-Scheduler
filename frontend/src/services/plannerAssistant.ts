@@ -1,4 +1,4 @@
-import type { CalendarConnection, CalendarEvent, Availability, PreferenceChange, SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { CalendarConnection, CalendarEvent, Availability, PreferenceChange, SchedulePreferences, SchedulePreview, Task, WorkSession } from "../types/models.ts";
 import type { AssistantCommand } from "./assistantCommands.ts";
 import type { PendingEventAction } from "./eventCommands.ts";
 import { formatDate } from "../utils/dates.ts";
@@ -28,6 +28,7 @@ export type AssistantContext = {
   events?: CalendarEvent[];
   availability: Availability | null;
   schedulePreview: SchedulePreview | null;
+  preferences?: SchedulePreferences;
 };
 
 const PROVIDER = { google: "Google Calendar", outlook: "Outlook" } as const;
@@ -77,7 +78,7 @@ export function replyToPrompt(prompt: string, context: AssistantContext, id: str
 
   if (/today|due today/.test(text)) {
     // Same agenda as the calendar and sidebar: saved and proposed sessions and breaks, with deadlines kept separate.
-    const state = { tasks: context.tasks, sessions: context.sessions, events: context.events ?? [], schedulePreview: context.schedulePreview };
+    const state = { tasks: context.tasks, sessions: context.sessions, events: context.events ?? [], schedulePreview: context.schedulePreview, preferences: context.preferences };
     return { id, role: "assistant", text: todayText(todayAgenda(state, today), today, zone, context.tasks) };
   }
 

@@ -1,33 +1,43 @@
-import type { CalendarEvent, ProposedEvent, SchedulePreview, ScheduleSession, Task, TaskAllocation } from '../types/models.ts';
+import type { CalendarEvent, ProposedEvent, SchedulePreferences, SchedulePreview, ScheduleSession, SplitOption, SplitOptions, Task, TaskAllocation } from '../types/models.ts';
 import { addDays } from './dates.ts';
+import { DEFAULT_PREFERENCES } from '../types/models.ts';
 import { clock12, longDate } from './calendar.ts';
+import { derivedBreaks, type BreakContext } from './breaks.ts';
 import { busyOccurrencesOn, occurrencesOn } from './events.ts';
 
 export const timeRange = (start: number, end: number) => `${clock12(start)}–${clock12(end % 1440)}`;
+/** The engine's reason for a saved session that a split option replaces. */
+const SPLIT_REPLACED = 'Replaced by this split option.';
 const minutesLabel = (minutes: number) => (minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}` : `${minutes} min`);
 
 /** How a session is drawn: saved, a proposal that Apply would add, or a saved session Apply would remove. */
 export type CalendarItemKind = 'saved' | 'proposed' | 'removed';
 export interface CalendarItem { session: ScheduleSession; kind: CalendarItemKind; reason?: string }
 
+/** New in a preview: sessions Apply saves, and the automatic breaks that go with them (which it does not). */
+const isProposal = (s: ScheduleSession) => s.change === 'new' || s.change === 'derived';
+const byTime = (a: ScheduleSession, b: ScheduleSession) => a.startAt.localeCompare(b.startAt) || a.endAt.localeCompare(b.endAt);
+
 /**
  * The single list of sessions that the calendar, Today's Tasks and chat show.
  * Without a preview it is the saved schedule. With one, the preview's complete future schedule replaces the saved
  * sessions it covers, and saved sessions it would delete are kept as "removed" ghosts so nothing changes silently.
+ * With `breaks`, automatic breaks are added from the sessions shown (they are not saved).
  */
-export function calendarSessions(sessions: ScheduleSession[], preview: SchedulePreview | null): CalendarItem[] {
+export function calendarSessions(sessions: ScheduleSession[], preview: SchedulePreview | null, breaks?: BreakContext): CalendarItem[] {
   const live = sessions.filter(s => s.status !== 'cancelled');
-  if (!preview) return live.map(session => ({ session, kind: 'saved' }));
+  const withBreaks = (shown: ScheduleSession[]) => (breaks ? [...shown, ...derivedBreaks(shown, breaks)] : shown);
+  if (!preview) {
+    return withBreaks(live).sort(byTime).map(session => ({ session, kind: 'saved' }));
+  }
   const covered = new Set(preview.sessions.filter(s => s.change !== 'new').map(s => s.id));
   const removed = new Map(preview.removed.filter(r => !r.newEndAt).map(r => [r.session.id, r.reason]));
   const items: CalendarItem[] = [];
-  for (const session of live) {
-    if (covered.has(session.id)) continue;
-    if (removed.has(session.id)) items.push({ session, kind: 'removed', reason: removed.get(session.id) });
-    else items.push({ session, kind: 'saved' });
-  }
-  for (const session of preview.sessions) items.push({ session, kind: session.change === 'new' ? 'proposed' : 'saved', reason: session.reason ?? undefined });
-  return items.sort((a, b) => a.session.startAt.localeCompare(b.session.startAt) || a.session.endAt.localeCompare(b.session.endAt));
+  const staying = live.filter(s => !covered.has(s.id) && !removed.has(s.id));
+  for (const session of live) if (removed.has(session.id)) items.push({ session, kind: 'removed', reason: removed.get(session.id) });
+  for (const session of withBreaks(staying)) items.push({ session, kind: 'saved' });
+  for (const session of preview.sessions) items.push({ session, kind: isProposal(session) ? 'proposed' : 'saved', reason: session.reason ?? undefined });
+  return items.sort((a, b) => byTime(a.session, b.session));
 }
 
 export type AgendaItem =
@@ -41,11 +51,11 @@ export function proposedEventsOn(preview: SchedulePreview | null, date: string):
 }
 
 /** Today's plan: events and sessions happening today, with deadlines kept separate from work times. */
-export function todayAgenda(state: { sessions: ScheduleSession[]; events: CalendarEvent[]; tasks: Task[]; schedulePreview: SchedulePreview | null }, today: string) {
+export function todayAgenda(state: { sessions: ScheduleSession[]; events: CalendarEvent[]; tasks: Task[]; schedulePreview: SchedulePreview | null; preferences?: SchedulePreferences }, today: string) {
   const items: AgendaItem[] = [
     ...occurrencesOn(state.events, today).map(({ event }) => ({ kind: 'event' as const, start: event.start, end: event.end, event })),
     ...proposedEventsOn(state.schedulePreview, today).map(proposed => ({ kind: 'proposedEvent' as const, start: proposed.start, end: proposed.end, proposed })),
-    ...calendarSessions(state.sessions, state.schedulePreview)
+    ...calendarSessions(state.sessions, state.schedulePreview, { preferences: state.preferences ?? DEFAULT_PREFERENCES, events: state.events, tasks: state.tasks })
       .filter(item => item.session.date === today && item.kind !== 'removed')
       .map(item => ({ kind: 'session' as const, start: item.session.start, end: item.session.end, item })),
   ].sort((a, b) => a.start - b.start || a.end - b.end);
@@ -90,11 +100,22 @@ export function unscheduledLine(task: TaskAllocation) {
   return `${task.title}: ${task.unallocatedMinutes} min not placed. ${reasons || 'No valid slot was found.'}`;
 }
 
-const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break', plan: 'Proposed plan with your new items' };
+/** What a preview does to saved work. Sessions a split replaces are counted per task instead of listed one by one. */
+export function savedWorkChanges(preview: SchedulePreview) {
+  const replaced = new Map<string, number>();
+  const lines: string[] = [];
+  for (const r of preview.removed.filter(item => item.session.type === 'work')) {
+    if (r.reason === SPLIT_REPLACED) { replaced.set(r.session.title, (replaced.get(r.session.title) ?? 0) + 1); continue; }
+    lines.push(`${r.newEndAt ? 'Shortens' : 'Moves'} ${r.session.title} (${timeRange(r.session.start, r.session.end)}, ${longDate(r.session.date)}): ${r.reason}`);
+  }
+  return [...[...replaced].map(([title, count]) => `Replaces ${count} saved ${title} session${count === 1 ? '' : 's'} with this split.`), ...lines];
+}
+
+const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Proposed schedule', repair: 'Proposed repair', break: 'Proposed break', plan: 'Proposed plan with your new items', split: 'Proposed split' };
 
 /** Human summary of a preview: the same sessions the calendar draws, what moves and why, and what did not fit. */
 export function previewText(preview: SchedulePreview) {
-  const added = preview.sessions.filter(s => s.change === 'new');
+  const added = preview.sessions.some(s => s.change === 'new') ? preview.sessions.filter(isProposal) : [];
   const lines = [`${MODE_LABEL[preview.mode]}, ${longDate(preview.startDate)} – ${longDate(preview.endDate)}. Not saved yet.`];
   const byDay = new Map<string, ScheduleSession[]>();
   for (const s of added) byDay.set(s.date, [...(byDay.get(s.date) ?? []), s]);
@@ -110,8 +131,7 @@ export function previewText(preview: SchedulePreview) {
   if (!added.length) lines.push('No new sessions.');
   const busyDays = preview.days.filter(d => d.workMinutes > 0);
   if (busyDays.length > 1) lines.push(`Work by day: ${busyDays.map(d => `${longDate(d.date)} ${minutesLabel(d.workMinutes)}`).join('; ')}.`);
-  const moved = preview.removed.filter(r => r.session.type === 'work');
-  for (const r of moved) lines.push(`${r.newEndAt ? 'Shortens' : 'Moves'} ${r.session.title} (${timeRange(r.session.start, r.session.end)}, ${longDate(r.session.date)}): ${r.reason}`);
+  lines.push(...savedWorkChanges(preview));
   for (const c of preview.conflicts) lines.push(`Conflict: ${c.message}`);
   const unscheduled = preview.tasks.filter(t => t.unallocatedMinutes > 0);
   if (unscheduled.length) {
@@ -122,6 +142,51 @@ export function previewText(preview: SchedulePreview) {
     lines.push('All remaining work fits.');
   }
   return lines.join('\n');
+}
+
+/** The split options to show: only while the calendar is previewing one of them, so any other preview replaces them. */
+export function activeSplitOptions(split: SplitOptions | null, preview: SchedulePreview | null) {
+  return split?.options.some(o => o.preview.previewId === preview?.previewId) ? split : null;
+}
+
+/** Drafts usually come first in the review area, but they would push split options and Apply out of sight. */
+export function draftsBeforePreview(split: SplitOptions | null, preview: SchedulePreview | null) {
+  return activeSplitOptions(split, preview) === null;
+}
+
+/** The split tasks' sessions in an option, including any fixed ones the option works around. */
+export function splitOptionSessions(option: SplitOption, taskIds: string[]) {
+  return option.preview.sessions.filter(s => s.taskId !== null && taskIds.includes(s.taskId) && s.type === 'work');
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/** One line comparing an option: how many sessions, across how many days, how long, and when it finishes. */
+export function splitOptionSummary(option: SplitOption) {
+  const length = option.longestMinutes === option.shortestMinutes
+    ? minutesLabel(option.longestMinutes)
+    : `${minutesLabel(option.shortestMinutes)}–${minutesLabel(option.longestMinutes)}`;
+  return `${plural(option.sessionCount, 'session')} over ${plural(option.dayCount, 'day')} · ${length} each`;
+}
+
+/** Chat summary of the options. The times stay in the panel and on the calendar, which show the same sessions. */
+export function splitOptionsText(split: SplitOptions) {
+  const count = split.options.length;
+  const lines = [count > 1
+    ? `Here are ${count} ways to split ${split.title}. Not saved yet. Pick one above the calendar, then Apply below it:`
+    : `I found one way to split ${split.title}. It’s on the calendar and not saved yet:`];
+  for (const option of split.options) lines.push(`• ${option.label}: ${splitOptionSummary(option)}`);
+  lines.push(...split.notes);
+  return lines.join('\n');
+}
+
+/** What else choosing this option does, so a side effect is seen before Apply. */
+export function splitOptionWarnings(option: SplitOption) {
+  const lines: string[] = [];
+  if (option.unallocatedMinutes) lines.push(`${minutesLabel(option.unallocatedMinutes)} can’t be placed before the deadline.`);
+  if (option.otherNewMinutes) lines.push(`Also schedules ${minutesLabel(option.otherNewMinutes)} of your other tasks.`);
+  if (option.movedSessions) lines.push(`Moves ${plural(option.movedSessions, 'saved session')} of other tasks.`);
+  return lines;
 }
 
 /** "Why didn't X fit?" from the pending preview, or the saved schedule's coverage when there is none. */

@@ -32,6 +32,7 @@ Intent = Literal[
     'show_plan',
     'busy_time',
     'generate_schedule',
+    'split_options',
     'explain_unscheduled',
     'request_break',
     'replan',
@@ -39,6 +40,7 @@ Intent = Literal[
     'update_preferences',
     'add_task',
     'delete_task',
+    'delete_breaks',
     'add_event',
     'delete_event',
     'clarify',
@@ -107,7 +109,8 @@ def utc_now() -> datetime:
 SYSTEM_PROMPT = """You are AutoPlan's scheduling assistant. Answer only from the snapshot JSON.
 Facts you must keep apart:
 - A task's dueDate/dueTime is its DEADLINE. It is not when the work happens. A task due tomorrow may have work today.
-- Work happens only in sessions. "savedSessions" are saved on the calendar (status saved or completed). Breaks are sessions of type "break".
+- Work happens only in sessions. "savedSessions" are saved on the calendar (status saved or completed). A "break" session there is one the user asked for.
+- Short automatic breaks between work sessions are shown on the calendar but are not in savedSessions, so never say there are none.
 - "pendingPreview" is a PROPOSED schedule that is NOT saved. Say so whenever you mention it.
 - "Today's tasks" or "what's my plan today" means today's sessions (todaySavedSessions and, if present, pendingPreview sessions for today), plus tasks due today listed separately as deadlines.
 Never invent tasks, events, times or statuses. Never say you generated, saved, moved or scheduled anything: you cannot. For a change,
@@ -116,10 +119,12 @@ Intents: show_today, show_plan, busy_time, explain_unscheduled (questions answer
 request_break (params.breakMinutes, break starting now), replan (repair the saved plan), move_task (params.taskId from the snapshot and
 params.notBefore as an ISO-8601 time with offset in the user's timezone), clarify (ask ONE short question when the request is ambiguous,
 e.g. which task, or how long a break), update_preferences (the user states a lasting preference; see the personalization
-section), none (answer a question yourself from the snapshot).
+section), split_options (the user asks for different ways to split or divide work; params.taskId from the snapshot when one task
+is named; the application builds the options, so never describe sessions or times yourself), none (answer a question yourself from the snapshot).
 Task and event management intents:
 - add_task: when the user asks to create a task. Extract params.taskTitle, params.taskDeadline (YYYY-MM-DD), and params.taskDuration (minutes).
 - delete_task: when the user asks to delete a task. Use params.taskId from the snapshot.
+- delete_breaks: when the user asks to delete, remove or clear their breaks. Never use delete_task for this.
 - add_event: when the user asks to create a calendar event. Extract params.eventTitle, params.eventDate (YYYY-MM-DD, resolve
   today/tomorrow/weekdays from the snapshot's "today"), params.eventStart and params.eventEnd (24-hour HH:MM). If the end is not
   given, use one hour after the start. The app asks the user to confirm before saving.

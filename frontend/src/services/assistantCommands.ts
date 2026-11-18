@@ -1,13 +1,13 @@
-import type { ActionTarget, AIProfile, InterpretResult, PendingAction, PendingChoice, PreferenceChange, SchedulePreferences, SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { ActionTarget, AIProfile, InterpretResult, PendingAction, PendingChoice, PreferenceChange, SchedulePreferences, SchedulePreview, SplitOptions, Task, WorkSession } from "../types/models.ts";
 import { DEFAULT_AI_PROFILE } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
-import { draftsReply } from "./planEntry.ts";
+import { draftsReply, looksLikePlanEntry } from "./planEntry.ts";
 import { eventFromIntent, nextWeekday, parseDate, parseEventRequest, parseTimes, type EventProposal, type PendingEventAction } from "./eventCommands.ts";
 import { clock12, dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
 import { addDays } from "../utils/dates.ts";
 import { zonedInstant } from "../utils/planning.ts";
-import { busyDayText, busyTimeText, calendarSessions, explainText, previewText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
+import { busyDayText, busyTimeText, calendarSessions, explainText, previewText, splitOptionsText, timeRange, todayAgenda, todayText } from "../utils/schedulePreview.ts";
 import { accountTimeZone } from "../utils/timeZones.ts";
 
 /** Actions the chat can run. Each one calls the same workspace method the calendar uses. */
@@ -32,12 +32,16 @@ export type ParsedRequest =
   /** "What do I have on Saturday?" / "Is Friday at 3pm free?": that day's busy time, read from the calendar. */
   | { command: "busy_day"; date: string; at: number | null }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
+  /** Compare ways to divide saved tasks, or the task drafts under review. */
+  | { command: "split_options"; target: string[] | "drafts" }
   | { command: "update_preferences"; change: PreferenceChange; summary: string }
   | { command: "propose_event"; action: PendingEventAction; summary: string }
   /** The user's own words, read by the same parser as any plan entry (so "due Friday at noon" keeps its time). */
   | { command: "add_task"; text: string }
   /** Exact task ids; the server shows their names and session count, and deletes only after confirmation. */
   | { command: "delete_task"; taskIds: string[] }
+  /** Saved breaks; the server lists them and deletes only after confirmation. */
+  | { command: "delete_breaks" }
   /** Several tasks fit the request: show a numbered list and resolve the reply against exactly that list. */
   | { command: "pick_tasks"; prompt: string; options: ActionTarget[] }
   | { command: "clarify"; question: string };
@@ -46,11 +50,14 @@ export type ParsedRequest =
 export interface CommandWorkspace {
   getSnapshot(): WorkspaceState;
   requestPreview(request: PreviewRequest): Promise<SchedulePreview>;
+  requestSplitOptions(taskIds: string[]): Promise<SplitOptions>;
+  previewDraftSplitOptions(): Promise<SplitOptions>;
   applySchedulePreview(): Promise<WorkSession[]>;
   clearSchedulePreview(): void;
   /** Reads the user's words into drafts in the review panel; nothing is saved. */
   interpretPlan(text: string): Promise<InterpretResult>;
   proposeDeleteTasks(taskIds: string[]): Promise<PendingAction>;
+  proposeDeleteBreaks(): Promise<PendingAction>;
   proposeCreateItems(): Promise<PendingAction>;
   setChoice(choice: PendingChoice | null): void;
 }
@@ -100,6 +107,16 @@ const PLAN_CONDITION = /\b(but|except|without|only|keep\b.*\bfree|leave\b.*\bfre
 /** Asking for a task at a chosen time: "schedule my essay for tomorrow at 3pm", "do Asm Friday afternoon". */
 const SCHEDULE_TASK = /\b(schedule|plan|do|work on|start|put)\b/i;
 const EVENT_WORDS = /\b(meeting|class|lecture|appointment|appt|event|lunch|dinner|call|party)\b/i;
+const SPLIT_VERB = String.raw`(?:split|splitting|divide|dividing|spread|spreading|break(?:ing)? (?:\w+ )?up)`;
+const SPLIT_NOUN = "(?:ways?|options?|alternatives?|choices?)";
+const SPLIT_OPTIONS = new RegExp([
+  String.raw`\b${SPLIT_NOUN}\b.*\b${SPLIT_VERB}\b`,
+  String.raw`\b${SPLIT_VERB}\b.*\b${SPLIT_NOUN}\b`,
+  String.raw`\bhow (?:should|can|could|would|do|to)\b.*\b${SPLIT_VERB}\b`,
+  String.raw`^\s*(?:please\s+|can you\s+|could you\s+)?${SPLIT_VERB}\s+(?:them|it|these|those|this|that|my tasks?|the tasks?)\b`,
+].join("|"), "i");
+const DELETE_BREAKS = /\b(?:delete|remove|clear|cancel|drop|get rid of)\b.*\bbreaks?\b/i;
+const TRAILING_REQUEST = /(?:[,;.\n]\s*|\s+(?:and|then)\s+)((?:(?:and|then|also|please)\s+)*(?:show|give|compare|list|what|how|can you|could you|split|divide|break)\b[^,;\n]*)[.!?]?\s*$/i;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
 function durationMinutes(text: string): number | null {
@@ -310,7 +327,29 @@ export function deleteRequest(name: string, tasks: Task[]): ParsedRequest {
   return { command: "pick_tasks", prompt: exact.length > 1 ? `Several tasks are named “${name}”. Which one?` : "Which task should I delete?", options: close.slice(0, 12).map(label) };
 }
 
-export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "sessions">>, now = new Date()): ParsedRequest | null {
+/** Separates a trailing "show me ways to split them" from the items before it, so it is not read as part of an item. */
+export function splitFromEntry(text: string) {
+  const match = text.match(TRAILING_REQUEST);
+  if (!match || !SPLIT_OPTIONS.test(match[1])) return { entry: text, wantsSplit: false };
+  return { entry: text.slice(0, match.index).trim(), wantsSplit: true };
+}
+
+/** What a request to compare splits refers to: tasks it names, else the drafts under review, else the open tasks. */
+function splitRequest(text: string, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "planDrafts">>, taskId?: string | null): ParsedRequest {
+  const lower = text.toLowerCase();
+  const mentions = (title: string | null) => !!title && lower.includes(title.toLowerCase());
+  const drafts = (state.planDrafts?.views ?? []).filter(v => v.draft.include && v.draft.kind === "task");
+  const open = state.tasks.filter(t => !t.done && t.allowSplit && t.kind !== "flexible_event" && t.remainingMinutes > 0);
+  const named = open.filter(t => t.id === taskId || mentions(t.title));
+  if (drafts.some(v => mentions(v.draft.title)) || (!named.length && drafts.length)) return { command: "split_options", target: "drafts" };
+  if (named.length) return { command: "split_options", target: named.map(t => t.id) };
+  if (!open.length) return { command: "clarify", question: "You have no open tasks to split. Add one with its length and deadline first." };
+  if (open.length === 1) return { command: "split_options", target: [open[0].id] };
+  if (/\b(it|this|that)\b/i.test(text)) return { command: "clarify", question: `Which task should I split? ${open.slice(0, 5).map(t => `“${t.title}”`).join(", ")}` };
+  return { command: "split_options", target: open.map(t => t.id) };
+}
+
+export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" | "availability"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "sessions" | "planDrafts">>, now = new Date()): ParsedRequest | null {
   const zone = accountTimeZone(state.availability);
   const open = state.tasks.filter(t => !t.done);
   // Checked first so "I prefer 15-minute breaks" is a setting, not a break starting now.
@@ -318,11 +357,14 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     const preference = parsePreference(text, { preferences: state.preferences, aiProfile: state.aiProfile ?? DEFAULT_AI_PROFILE });
     if (preference) return preference;
   }
+  if (DELETE_BREAKS.test(text)) return { command: "delete_breaks" };
   // "Add a meeting tomorrow 3-4pm" / "Delete the event called Project sync": confirmed before anything changes.
   if (state.events) {
     const event = parseEventRequest(text, { events: state.events, availability: state.availability });
     if (event) return fromEventProposal(event);
   }
+  // Before BREAK and MOVE, and before the chat treats the message as an answer to an open draft question.
+  if (SPLIT_OPTIONS.test(text) && !looksLikePlanEntry(text)) return splitRequest(text, state);
   if (BREAK.test(text) && !(HABIT.test(text) && !/\bnow\b/i.test(text))) {
     const minutes = durationMinutes(text);
     const later = BREAK_LATER.test(text) && !/\bnow\b/i.test(text);
@@ -432,7 +474,7 @@ export function commandFor(text: string, state: Pick<WorkspaceState, "tasks" | "
  * Turns the model's structured intent into a request the scheduling service runs. Parameters the model gave are
  * checked against the workspace; anything missing or invalid becomes one focused question instead of a guess.
  */
-export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability">>, userText = "", now = new Date()): ParsedRequest | null {
+export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceState, "tasks"> & Partial<Pick<WorkspaceState, "preferences" | "aiProfile" | "events" | "availability" | "planDrafts">>, userText = "", now = new Date()): ParsedRequest | null {
   const { intent, params } = answer;
   switch (intent) {
     case "update_preferences": {
@@ -450,6 +492,10 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       if (!minutes || minutes < 5 || minutes > 240) return { command: "clarify", question: "How long a break do you need? For example: “I need a 15-minute break now.”" };
       return { command: "request_break", minutes };
     }
+    case "split_options":
+      return splitRequest(userText, state, params.taskId);
+    case "delete_breaks":
+      return { command: "delete_breaks" };
     case "move_task": {
       const task = state.tasks.find(t => t.id === params.taskId && !t.done);
       if (!task) return { command: "clarify", question: "Which task should I move?" };
@@ -480,7 +526,7 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
 
     case "add_event":
     case "delete_event":
-      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }, userText));
+      return fromEventProposal(eventFromIntent(intent, params, { events: state.events ?? [], availability: state.availability ?? null }, userText, now));
 
     default:
       return { command: intent };
@@ -576,9 +622,8 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       if (!state.schedulePreview) return reply("There is no proposed schedule to apply. Say “plan my week” to build one.", ["generate_schedule"]);
       try {
         const saved = await workspace.applySchedulePreview();
-        const upcoming = saved.filter(s => s.status === "saved" && new Date(s.endAt) > now);
-        const breaks = upcoming.filter(s => s.type === "break").length;
-        return reply(`Saved. Your schedule now has ${upcoming.length - breaks} upcoming work session(s) and ${breaks} break(s). They will still be there after a refresh.`, ["show_today"]);
+        const upcoming = saved.filter(s => s.status === "saved" && s.type === "work" && new Date(s.endAt) > now);
+        return reply(`Saved. Your schedule now has ${upcoming.length} upcoming work session(s). They will still be there after a refresh.`, ["show_today"]);
       } catch (error) {
         const stillPending = workspace.getSnapshot().schedulePreview !== null;
         return reply(`Not saved: ${errorText(error)}`, stillPending ? ["apply_schedule", "cancel_schedule"] : ["generate_schedule"]);
@@ -593,7 +638,7 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
       return reply(explainText(state.schedulePreview, state.tasks, state.sessions, now), state.schedulePreview ? [] : ["generate_schedule"]);
     case "show_plan": {
       if (state.schedulePreview) return reply(previewText(state.schedulePreview), previewActions(state.schedulePreview));
-      const upcoming = calendarSessions(state.sessions, null)
+      const upcoming = calendarSessions(state.sessions, null, { preferences: state.preferences, events: state.events, tasks: state.tasks })
         .map(item => item.session)
         .filter(s => s.date >= today && s.date <= endDate && s.status === "saved");
       if (!upcoming.length) return reply("There is no proposed schedule and no saved sessions for the next 7 days.", ["generate_schedule"]);
@@ -610,6 +655,26 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     case "busy_day":
       return reply(busyDayText(state.events, state.sessions, state.tasks, req.date, req.at));
     
+    case "delete_breaks": {
+      if (!state.sessions.some(s => s.type === "break" && s.status === "saved")) {
+        return reply("You have no saved breaks to delete. The short breaks between work sessions aren’t saved: AutoPlan draws them from your sessions, and they go away with the work around them.");
+      }
+      try {
+        const action = await workspace.proposeDeleteBreaks();
+        return { ...reply(`${action.summary} Nothing is deleted until you confirm.`), actionId: action.id };
+      } catch (error) {
+        return reply(`I couldn’t do that: ${errorText(error)}`);
+      }
+    }
+    case "split_options": {
+      try {
+        const split = req.target === "drafts" ? await workspace.previewDraftSplitOptions() : await workspace.requestSplitOptions(req.target);
+        return reply(splitOptionsText(split), ["apply_schedule", "cancel_schedule"]);
+      } catch (error) {
+        if (/too short to split/.test(errorText(error))) return reply(errorText(error)); // an answer, not a failure
+        return reply(`I couldn’t build split options: ${errorText(error)} Nothing was changed.`);
+      }
+    }
     case "add_task": {
       try {
         const result = await workspace.interpretPlan(req.text);
@@ -617,7 +682,10 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
         const selected = result.drafts.filter(v => v.draft.include);
         if (!selected.length || selected.some(v => !v.ready)) return reply(text);
         const action = await workspace.proposeCreateItems();
-        return { ...reply(`${text}\nConfirm to save ${selected.length === 1 ? "it" : "them"} as ${selected.length === 1 ? "a task" : "tasks"} now (not scheduled yet), or Edit them in the review panel.`), actionId: action.id };
+        // Confirming saves everything ticked in the panel, not only what this message added, so say exactly that.
+        const names = action.targets.map(t => `“${t.title}”`).join(", ");
+        const what = action.targets.length === 1 ? names : `all ${action.targets.length} items under review (${names})`;
+        return { ...reply(`${text}\nConfirm to save ${what} now (not scheduled yet), or Edit in the review panel.`), actionId: action.id };
       } catch (error) {
         return reply(`I couldn’t read that task: ${errorText(error)} Nothing was saved.`);
       }

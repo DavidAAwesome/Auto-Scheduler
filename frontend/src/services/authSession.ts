@@ -13,7 +13,9 @@ export interface User {
   /** From Firebase: whether the address is confirmed, and when the account was created (ISO), if known. */
   emailVerified: boolean; createdAt: string | null;
 }
-type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null };
+type ServerProfile = { id: string; name: string; email: string; avatarUrl?: string | null; emailVerified?: boolean };
+/** What POST /auth/signup-code returns after emailing a 6-digit code. */
+export type SignupCodeSent = { email: string; expiresInSeconds: number; resendInSeconds: number };
 type Session = { status: 'loading' | 'authenticated' | 'anonymous' | 'error'; user: User | null; error: string };
 let session: Session = firebaseConfigError
   ? { status: 'error', user: null, error: firebaseConfigError }
@@ -34,7 +36,8 @@ function toUser(profile: ServerProfile, firebaseUser: FirebaseUser): User {
     photoURL: profile.avatarUrl ? apiUrl(profile.avatarUrl) : firebaseUser.photoURL,
     hasCustomAvatar: Boolean(profile.avatarUrl),
     provider: firebaseUser.providerData.some(p => p.providerId === 'google.com') ? 'google' : 'password',
-    emailVerified: firebaseUser.emailVerified,
+    // Confirmed by a sign-up code (server) or by Firebase/Google.
+    emailVerified: Boolean(profile.emailVerified) || firebaseUser.emailVerified,
     createdAt: creationTime(firebaseUser),
   };
 }
@@ -68,7 +71,9 @@ function friendlyError(error: unknown) {
   const messages: Record<string, string> = {
     'auth/email-already-in-use': 'An account with this email already exists.',
     'auth/invalid-email': 'Enter a valid email address.',
-    'auth/weak-password': 'Password must be at least 8 characters.',
+    'auth/missing-email': 'Enter your email address.',
+    'auth/password-does-not-meet-requirements': 'Choose a stronger password: at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character such as ! @ # $ %.',
+    'auth/weak-password': 'Choose a stronger password: at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character.',
     'auth/invalid-credential': 'Incorrect email or password.',
     'auth/wrong-password': 'Incorrect email or password.',
     'auth/user-not-found': 'Incorrect email or password.',
@@ -106,6 +111,15 @@ export const authSession = {
   async loginWithGoogle() {
     try { await signInWithPopup(requireAuth(), googleProvider); } catch (e) { throw friendlyError(e); }
   },
+  /** Step 1 of sign-up: email a 6-digit code (valid 5 minutes) before any account exists. */
+  async requestSignupCode(email: string) {
+    return apiRequest<SignupCodeSent>('/auth/signup-code', { method: 'POST', body: JSON.stringify({ email }) });
+  },
+  /** Step 2: check the code. Only a verified address can then create its account. */
+  async verifySignupCode(email: string, code: string) {
+    await apiRequest<{ verified: boolean }>('/auth/signup-code/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+  },
+  /** Step 3, after a correct code: create the Firebase account and open the app. */
   async signup(name: string, email: string, password: string) {
     try {
       const { user } = await createUserWithEmailAndPassword(requireAuth(), email, password);
@@ -114,8 +128,22 @@ export const authSession = {
       await syncWithServer(user);
     } catch (e) { throw friendlyError(e); }
   },
+  /**
+   * Emails Firebase's reset link. After choosing a new password on Firebase's page, its Continue button returns to
+   * AutoPlan's sign-in page. "No such account" is reported the same as success, so the form never reveals who has one.
+   */
   async resetPassword(email: string) {
-    try { await sendPasswordResetEmail(requireAuth(), email); } catch (e) { throw friendlyError(e); }
+    const returnTo = { url: `${window.location.origin}/#/login` };
+    try { await sendPasswordResetEmail(requireAuth(), email, returnTo); }
+    catch (e) {
+      const code = (e as { code?: string })?.code;
+      if (code === 'auth/user-not-found') return;
+      // If this site isn't an authorized Firebase domain, still send the link, just without the way back.
+      if (code === 'auth/unauthorized-continue-uri' || code === 'auth/invalid-continue-uri') {
+        try { await sendPasswordResetEmail(requireAuth(), email); return; } catch (retry) { throw friendlyError(retry); }
+      }
+      throw friendlyError(e);
+    }
   },
   /** Firebase owns the display name; the API copies it from the refreshed ID token, like at sign-up. */
   async updateName(name: string) {
@@ -150,7 +178,7 @@ export const authSession = {
     if (!firebaseUser || session.status !== 'authenticated' || !session.user) return;
     try { await firebaseUser.reload(); } catch { return; }
     if (session.status === 'authenticated' && session.user)
-      publish({ ...session, user: { ...session.user, emailVerified: firebaseUser.emailVerified, createdAt: creationTime(firebaseUser) } });
+      publish({ ...session, user: { ...session.user, emailVerified: session.user.emailVerified || firebaseUser.emailVerified, createdAt: creationTime(firebaseUser) } });
   },
   async logout() {
     await signOut(requireAuth());
