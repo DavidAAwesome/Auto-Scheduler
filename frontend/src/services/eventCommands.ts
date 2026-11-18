@@ -3,6 +3,7 @@ import type { WorkspaceState } from "./workspaceStore.ts";
 import { clock12, dateInZone, longDate, weekdayIndex } from "../utils/calendar.ts";
 import { addDays, validDate } from "../utils/dates.ts";
 import { eventClash, occursOn } from "../utils/events.ts";
+import { accountTimeZone } from "../utils/timeZones.ts";
 
 /**
  * Add and delete calendar events from chat. Nothing is saved or deleted until the user presses the
@@ -169,7 +170,7 @@ export function proposeAddEvent(input: CalendarEventInput, state: EventState, as
   }
   if (input.end <= input.start) return { action: null, question: "The event must end after it starts. What are the start and end times?" };
   if (input.start % 5 || input.end % 5) return { action: null, question: "Events use 5-minute steps (e.g. 3:05, 3:10). What times should I use?" };
-  const zone = state.availability?.timeZone ?? "UTC";
+  const zone = accountTimeZone(state.availability);
   const today = dateInZone(zone);
   const clean: CalendarEventInput = { ...input, title, location: input.location?.trim() || null, repeat: input.repeat ?? null };
   const clash = eventClash(state.events, clean.date, clean.start, clean.end);
@@ -221,9 +222,9 @@ export function proposeDeleteEvent(title: string, date: string | null, state: Ev
 }
 
 /** Plain-language add/delete event requests, or null when the text isn't one. */
-export function parseEventRequest(text: string, state: EventState): EventProposal | null {
-  const zone = state.availability?.timeZone ?? "UTC";
-  const today = dateInZone(zone);
+export function parseEventRequest(text: string, state: EventState, now = new Date()): EventProposal | null {
+  const zone = accountTimeZone(state.availability);
+  const today = dateInZone(zone, now);
   if (DELETE.test(text)) {
     const rest = text.replace(DELETE, "").replace(/^\s*(?:called|named|titled)\s+/i, "").trim();
     const quoted = rest.match(/["“']([^"”']{1,80})["”']/)?.[1];

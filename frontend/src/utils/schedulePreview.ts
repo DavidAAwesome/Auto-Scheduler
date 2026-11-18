@@ -95,7 +95,7 @@ const MODE_LABEL: Record<SchedulePreview['mode'], string> = { generate: 'Propose
 /** Human summary of a preview: the same sessions the calendar draws, what moves and why, and what did not fit. */
 export function previewText(preview: SchedulePreview) {
   const added = preview.sessions.filter(s => s.change === 'new');
-  const lines = [`${MODE_LABEL[preview.mode]}, ${longDate(preview.startDate)} – ${longDate(preview.endDate)} (${preview.timeZone}). Not saved yet.`];
+  const lines = [`${MODE_LABEL[preview.mode]}, ${longDate(preview.startDate)} – ${longDate(preview.endDate)}. Not saved yet.`];
   const byDay = new Map<string, ScheduleSession[]>();
   for (const s of added) byDay.set(s.date, [...(byDay.get(s.date) ?? []), s]);
   for (const [date, sessions] of byDay) {

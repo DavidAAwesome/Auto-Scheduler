@@ -3,7 +3,8 @@ import type { CalendarEvent, CalendarEventInput, EventKind } from "../types/mode
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { WEEKDAYS, clock12, clockTime, parseClock, weekdayIndex } from "../utils/calendar";
-import { addDays, localDate } from "../utils/dates";
+import { addDays } from "../utils/dates";
+import { accountToday } from "../utils/timeZones";
 import { EVENT_KINDS, eventIcon, occurrenceCount, occursOn } from "../utils/events";
 import Icon from "./Icon";
 import Modal from "./Modal";
@@ -18,8 +19,8 @@ export default function EventForm({ event, date, start, onClose, onSave }: {
   onClose: () => void;
   onSave: (message: string) => void;
 }) {
-  const { sessions, events } = useWorkspace();
-  const first = event?.date ?? date ?? localDate();
+  const { sessions, events, availability } = useWorkspace();
+  const first = event?.date ?? date ?? accountToday(availability);
   const begin = event?.start ?? start ?? 10 * 60;
   const [kind, setKind] = useState<EventKind>(event?.kind ?? "Meeting");
   const [day, setDay] = useState(first);

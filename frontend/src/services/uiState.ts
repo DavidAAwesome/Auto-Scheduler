@@ -32,6 +32,16 @@ export const calendarViewStore = createStore<CalendarViewState>(
   { mode: savedMode === 'day' || savedMode === 'month' ? savedMode : 'week', anchor: localDate() },
   view => write('autoplan.calendarMode', view.mode),
 );
+/**
+ * The first anchor comes from the device clock, before the account timezone is known. Once it is, move the
+ * calendar to the account's today, unless the user has already navigated somewhere.
+ */
+let navigated = false;
+const setView = calendarViewStore.set;
+calendarViewStore.set = (next: CalendarViewState) => { navigated = true; setView(next); };
+export function alignCalendarToday(today: string) {
+  if (!navigated && calendarViewStore.get().anchor !== today) setView({ ...calendarViewStore.get(), anchor: today });
+}
 export function useCalendarView() { return useSyncExternalStore(calendarViewStore.subscribe, calendarViewStore.get); }
 
 // The chat panel overlays the calendar on narrow screens, so it starts closed there unless the user opened it before.

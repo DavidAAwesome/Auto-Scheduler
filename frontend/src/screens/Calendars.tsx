@@ -5,14 +5,15 @@ import { workspaceService } from "../services/workspace";
 import { PROVIDERS, fetchExternalCalendar, forgetProvider, providerConfigError } from "../services/calendarProviders";
 import type { CalendarProvider } from "../types/models";
 import { dateInZone, longDate } from "../utils/calendar";
+import { accountTimeZone } from "../utils/timeZones";
 import { SYNC_DAYS_AHEAD, SYNC_DAYS_BACK, syncRange } from "../utils/externalCalendar";
 
-function ago(iso: string) {
+function ago(iso: string, zone: string) {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
-  return hours < 24 ? `${hours} h ago` : new Date(iso).toLocaleDateString();
+  return hours < 24 ? `${hours} h ago` : new Date(iso).toLocaleDateString("en-US", { timeZone: zone, dateStyle: "medium" });
 }
 
 function ProviderCard({ provider }: { provider: CalendarProvider }) {
@@ -29,7 +30,7 @@ function ProviderCard({ provider }: { provider: CalendarProvider }) {
     if (!availability) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      const zone = availability.timeZone;
+      const zone = accountTimeZone(availability);
       const range = syncRange(dateInZone(zone));
       const fetched = await fetchExternalCalendar(provider, range.rangeStart, range.rangeEnd, zone);
       const saved = await workspaceService.syncCalendar(provider, { account: fetched.account, ...range, events: fetched.events });
@@ -55,7 +56,7 @@ function ProviderCard({ provider }: { provider: CalendarProvider }) {
           <h2 id={`${provider}-title`}>{name}</h2>
           <p className="muted small">
             {connection
-              ? <>Connected as <strong>{connection.account}</strong> · {connection.eventCount} events · synced {ago(connection.lastSynced)}</>
+              ? <>Connected as <strong>{connection.account}</strong> · {connection.eventCount} events · synced {ago(connection.lastSynced, accountTimeZone(availability))}</>
               : "Not connected"}
           </p>
         </div>

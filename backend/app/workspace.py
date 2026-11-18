@@ -489,6 +489,14 @@ class Availability(BaseModel):
             raise ValueError('Choose a valid IANA time zone, such as America/New_York or GMT.') from None
         return value
 
+    @model_validator(mode='before')
+    @classmethod
+    def ignore_saved_flag(cls, value):
+        # `saved` is read-only output (see AvailabilityView); clients may send back what they loaded.
+        if isinstance(value, dict) and 'saved' in value and 'saved' not in cls.model_fields:
+            value = {key: item for key, item in value.items() if key != 'saved'}
+        return value
+
     @model_validator(mode='after')
     def unique_weekdays(self):
         if sorted(day.day for day in self.days) != list(range(7)):
@@ -499,6 +507,11 @@ class Availability(BaseModel):
             raise ValueError('Each week override must use a unique Monday.')
         self.weekOverrides.sort(key=lambda week: week.weekStart)
         return self
+
+
+class AvailabilityView(Availability):
+    """`saved` is false until the user (or the app, from the browser's timezone) first saves availability."""
+    saved: bool = True
 
 
 def default_availability():
@@ -518,14 +531,24 @@ def resolve_available_day(availability: Availability, day: date) -> AvailableDay
     return next(row for row in availability.days if row.day == day.weekday())
 
 
-@router.get('/availability', response_model=Availability)
+@router.get('/availability', response_model=AvailabilityView)
 def get_availability(user=Depends(get_current_user), db=Depends(get_database)):
     doc = db.availability.find_one({'user_id': str(user['_id'])}, {'_id': 0, 'user_id': 0})
-    return Availability(**doc) if doc else default_availability()
+    if doc:
+        return AvailabilityView(**doc)
+    return AvailabilityView(**default_availability().model_dump(), saved=False)
 
 
-@router.put('/availability', response_model=Availability)
+@router.put('/availability', response_model=AvailabilityView)
 def save_availability(data: Availability, user=Depends(get_current_user), db=Depends(get_database)):
-    db.availability.update_one({'user_id': str(user['_id'])}, {'$set': data.model_dump()}, upsert=True)
+    """The saved timezone is the account's only timezone. Changing it keeps events at the same real time."""
+    from datetime import datetime, timezone
+    from app.timezone_change import preserve_event_times
+    user_id = str(user['_id'])
+    previous = db.availability.find_one({'user_id': user_id}, {'timeZone': 1})
+    if previous and previous.get('timeZone') and previous['timeZone'] != data.timeZone:
+        today = datetime.now(timezone.utc).astimezone(ZoneInfo(previous['timeZone'])).date()
+        preserve_event_times(db, user_id, previous['timeZone'], data.timeZone, today)
+    db.availability.update_one({'user_id': user_id}, {'$set': data.model_dump()}, upsert=True)
     bump(db, user)
-    return data
+    return AvailabilityView(**data.model_dump())

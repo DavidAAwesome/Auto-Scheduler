@@ -18,9 +18,16 @@ export const PROVIDERS: Record<CalendarProvider, { name: string; envKey: string;
 };
 
 const env = import.meta.env as Record<string, string | undefined>;
+const warned = new Set<CalendarProvider>();
 export function providerConfigError(provider: CalendarProvider) {
   const { name, envKey, consoleHint } = PROVIDERS[provider];
-  return env[envKey] ? '' : `${name} isn't set up for this app yet. Add ${envKey} to frontend/.env and restart the dev server. ${consoleHint}`;
+  if (env[envKey]) return '';
+  // Setup steps are for developers, so they go to the console (once) rather than the page.
+  if (!warned.has(provider)) {
+    warned.add(provider);
+    console.warn(`${name}: set ${envKey} in frontend/.env and restart the dev server. ${consoleHint}`);
+  }
+  return `${name} isn’t available yet.`;
 }
 
 export interface FetchedCalendar { account: string; events: ImportedEvent[] }
