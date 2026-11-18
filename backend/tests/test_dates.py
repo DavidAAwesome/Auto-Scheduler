@@ -16,7 +16,7 @@ WRONG = '2026-11-04'
 
 
 def item(source, **extra):
-    fields = dict(kind='task', title='Item', sourceText=source, minutes=60, deadlineDate=None, deadlineTime=None, earliestStart=None,
+    fields = dict(kind='task', title=source.split()[0], sourceText=source, minutes=60, deadlineDate=None, deadlineTime=None, earliestStart=None,
                   priority='High', allowSplit=None, maxSessionMinutes=None, date=None, startTime=None, endTime=None, eventKind=None,
                   location=None, repeatWeekdays=[], repeatStartDate=None, repeatUntil=None, windows=[], dependsOnTitles=[],
                   ambiguousFields=[], unreadableFields=[])
@@ -25,7 +25,8 @@ def item(source, **extra):
 
 def read(monkeypatch, *items, now=THU):
     monkeypatch.setattr(plan_extraction, 'call_model', lambda inputs: Extraction(items=list(items), notes=[]))
-    return plan_extraction.extract_with_model('text', None, now, NY, [])[0]
+    # The message is what the user typed; items the model adds that the message never mentioned are dropped.
+    return plan_extraction.extract_with_model('\n'.join(i.sourceText for i in items), None, now, NY, [])[0]
 
 
 # ------------------------------------------------------------------ every weekday from a Thursday

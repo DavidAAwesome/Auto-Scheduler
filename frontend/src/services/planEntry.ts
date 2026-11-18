@@ -16,8 +16,13 @@ export function emptyDraft(id: string, patch: Partial<PlanDraft> = {}): PlanDraf
 
 const DURATION = /\b\d+(?:\.\d+)?\s*(?:h|hrs?|hours?|m|mins?|minutes?)\b|\b(?:half an hour|an hour)\b/i;
 const WHEN = /\b(?:due|by|deadline|today|tomorrow|tonight|mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}(?::\d{2})?\s*[-–]\s*\d{1,2}(?::\d{2})?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d/i;
+const CLOCK = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}(?::\d{2})?\s*[-–]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}\b|\bnoon\b/i;
+const DAY = /\b(?:today|tomorrow|tonight|(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}|every (?:week)?day|weekdays|daily|(?:on )?the \d{1,2}(?:st|nd|rd|th)|\d{1,2}\/\d{1,2})\b/i;
+// "Doctor appt next Tuesday at 2:30", "Call mom at noon": an appointment word with a clock time is an event to add.
+const AT_CLOCK = /\bat\s+(?:\d{1,2}(?::\d{2})?(?!\s*(?:%|percent|hours?|hrs?|mins?|minutes?)\b)|noon|midnight)\b/i;
+const APPOINTMENT = /\b(?:meeting|appt|appointment|dentist|doctor|call|lunch|dinner|breakfast|coffee|interview|class|lecture|practice|session|party|standup|stand-up|sync|club)\b/i;
+const SETTINGS_TALK = /\b(focus|breaks?|limit|max(?:imum)?|daily|per day|a day|blocks?|prefer(?:ence)?s?|usually|always|set|change|worked|spent|took|ago|i'?m|i am|i was|feel(?:ing)?|tired|later|earlier|sooner|move|push|delay)\b/i;
 const ADD = /^\s*(?:please\s+)?(?:add|create|schedule|plan|put|remind me to|i (?:need|have) to)\b/i;
-const DAY = /\b(?:today|tomorrow|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*)\b/i;
 const CLOCK_RANGE = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i;
 const QUESTION = /\?\s*$|^\s*(?:what|when|why|how|which|who|show|can you explain|explain)\b/i;
 
@@ -31,7 +36,13 @@ export function looksLikePlanEntry(text: string) {
   if (!trimmed || QUESTION.test(trimmed)) return false;
   const lines = trimmed.split(/\n|;/).map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) return lines.filter(l => DURATION.test(l) || WHEN.test(l)).length >= 1;
-  return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed))
+  // "Soccer practice Sat and Sun 9-10am": a day and a clock time read as an event, even without "add".
+  const eventLike = ((CLOCK.test(trimmed) || AT_CLOCK.test(trimmed)) && DAY.test(trimmed))
+    || (APPOINTMENT.test(trimmed) && (CLOCK.test(trimmed) || AT_CLOCK.test(trimmed)) && !SETTINGS_TALK.test(trimmed));
+  // "Essay draft 2 hours in one sitting, then proofread 30 min": work with a length is new work to review, even with
+  // no day yet (the review asks for the deadline). Settings talk ("set focus blocks to 45 minutes") is not.
+  const workWithLength = DURATION.test(trimmed) && !SETTINGS_TALK.test(trimmed);
+  return (ADD.test(trimmed) && (DURATION.test(trimmed) || WHEN.test(trimmed))) || (DURATION.test(trimmed) && WHEN.test(trimmed)) || eventLike || workWithLength
     || (DAY.test(trimmed) && CLOCK_RANGE.test(trimmed));
 }
 
@@ -82,7 +93,9 @@ export function draftLine(d: PlanDraft) {
     return `${name}: fixed event, ${d.date ? longDate(d.date) : "date ?"}, ${times}`;
   }
   const due = d.deadline ? `due ${longDate(d.deadline)}${d.dueTime != null ? `, ${clock12(d.dueTime)}` : ""}` : "no deadline yet";
-  return `${name}: ${d.kind === "flexible_event" ? "flexible event" : "task"}, ${d.minutes ?? "?"} min, ${due}, ${d.priority}`;
+  // A preferred start is when work may begin; it is shown apart from the deadline so the two are never confused.
+  const from = d.earliestStart && d.kind === "task" ? `, work starts no earlier than ${longDate(d.earliestStart.slice(0, 10))}${d.earliestStart.slice(11, 16) !== "00:00" ? `, ${clock12(Number(d.earliestStart.slice(11, 13)) * 60 + Number(d.earliestStart.slice(14, 16)))}` : ""}` : "";
+  return `${name}: ${d.kind === "flexible_event" ? "flexible event" : "task"}, ${d.minutes ?? "?"} min, ${due}${from}, ${d.priority}`;
 }
 
 /** Chat reply after reading drafts. It never says anything was saved: nothing is, until Apply. */
@@ -97,11 +110,17 @@ export function draftsReply(views: DraftView[], provider: string, notes: string[
     else if (past) lines.push(`  ${past.question} Change it in the draft if that’s wrong.`);
   }
   const open = views.flatMap(v => v.issues.filter(i => i.blocking).map(i => i.question));
+  // Assumptions that change the plan (a date read from "next Friday", a due time from "morning") are stated, briefly.
+  const assumed = views.flatMap(v => v.issues.filter(i => !i.blocking && i.field !== "priority").map(i => i.question)).slice(0, 2);
+  lines.push(...assumed.map(a => `Note: ${a}`));
   if (open.length) lines.push(`First question: ${open[0]} (Answer here or in the panel.)`);
   else lines.push("Use “Preview on calendar”, then Apply to save.");
   lines.push(...notes);
   return lines.join("\n");
 }
+
+/** Short replies that acknowledge rather than answer ("thanks", "ok wait"), so they never overwrite a draft field. */
+export const ACKNOWLEDGEMENT = /^\s*(ok(ay)?|k|thanks?( you)?|thx|ty|cool|great|nice|got it|sure|wait|hold on|one sec(ond)?|hmm+|never ?mind)([\s,]+(wait|thanks|then|cool|sure|ok(ay)?))?[\s!.]*$/i;
 
 /** The first open question across the drafts, so a plain chat reply can answer it. */
 export function firstOpenQuestion(views: DraftView[]) {

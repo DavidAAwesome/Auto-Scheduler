@@ -12,7 +12,7 @@ import { CHAT_WIDTH, chatFullscreenStore, chatPanelStore, chatTabStore, chatWidt
 import DraftReview from "./DraftReview";
 import ResizeHandle from "./ResizeHandle";
 import { dockedWidth } from "../utils/layout";
-import { draftsReply, firstOpenQuestion, IMAGE_TYPES, isChatter, looksLikePlanEntry, readImage } from "../services/planEntry";
+import { ACKNOWLEDGEMENT, draftsReply, firstOpenQuestion, IMAGE_TYPES, isChatter, looksLikePlanEntry, readImage } from "../services/planEntry";
 import type { ImageAttachment } from "../services/workspaceStore";
 import Icon from "./Icon";
 
@@ -467,7 +467,8 @@ export default function ChatPanel() {
     }
     if (looksLikePlanEntry(text)) return interpret(text, id, null);
     const open = firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? []);
-    if (open && !/\?\s*$/.test(text) && !isChatter(text)) return answer(text, id, open);
+    // Small talk ("thanks", "ok wait", "hello") is not an answer to the open draft question.
+    if (open && !/\?\s*$/.test(text) && !ACKNOWLEDGEMENT.test(text) && !isChatter(text)) return answer(text, id, open);
 
     let reply: Awaited<ReturnType<typeof workspaceService.chatAssistant>>;
     setThinking(true);

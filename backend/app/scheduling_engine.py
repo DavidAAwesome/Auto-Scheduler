@@ -558,7 +558,13 @@ class _Planner:
             points.update((e, e + self.prefs.brk))
         return sorted(p for p in points if lo <= p < hi)
 
-    def best_length(self, t: int, upper: int, need: int, exact: bool) -> int:
+    def focus_for(self, task: EngineTask, length: int) -> int:
+        """Continuous-work limit for a session of `task`. Work the user asked to do in one sitting (splitting off)
+        may run past the focus limit as its own block; it still can't be joined to other work without a break."""
+        return max(self.prefs.focus, length) if task.is_work and not task.allow_split else self.prefs.focus
+
+    def best_length(self, t: int, upper: int, need: int, exact: bool, limit: int | None = None) -> int:
+        limit = self.prefs.focus if limit is None else limit
         if exact:
             options = [need] if need <= upper else []
         else:
@@ -567,7 +573,7 @@ class _Planner:
                 values.add(need)
             options = sorted((x for x in values if x > 0), reverse=True)
         for length in options:
-            if self.run_total(t, t + length) <= self.prefs.focus:
+            if self.run_total(t, t + length) <= limit:
                 return length
         return 0
 
@@ -595,12 +601,13 @@ class _Planner:
                 if daily_left <= 0:
                     notes.add('daily_limit')
                     continue
-                upper = min(need, need if exact else task.max_session, fu - t, hi - t, daily_left, self.prefs.focus)
+                limit = self.focus_for(task, need)
+                upper = min(need, need if exact else task.max_session, fu - t, hi - t, daily_left, limit)
                 if exact and upper < need:
                     if daily_left < need:
                         notes.add('daily_limit')
                     continue
-                length = self.best_length(t, upper, need, exact)
+                length = self.best_length(t, upper, need, exact, limit)
                 if length <= 0:
                     notes.add('focus_limit')
                     continue
@@ -811,6 +818,8 @@ class _Planner:
             self.pending[tid] = need[tid] > 0
         if self.displace:
             self._displace(order, need)
+        if self.mode != 'repair':
+            self._keep_unchanged()
         self._materialise_breaks()
 
         for task in self.open_tasks:
@@ -894,9 +903,6 @@ class _Planner:
             if self.retained_minutes(task.id) or self.allocated(task.id):
                 self.add_reason(task.id, 'unsplit_has_sessions', 'Splitting is off, but part of this task already has a session.')
                 window = None
-            elif task.is_work and task.remaining > self.prefs.focus:
-                self._settings_conflict(task)
-                window = None
             elif task.is_work and task.remaining > self.prefs.max_daily:
                 self.add_reason(task.id, 'unsplit_exceeds_daily_limit',
                                 f'Splitting is off and {task.remaining} minutes exceeds your daily work limit.')
@@ -933,6 +939,21 @@ class _Planner:
 
     # -- repair
 
+    def _keep_unchanged(self):
+        """A new plan that puts work exactly where a saved session already is keeps that session, instead of
+        showing it as removed and re-added ("Moves Lab report … Replaced by the new schedule" with the same times)."""
+        replaced = {(r.session.task_id, r.session.start, r.session.end): r for r in self.removals
+                    if r.reason == 'Replaced by the new schedule.' and r.new_end is None}
+        for placed in self.sessions:
+            if placed.type != 'work' or placed.change != 'new':
+                continue
+            removal = replaced.pop((placed.task_id, placed.start, placed.end), None)
+            if removal is None:
+                continue
+            self.removals.remove(removal)
+            placed.change, placed.status, placed.id = 'kept', 'saved', removal.session.id
+            placed.reason = 'Unchanged; kept as saved'
+
     def _keep_flexible(self, need: dict[str, int]):
         kept_by_task: dict[str, int] = {}
         for item in self.flexible:
@@ -967,7 +988,7 @@ class _Planner:
                     reason = 'It is outside your available hours.' if not task.windows else 'It is outside its preferred times.'
                 elif task.is_work and self.day_work(self.day(item.start)) + item.end - item.start > self.prefs.max_daily:
                     reason = 'It would exceed your daily work limit.'
-                elif task.is_work and self.run_total(item.start, item.end) > self.prefs.focus:
+                elif task.is_work and self.run_total(item.start, item.end) > self.focus_for(task, item.end - item.start):
                     reason = 'It would exceed your focus limit without a break.'
             if reason:
                 self.removals.append(Removal(item, reason))
