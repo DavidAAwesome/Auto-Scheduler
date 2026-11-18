@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, mergeDrafts, type Requester } from '../src/services/workspaceStore.ts';
 import { parseRequest, runAssistantCommand } from '../src/services/assistantCommands.ts';
-import { draftLine, draftsReply, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry, needsMoreOptions, shortHint, tooShortToSplit, visibleRows } from '../src/services/planEntry.ts';
+import { draftLine, draftOutcome, draftsReply, draftSummary, emptyDraft, firstOpenQuestion, isChatter, kindPatch, looksLikePlanEntry, needsMoreOptions, shortHint, tooShortToSplit, visibleRows } from '../src/services/planEntry.ts';
 import { calendarSessions, previewText, todayAgenda, todayText } from '../src/utils/schedulePreview.ts';
 import type {
   ApplyResult, Availability, CalendarEvent, DraftView, FeasibilityResult, InterpretResult, SchedulePreferences, SchedulePreview,
@@ -279,4 +279,27 @@ test('chat repeats a past date from the draft', () => {
   const view = { draft: emptyDraft('d1', { title: 'Essay', minutes: 60, deadline: '2026-11-04' }), ready: true,
     issues: [{ field: 'deadline', code: 'past' as const, question: 'The due date Wed, Nov 4 has passed.', blocking: false }] };
   assert.match(draftsReply([view], 'openai'), /The due date Wed, Nov 4 has passed\. Change it in the draft/);
+});
+
+test('review cards summarise each item in one line and say what is missing', () => {
+  assert.equal(draftSummary(emptyDraft('a', { title: 'CV', minutes: 360, deadline: '2026-11-11', dueTime: 1020, priority: 'High' })), '6 h · due Wed, Nov 11, 5 PM · High');
+  assert.equal(draftSummary(emptyDraft('b', { minutes: 90 })), '1 h 30 min · no due date · Medium');
+  assert.equal(draftSummary(emptyDraft('c', { kind: 'fixed_event', date: '2026-11-10', start: 780, end: 840, location: 'Room 4' })), 'Tue, Nov 10 · 1 PM–2 PM · Room 4');
+  assert.equal(draftSummary(emptyDraft('d', { kind: 'fixed_event', repeat: { weekdays: [0, 2], startDate: '2026-09-02', until: '2026-12-12' } })), 'every Mon, Wed until Sat, Dec 12 · time not set');
+});
+
+test('each card reads its own result from the plan preview', () => {
+  const lab = draftOutcome('d1', fixture.preview)!;
+  assert.deepEqual([lab.sessions, lab.minutes, lab.firstDate, lab.unscheduled], [2, 90, TODAY, 0]);
+  assert.deepEqual(draftOutcome('d2', fixture.preview)!.eventDates, [TODAY]);
+  assert.equal(draftOutcome('d1', { ...fixture.preview, mode: 'generate' }), null);
+  const blocked: SchedulePreview = {
+    ...fixture.preview,
+    tasks: fixture.preview.tasks.map(t => (t.taskId === 'draft:d3' ? { ...t, unallocatedMinutes: 30, reasons: [{ code: 'x', message: 'No room before it is due.' }] } : t)),
+    conflicts: [{ code: 'settings_conflict', message: 'Splitting is off.', items: [{ kind: 'task', id: 'draft:d3', title: 'Gym', startAt: null, endAt: null }], choices: [{ id: 'allow_split', label: 'Allow splitting' }] }],
+  };
+  const gym = draftOutcome('d3', blocked)!;
+  assert.equal(gym.unscheduled, 30);
+  assert.deepEqual(gym.reasons, ['No room before it is due.', 'Splitting is off.']);
+  assert.deepEqual(gym.choices.map(c => c.id), ['allow_split']);
 });

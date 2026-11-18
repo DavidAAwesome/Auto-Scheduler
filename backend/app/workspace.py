@@ -534,6 +534,20 @@ def resolve_available_day(availability: Availability, day: date) -> AvailableDay
     return next(row for row in availability.days if row.day == day.weekday())
 
 
+@router.delete('/data')
+def clear_data(user=Depends(get_current_user), db=Depends(get_database)):
+    """Starts the user over: deletes tasks, work sessions and breaks, events, calendar connections (with their
+    imported events), unsaved previews and pending confirmations. Analytics is computed from tasks and sessions, so it
+    resets too. The account, availability, scheduling preferences and assistant settings are kept."""
+    uid = str(user['_id'])
+    deleted = {name: db[name].delete_many({'user_id': uid}).deleted_count
+               for name in ('tasks', 'sessions', 'events', 'calendar_connections')}
+    for name in ('plans', 'schedule_previews', 'pending_actions'):
+        db[name].delete_many({'user_id': uid})
+    bump(db, user)  # any preview built before this can no longer be applied
+    return deleted
+
+
 @router.get('/availability', response_model=AvailabilityView)
 def get_availability(user=Depends(get_current_user), db=Depends(get_database)):
     doc = db.availability.find_one({'user_id': str(user['_id'])}, {'_id': 0, 'user_id': 0})

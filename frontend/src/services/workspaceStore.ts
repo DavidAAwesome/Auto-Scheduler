@@ -52,6 +52,9 @@ export function normalizeProfile(value: unknown): AIProfile {
   };
 }
 export type Requester = <T>(path: string, options?: RequestInit) => Promise<T>;
+/** What DELETE /data removed, per kind. */
+export interface ClearedCounts { tasks: number; sessions: number; events: number; calendar_connections: number }
+
 export interface WorkspaceState {
   status: 'idle' | 'loading' | 'ready' | 'error';
   tasks: Task[];
@@ -285,6 +288,13 @@ export function createWorkspaceStore(request: Requester, deviceTimeZone: () => s
       validateSession(input);
       const payload = { ...input, locked: input.locked ?? false };
       return mutate<WorkSession>(`/sessions/${id}`, { method: 'PUT', body: JSON.stringify(payload) }, session => ({ sessions: state.sessions.map(s => s.id === id ? session : s), ...stale() }));
+    },
+    /** Deletes every task, session, break, event and calendar connection; the account and settings stay. */
+    clearData() {
+      return mutate<ClearedCounts>('/data', { method: 'DELETE' }, () => ({
+        tasks: [], sessions: [], events: [], connections: [], schedulePreview: null, splitOptions: null, previewStale: false,
+        planDrafts: null, pendingActions: [], pendingChoice: null,
+      }));
     },
     deleteSession(id: string) {
       return mutate<void>(`/sessions/${id}`, { method: 'DELETE' }, () => ({ sessions: state.sessions.filter(s => s.id !== id), ...stale() }));

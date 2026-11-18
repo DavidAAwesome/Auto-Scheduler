@@ -17,6 +17,7 @@ export type IconName =
   | "chevronLeft"
   | "chevronRight"
   | "chevronDown"
+  | "chevronUp"
   | "plus"
   | "pencil"
   | "trash"
@@ -34,8 +35,12 @@ export type IconName =
   | "users"
   | "coffee"
   | "pin"
-  | "repeat";
+  | "repeat"
+  | "expand"
+  | "shrink";
 const paths: Record<IconName, string> = {
+  expand: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7",
+  shrink: "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7",
   home: "M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z",
   planner: "M4 5h16v16H4ZM4 10h16M8 3v4m8-4v4M8 14h3m2 0h3m-8 4h8",
   tasks: "M8 3h8M8 5H5v16h14V5h-3M8 12l3 3 5-6",
@@ -54,6 +59,7 @@ const paths: Record<IconName, string> = {
   chevronLeft: "m15 18-6-6 6-6",
   chevronRight: "m9 18 6-6-6-6",
   chevronDown: "m6 9 6 6 6-6",
+  chevronUp: "m6 15 6-6 6 6",
   plus: "M12 5v14M5 12h14",
   pencil: "M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6",
