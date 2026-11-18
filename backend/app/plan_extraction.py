@@ -142,6 +142,10 @@ Rules:
   repeatStartDate/repeatUntil when they are visible or stated; otherwise leave them null (the app will ask).
 - For images, extract only what is visible. Put the original wording of each row in sourceText. List fields you
   cannot read in unreadableFields. Do not fill priority unless it is stated.
+- For a timetable image, read each class's day from the column or row header it sits under (or a days code such as
+  MWF, TR, TTh: M=Monday, T=Tuesday, W=Wednesday, R or Th=Thursday, F=Friday, S=Saturday, U=Sunday). Return ONE item
+  per class and time with all of its days in repeatWeekdays, never one item per day. Keep course codes in the title
+  ("BIO 110 - Intro Biology", "CHEM Lab", "MATH 220"). Semester start/end dates count only when written in the image.
 - dependsOnTitles: only when the user explicitly says one item must come after another.
 - existingTaskTitles are already saved. Use them only for dependsOnTitles; never return them as items unless the message
   itself names them.
@@ -255,6 +259,9 @@ def _convert_item(item: LlmItem, index: int, titles: dict[str, str]) -> PlanDraf
     said = (item.sourceText or '').lower()
     clear_times = ({720} if 'noon' in said else set()) | ({0, 1439, 1440} if 'midnight' in said else set())
     ambiguous = [f for f in ambiguous if f not in given or given[f] not in clear_times]
+    if re.search(rf'\d\s*{MERIDIEM}\s*(?:-|–|to|until)\s*\d{{1,2}}(?::\d{{2}})?\s*{MERIDIEM}', said):
+        # "10:00 AM - 10:50 AM" (a registration screenshot) states both; there is no AM/PM question to ask.
+        ambiguous = [f for f in ambiguous if f not in {'start', 'end'}]
     if item.kind == 'fixed_event' and _crosses_noon(item.sourceText or ''):
         ambiguous = [f for f in ambiguous if f not in {'start', 'end'}]
         if start is not None and end is not None and end <= start:
@@ -309,6 +316,9 @@ def _stated_date(draft: PlanDraft) -> str | None:
         if due:
             return due[1]
     found = {match[0] for match in re.finditer(rf'\b(?:{DATE})', text)}
+    if len(found) > 1:
+        # "Tue Nov 24": the weekday only labels the calendar date beside it.
+        found = {f for f in found if not re.fullmatch(rf'(?:next |this )?{WD}', f)} or found
     return found.pop() if len(found) == 1 else None
 
 
@@ -586,9 +596,12 @@ def call_model(inputs: list[dict]) -> Extraction:
     """The only place that talks to the provider. Tests replace it with canned results."""
     from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
     settings = get_settings()
+    has_image = any(isinstance(m.get('content'), list) and any(p.get('type') == 'input_image' for p in m['content'])
+                    for m in inputs)
+    model = settings.openai_vision_model if has_image else settings.openai_model
     try:
-        client = OpenAI(api_key=settings.openai_api_key, timeout=60.0)
-        response = client.responses.parse(model=settings.openai_model, input=inputs, text_format=Extraction, store=False)
+        client = OpenAI(api_key=settings.openai_api_key, timeout=90.0 if has_image else 60.0)
+        response = client.responses.parse(model=model, input=inputs, text_format=Extraction, store=False)
     except RateLimitError as exc:
         raise HTTPException(429, 'The AI provider is busy (rate limit). Your input was kept; try again shortly.') from exc
     except APITimeoutError as exc:
@@ -606,6 +619,47 @@ def call_model(inputs: list[dict]) -> Extraction:
     return response.output_parsed
 
 
+def weekly_timetable(drafts: list[PlanDraft]) -> list[PlanDraft]:
+    """A photographed timetable is weekly. Vision models read each cell under its day column well but often return
+    every cell as a one-time event on its next date ("CS 101" on Mon, Wed and Fri as three items). Events with the
+    same name and times become one weekly event, its weekdays taken from those dates. When nothing in the image
+    repeats, it is a list of one-off events (a screenshot of appointments) and is left alone."""
+    def key(draft: PlanDraft):
+        return ((draft.title or '').lower(), draft.start, draft.end)
+
+    def days(draft: PlanDraft) -> set[int]:
+        found = set(draft.repeat.weekdays) if draft.repeat else set()
+        try:
+            return found | ({date.fromisoformat(draft.date).weekday()} if draft.date else set())
+        except ValueError:
+            return found
+    groups: dict[tuple, list[PlanDraft]] = {}
+    for draft in drafts:
+        if draft.kind == 'fixed_event' and draft.title and draft.start is not None and days(draft):
+            groups.setdefault(key(draft), []).append(draft)
+    if not any(len(set().union(*map(days, group))) > 1 or any(d.repeat for d in group) for group in groups.values()):
+        return drafts
+    merged, done = [], set()
+    for draft in drafts:
+        group = groups.get(key(draft)) if draft.kind == 'fixed_event' else None
+        if not group or not any(draft is d for d in group):
+            merged.append(draft)
+            continue
+        if key(draft) in done:
+            continue
+        done.add(key(draft))
+        repeats = [d.repeat for d in group if d.repeat]
+        merged.append(group[0].model_copy(update={
+            'date': None,
+            'repeat': DraftRepeat(weekdays=sorted(set().union(*map(days, group))),
+                                  startDate=next((r.startDate for r in repeats if r.startDate), None),
+                                  until=next((r.until for r in repeats if r.until), None)),
+            'location': next((d.location for d in group if d.location), None),
+            'ambiguous': sorted({f for d in group for f in d.ambiguous} - {'date', 'repeat.weekdays'}),
+            'unreadable': sorted({f for d in group for f in d.unreadable})}))
+    return merged
+
+
 def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime, zone: ZoneInfo,
                        saved_titles: list[str]) -> tuple[list[PlanDraft], list[str]]:
     local = now.astimezone(zone)
@@ -617,7 +671,9 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
     content: list[dict] = [{'type': 'input_text', 'text': text.strip() or 'Extract every item visible in this image.'}]
     if image:
         media, data = image
-        content.append({'type': 'input_image', 'image_url': f'data:{media};base64,{base64.b64encode(data).decode()}'})
+        # 'high' keeps small timetable text readable; 'auto' may downscale a whole week to a blur.
+        content.append({'type': 'input_image', 'image_url': f'data:{media};base64,{base64.b64encode(data).decode()}',
+                        'detail': 'high'})
     inputs = [
         {'role': 'system', 'content': SYSTEM},
         {'role': 'system', 'content': 'Context JSON:\n' + json.dumps(context)},
@@ -637,8 +693,10 @@ def extract_with_model(text: str, image: tuple[str, bytes] | None, now: datetime
             logger.info('Dropped AI items not in the message: %s', dropped)
         extraction = extraction.model_copy(update={'items': kept})
     drafts = [_without_guesses(d, now, zone) for d in drafts_from_extraction(extraction, local.date())]
-    if not image:  # a photographed timetable is recurring by nature
+    if not image:
         drafts = [resolve_stated_dates(_settle_one_time(d, local.date()), local) for d in drafts]
+    else:  # a photographed timetable is recurring by nature; one-off rows keep the date written on them
+        drafts = [resolve_stated_dates(d, local) for d in weekly_timetable(drafts)]
     return drafts, notes
 
 
@@ -654,6 +712,7 @@ WD = r'(?:mon(?:day)?s?|tue(?:s(?:day)?)?s?|wed(?:s|nesday)?s?|thu(?:r(?:s(?:day
 MONTH = r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?'
 DATE = (rf'(?:today|tonight|tomorrow|day after tomorrow|(?:next |this )?{WD}\b|\d{{4}}-\d{{2}}-\d{{2}}|'
         rf'{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+20\d\d\b)?|\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?:,?\s+20\d\d\b)?|\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?)')
+MERIDIEM = r'(?:am|pm|a\.m\.|p\.m\.)'
 TIME = r'(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\d{1,2}:\d{2}|noon|midnight)'
 # After "at"/"@" a bare hour is a clock time too ("due Friday at 5"), but never a length ("at 5 hours").
 TIME_AT = rf'(?:{TIME}|\d{{1,2}}(?![\d:])(?!\s*(?:h|hr|hrs|hours?|m|min|mins|minutes?)\b))'

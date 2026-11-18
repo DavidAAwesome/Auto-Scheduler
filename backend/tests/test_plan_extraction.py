@@ -792,3 +792,70 @@ def test_a_note_never_reaches_the_task_name(environment, monkeypatch):
     view = client.post('/plan/interpret', json={'text': "Read chapter, 10 minutes, due Friday (I'm so tired)", 'batchId': 'b'}).json()['drafts'][0]
     assert (view['draft']['title'], view['draft']['minutes']) == ('Read chapter', 10)
     assert 'tired' not in view['draft']['sourceText']
+
+
+# ------------------------------------------------------------------ timetable images
+
+def cell(title, day, start, end, source):
+    return LlmItem(**{**flexible_item([]).model_dump(), 'kind': 'fixed_event', 'title': title, 'sourceText': source,
+                      'minutes': None, 'deadlineDate': None, 'date': day, 'startTime': start, 'endTime': end,
+                      'eventKind': 'Class', 'repeatWeekdays': []})
+
+
+def image_drafts(monkeypatch, items):
+    monkeypatch.setattr(plan_extraction, 'call_model', lambda inputs: Extraction(notes=[], items=items))
+    return by_title(plan_extraction.extract_with_model('', ('image/png', PNG), NOW, NY, [])[0])
+
+
+def test_timetable_cells_read_one_day_at_a_time_become_weekly_classes(monkeypatch):
+    """A vision model reads each grid cell under its day column, returning one dated event per cell."""
+    drafts = image_drafts(monkeypatch, [
+        cell('CS 101 Lecture', '2026-10-26', '09:00', '10:15', 'CS 101 Lecture'),  # Mon
+        cell('CS 101 Lecture', '2026-10-28', '09:00', '10:15', 'CS 101 Lecture'),  # Wed
+        cell('CS 101 Lecture', '2026-10-30', '09:00', '10:15', 'CS 101 Lecture'),  # Fri
+        cell('MATH 220', '2026-10-27', '10:30', '11:45', 'MATH 220'),
+        cell('MATH 220', '2026-10-29', '10:30', '11:45', 'MATH 220'),
+        cell('CHEM Lab', '2026-10-27', '13:00', '14:50', 'CHEM Lab'),  # once a week, in the same timetable
+    ])
+    assert {t: (d.date, d.repeat.weekdays) for t, d in drafts.items()} == {
+        'CS 101 Lecture': (None, [0, 2, 4]), 'MATH 220': (None, [1, 3]), 'CHEM Lab': (None, [1])}
+    view = review_draft(drafts['CS 101 Lecture'], NOW, NY)
+    assert 'repeat.startDate' in {i.field for i in view.issues}  # semester dates are asked, never guessed
+
+
+def test_a_screenshot_of_one_off_appointments_stays_one_time_on_the_dates_shown(monkeypatch):
+    drafts = image_drafts(monkeypatch, [
+        cell('Dentist', '2026-10-29', '15:00', '16:00', 'Dentist - Thu Oct 29, 3:00 PM'),
+        cell('Career fair', '2026-10-27', '10:00', '14:00', 'Career fair - Tue Nov 3, 10 AM-2 PM'),  # misdated
+    ])
+    assert {t: (d.date, d.repeat) for t, d in drafts.items()} == {
+        'Dentist': ('2026-10-29', None), 'Career fair': ('2026-11-03', None)}
+
+
+def test_am_pm_written_on_both_times_is_not_asked(monkeypatch):
+    item = cell('BIO 110', None, '10:00', '10:50', 'BIO 110 MWF 10:00 AM - 10:50 AM Science Hall')
+    item = item.model_copy(update={'repeatWeekdays': [0, 2, 4], 'ambiguousFields': ['startTime', 'endTime']})
+    draft = image_drafts(monkeypatch, [item])['BIO 110']
+    assert draft.ambiguous == [] and draft.repeat.weekdays == [0, 2, 4]
+
+
+def test_images_go_to_the_vision_model_at_high_detail(monkeypatch, with_ai):
+    seen = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError('stop here')
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.responses = Responses()
+    import openai
+    monkeypatch.setattr(openai, 'OpenAI', Client)
+    with pytest.raises(HTTPException):
+        plan_extraction.extract_with_model('', ('image/png', PNG), NOW, NY, [])
+    assert seen['model'] == get_settings().openai_vision_model != get_settings().openai_model
+    assert seen['input'][-1]['content'][1]['detail'] == 'high'
+    with pytest.raises(HTTPException):
+        plan_extraction.extract_with_model('Essay 2 hours due Friday', None, NOW, NY, [])
+    assert seen['model'] == get_settings().openai_model

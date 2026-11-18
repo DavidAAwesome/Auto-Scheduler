@@ -18,6 +18,8 @@ class Settings:
     openai_model: str
     # Second model pass that checks the assistant's free-text replies before they are shown.
     assistant_self_review: bool = True
+    # Images (timetable photos) need a model that can place each cell under its day column; gpt-4o-mini cannot.
+    openai_vision_model: str = 'gpt-4.1-mini'
 
 
 @lru_cache
@@ -41,4 +43,5 @@ def get_settings() -> Settings:
         os.getenv('OPENAI_API_KEY', '').strip(),
         os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip() or 'gpt-4o-mini',
         os.getenv('ASSISTANT_SELF_REVIEW', 'true').strip().lower() not in {'0', 'false', 'no', 'off'},
+        os.getenv('OPENAI_VISION_MODEL', 'gpt-4.1-mini').strip() or 'gpt-4.1-mini',
     )

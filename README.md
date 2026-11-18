@@ -48,7 +48,8 @@ Backend (`backend/.env`; never expose these with a `VITE_` prefix):
 - `FIREBASE_PROJECT_ID`: required; the Firebase project whose ID tokens the API accepts. Must match `VITE_FIREBASE_PROJECT_ID`.
 - `ALLOWED_ORIGINS`: comma-separated exact frontend origins, without paths. Examples include localhost and 127.0.0.1 on ports 5173/5174. Wildcards are rejected.
 - `OPENAI_API_KEY`: optional. Enables `/assistant/chat`, `/schedule/interpret` and AI reading of text and images in `/plan/interpret` via the OpenAI Responses API (without it, typed plans use the built-in parser and images are refused). Never commit a real key; leave blank to use structured scheduling without AI.
-- `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`; it must accept images for timetable photos).
+- `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`).
+- `OPENAI_VISION_MODEL`: optional model id used when an image is attached in `/plan/interpret` (default `gpt-4.1-mini`). gpt-4o-mini reads the text of a timetable but not which day column each class sits in, so it is not used for images.
 
 Frontend (`frontend/.env`):
 
