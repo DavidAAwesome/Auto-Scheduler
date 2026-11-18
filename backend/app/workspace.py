@@ -549,7 +549,8 @@ def clear_data(user=Depends(get_current_user), db=Depends(get_database)):
 def get_availability(user=Depends(get_current_user), db=Depends(get_database)):
     doc = db.availability.find_one({'user_id': str(user['_id'])}, {'_id': 0, 'user_id': 0})
     if doc:
-        return AvailabilityView(**doc)
+        # Ignore stored settings this version doesn't know (e.g. saved by a newer branch on the same database).
+        return AvailabilityView(**{key: value for key, value in doc.items() if key in AvailabilityView.model_fields})
     return AvailabilityView(**default_availability().model_dump(), saved=False)
 
 
