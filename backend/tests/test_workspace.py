@@ -150,3 +150,16 @@ def test_clear_data_starts_over_but_keeps_the_account_and_settings(environment):
 def test_clear_data_requires_sign_in(environment):
     client, _ = environment
     assert client.delete('/data').status_code == 401
+
+
+def test_availability_ignores_stored_fields_from_other_versions(environment):
+    client, db = environment
+    user = register(client)
+    data = client.get('/availability').json()
+    data['timeZone'] = 'America/New_York'
+    client.put('/availability', json=data)
+    db.availability.update_one({'user_id': user['id']}, {'$set': {'reminderMinutes': 15}})
+    response = client.get('/availability')
+    assert response.status_code == 200, response.text
+    assert 'reminderMinutes' not in response.json()
+    assert response.json()['timeZone'] == 'America/New_York'

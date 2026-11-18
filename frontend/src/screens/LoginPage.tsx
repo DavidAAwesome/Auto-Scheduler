@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import Icon from "../components/Icon";
 import { authSession } from "../services/authSession";
+import { PASSWORD_RULES, passwordProblem } from "../utils/passwordRules";
 import "./LoginPage.css";
 
 function LoginBrand() {
@@ -18,6 +19,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
+  const [password, setPassword] = useState("");
   async function google() {
     if (loading) return;
     setError(""); setNotice(""); setLoading(true);
@@ -39,6 +41,10 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
     const email = String(data.get("email") ?? "").trim();
     const password = String(data.get("password") ?? "");
     setError(""); setNotice("");
+    if (signup) {
+      const problem = passwordProblem(password);
+      if (problem) { setError(problem); return; }
+    }
     if (signup && password !== data.get("confirmPassword")) { setError("Passwords do not match."); return; }
     if (signup && !String(data.get("name") ?? "").trim()) { setError("Enter your name."); return; }
     setLoading(true);
@@ -108,14 +114,27 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
               name="password"
               type="password"
               autoComplete={signup ? "new-password" : "current-password"}
-              minLength={signup ? 8 : undefined}
               maxLength={128}
               disabled={loading}
               required
-              placeholder={signup ? "At least 8 characters" : "Enter your password"}
-              aria-describedby="login-error"
+              placeholder={signup ? "Create a strong password" : "Enter your password"}
+              aria-describedby={signup ? "password-rules login-error" : "login-error"}
               aria-invalid={!!error}
+              onChange={e => setPassword(e.target.value)}
             />
+            {signup && (
+              <ul id="password-rules" className="password-rules" aria-label="Password requirements">
+                {PASSWORD_RULES.map(rule => {
+                  const met = rule.test(password);
+                  return (
+                    <li key={rule.id} className={met ? "met" : ""}>
+                      <span aria-hidden="true">{met ? "✓" : "•"}</span> {rule.label}
+                      <span className="sr-only">{met ? " (met)" : " (not met yet)"}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
           {signup && <div className="login-field"><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirmPassword" type="password" autoComplete="new-password" required maxLength={128} disabled={loading} aria-describedby="login-error" /></div>}
           {!signup && <button type="button" className="forgot-link" disabled={loading} onClick={e => void forgotPassword(e.currentTarget.form)}>Forgot password?</button>}

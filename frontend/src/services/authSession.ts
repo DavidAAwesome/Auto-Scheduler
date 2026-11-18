@@ -68,7 +68,8 @@ function friendlyError(error: unknown) {
   const messages: Record<string, string> = {
     'auth/email-already-in-use': 'An account with this email already exists.',
     'auth/invalid-email': 'Enter a valid email address.',
-    'auth/weak-password': 'Password must be at least 8 characters.',
+    'auth/password-does-not-meet-requirements': 'Choose a stronger password: at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character such as ! @ # $ %.',
+    'auth/weak-password': 'Choose a stronger password: at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character.',
     'auth/invalid-credential': 'Incorrect email or password.',
     'auth/wrong-password': 'Incorrect email or password.',
     'auth/user-not-found': 'Incorrect email or password.',
