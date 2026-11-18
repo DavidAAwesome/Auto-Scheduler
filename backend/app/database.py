@@ -85,6 +85,8 @@ def initialize_indexes(db):
     db.events.create_index([('user_id', 1), ('date', 1)])
     db.events.create_index([('user_id', 1), ('source', 1), ('date', 1)])
     db.calendar_connections.create_index([('user_id', 1), ('provider', 1)], unique=True)
+    db.signup_codes.create_index('email', unique=True)
+    db.verified_emails.create_index('email', unique=True)
 
 
 def get_database(request: Request):

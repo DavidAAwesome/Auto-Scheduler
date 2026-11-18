@@ -49,6 +49,8 @@ Backend (`backend/.env`; never expose these with a `VITE_` prefix):
 - `ALLOWED_ORIGINS`: comma-separated exact frontend origins, without paths. Examples include localhost and 127.0.0.1 on ports 5173/5174. Wildcards are rejected.
 - `OPENAI_API_KEY`: optional. Enables `/assistant/chat`, `/schedule/interpret` and AI reading of text and images in `/plan/interpret` via the OpenAI Responses API (without it, typed plans use the built-in parser and images are refused). Never commit a real key; leave blank to use structured scheduling without AI.
 - `OPENAI_MODEL`: optional model id for those endpoints (default `gpt-4o-mini`; it must accept images for timetable photos).
+- `SMTP_HOST`, `SMTP_PORT` (default 587; 465 uses SSL), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`: email for sign-up codes. For Gmail use `smtp.gmail.com` and an [App Password](https://myaccount.google.com/apppasswords) (Google Account → Security → 2-Step Verification → App passwords). Without them, sign-up cannot send a code.
+- `EMAIL_CODES_TO_LOG`: development only; `true` prints sign-up codes to the API log instead of emailing them when SMTP is not set up.
 
 Frontend (`frontend/.env`):
 
@@ -75,6 +77,14 @@ The API checks the token's RS256 signature against Google's published keys, plus
 
 The frontend restores sessions through Firebase on refresh, gates workspace screens, shows API errors, and supports logout from the user menu (top right) and the Account page. Signup shares the responsive two-column Login design.
 
+
+### Sign-up email codes
+
+Creating an account takes three steps: the form (name, email, a password meeting the rules) → `POST /auth/signup-code` emails a 6-digit code → `POST /auth/signup-code/verify` checks it, then the browser creates the Firebase account and opens Home.
+
+- Codes are valid **5 minutes**, stored only as salted hashes, and work once. A new code can be requested after 60 seconds (at most 5 an hour); it replaces the old one. Five wrong tries lock the code.
+- A correct code marks the address verified for 30 minutes. The first `/auth/me` creates the AutoPlan user only for a verified address, or one Google/Firebase already confirmed (`email_verified`); otherwise it returns 403. Existing accounts are unaffected.
+- `409` if the email already has an account, `429` for too many requests or tries, `410` for an expired code, `503` if email sending isn't configured.
 ## Validation
 
 From the repository root:

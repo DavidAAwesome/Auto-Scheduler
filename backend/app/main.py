@@ -8,6 +8,7 @@ from pymongo.errors import PyMongoError
 
 from app.auth import get_current_user, router
 from app.avatars import router as avatars_router
+from app.signup_codes import router as signup_codes_router
 from app.config import get_settings
 from app.database import connect_database, initialize_indexes
 from app.workspace import router as workspace_router
@@ -71,6 +72,7 @@ def create_app(database=None):
 
     app.include_router(router)
     app.include_router(avatars_router)
+    app.include_router(signup_codes_router)
     app.include_router(workspace_router)
     app.include_router(events_router)
     app.include_router(calendars_router)

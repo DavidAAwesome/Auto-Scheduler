@@ -13,7 +13,7 @@ def bearer(token):
 def test_first_request_creates_user_and_later_requests_reuse_it(environment):
     client, db = environment
     user = sign_in(client, email=' ALICE@Example.com ', name=' Alice ')
-    assert set(user) == {'id', 'name', 'email', 'avatarUrl'}
+    assert set(user) == {'id', 'name', 'email', 'avatarUrl', 'emailVerified'}
     assert user['name'] == 'Alice' and user['email'] == 'alice@example.com'
     assert user['avatarUrl'] is None
     saved = db.users.find_one({'firebase_uid': 'alice-uid'})
