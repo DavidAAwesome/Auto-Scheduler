@@ -1,6 +1,7 @@
 import type { Availability, AvailableDay, TimePeriod, WeekOverride } from "../types/models.ts";
 import { addDays } from "./dates.ts";
 import { clockTime, weekStart } from "./calendar.ts";
+import { DEFAULT_REMINDER_MINUTES } from "../types/models.ts";
 
 export const DEFAULT_PERIOD: TimePeriod = { start: 540, end: 1020 };
 
@@ -24,6 +25,7 @@ export function normalizeAvailability(value: Availability): Availability {
   return {
     timeZone: value.timeZone,
     reminders: value.reminders,
+    reminderMinutes: value.reminderMinutes ?? DEFAULT_REMINDER_MINUTES,
     days: value.days.map(normalizeDay),
     weekOverrides: (value.weekOverrides ?? []).map((week) => ({
       weekStart: week.weekStart,

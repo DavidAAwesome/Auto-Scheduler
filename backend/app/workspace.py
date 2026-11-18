@@ -477,6 +477,8 @@ class Availability(BaseModel):
     weekOverrides: list[WeekOverride] = Field(default_factory=list)
     timeZone: str = Field(min_length=1, max_length=100)
     reminders: bool = Field(strict=True)
+    # Minutes before a work session or event starts to remind; 0 means when it starts. Older saved documents default to 15.
+    reminderMinutes: int = Field(default=15, ge=0, le=1440, strict=True)
 
     @field_validator('timeZone')
     @classmethod
@@ -520,6 +522,7 @@ def default_availability():
         weekOverrides=[],
         timeZone='Etc/GMT',
         reminders=False,
+        reminderMinutes=15,
     )
 
 

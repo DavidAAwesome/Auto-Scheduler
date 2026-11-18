@@ -29,6 +29,7 @@ export interface Task {
 export interface TimeWindow { weekdays: number[]; start: number; end: number }
 export type TaskInput = Omit<Task, "id" | "done" | "remainingMinutes">;
 export const DEFAULT_DUE_TIME = 23 * 60 + 59;
+export const DEFAULT_REMINDER_MINUTES = 15;
 export type SessionType = "work" | "break";
 /** "proposed" exists only in previews; saved schedules hold saved, completed or cancelled sessions. */
 export type SessionStatus = "proposed" | "saved" | "completed" | "cancelled";
@@ -120,6 +121,8 @@ export interface Availability {
   weekOverrides: WeekOverride[];
   timeZone: string;
   reminders: boolean;
+  /** How many minutes before a work session or event starts to remind (0 = when it starts). */
+  reminderMinutes: number;
 }
 
 /** Editable pacing defaults (not medical advice). */
