@@ -6,6 +6,7 @@ export const CANCEL = /^\s*(?:cancel|no|nope|never ?mind|stop|don'?t)\s*[.!]*\s*
 
 export const BUTTONS: Record<PendingActionType, { confirm: (a: PendingAction) => string; other: string }> = {
   delete_tasks: { confirm: a => (a.targets.length === 1 ? "Delete task" : `Delete ${a.targets.length} tasks`), other: "Cancel" },
+  delete_breaks: { confirm: a => (a.targets.length === 1 ? "Delete break" : `Delete ${a.targets.length} breaks`), other: "Cancel" },
   create_items: { confirm: () => "Confirm tasks", other: "Edit" },
   apply_schedule: { confirm: () => "Apply schedule", other: "Cancel" },
 };

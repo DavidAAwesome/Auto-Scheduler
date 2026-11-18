@@ -1,15 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent } from "react";
 import { useAuth } from "../services/authSession";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
 import { ApiError } from "../services/api";
-import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
+import { confirmPreferenceChange, parseRequest, requestFromIntent, runAssistantCommand, splitFromEntry, type AssistantCommand, type ParsedRequest } from "../services/assistantCommands";
 import type { PendingAction, PreferenceChange } from "../types/models";
 import { BUTTONS, CANCEL, CONFIRM, chosen, openActions, parseSelection, resolveConfirm } from "../services/pendingActions";
 import { confirmEventAction, confirmLabel, type PendingEventAction } from "../services/eventCommands";
 import { buildWelcome, replyToPrompt, type AssistantMessage } from "../services/plannerAssistant";
-import { chatPanelStore, useChatPanelOpen } from "../services/uiState";
-import { ACKNOWLEDGEMENT, draftsReply, firstOpenQuestion, IMAGE_TYPES, looksLikePlanEntry, readImage } from "../services/planEntry";
+import { CHAT_WIDTH, chatFullscreenStore, chatPanelStore, chatTabStore, chatWidthStore, useChatFullscreen, useChatPanelOpen, useChatTab, useChatWidth } from "../services/uiState";
+import DraftReview from "./DraftReview";
+import ResizeHandle from "./ResizeHandle";
+import { dockedWidth } from "../utils/layout";
+import { ACKNOWLEDGEMENT, draftsReply, firstOpenQuestion, IMAGE_TYPES, isChatter, looksLikePlanEntry, readImage } from "../services/planEntry";
 import type { ImageAttachment } from "../services/workspaceStore";
 import Icon from "./Icon";
 
@@ -40,11 +43,11 @@ function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string
   const labels = BUTTONS[action.type];
   return (
     <div className="chat-actions" role="group" aria-label={action.summary}>
-      {action.targets.length > 0 && action.type === "delete_tasks" && (
+      {action.targets.length > 0 && action.type !== "create_items" && (
         <ul className="chat-action-targets">{action.targets.map(t => <li key={t.id}>{t.title}{t.detail ? ` · ${t.detail}` : ""}</li>)}</ul>
       )}
       {action.status === "failed" && action.error && <p role="alert" className="form-error">{action.error}</p>}
-      <button className={`button small ${action.type === "delete_tasks" ? "danger" : ""}`} disabled={busy || action.status === "processing"} onClick={() => onConfirm(action)}>
+      <button className={`button small ${action.type === "delete_tasks" || action.type === "delete_breaks" ? "danger" : ""}`} disabled={busy || action.status === "processing"} onClick={() => onConfirm(action)}>
         {action.status === "processing" ? "Working…" : action.status === "failed" ? `Try again: ${labels.confirm(action)}` : labels.confirm(action)}
       </button>
       <button className="button small secondary" disabled={busy || action.status === "processing"} onClick={() => onDecline(action)}>{labels.other}</button>
@@ -54,8 +57,16 @@ function ActionButtons({ id, actions, busy, onConfirm, onDecline }: { id: string
 
 export default function ChatPanel() {
   const open = useChatPanelOpen();
+  const fullscreen = useChatFullscreen() && open;
+  const chatWidth = useChatWidth();
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) chatFullscreenStore.set(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
   const { user } = useAuth();
-  const { tasks, sessions, events, connections, availability, schedulePreview, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
+  const { tasks, sessions, events, connections, availability, schedulePreview, preferences, saving, planDrafts, planBusy, pendingActions } = useWorkspace();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   /** An image waiting to be sent with the next message (e.g. a class timetable). */
@@ -69,10 +80,22 @@ export default function ChatPanel() {
   const [working, setWorking] = useState<ParsedRequest["command"] | null>(null);
   const log = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
-  const context = { tasks, sessions, events, availability, connections, schedulePreview };
+  /** A message asked for split options after its items; shown once those drafts are ready. */
+  const splitAfterDrafts = useRef(false);
+  const context = { tasks, sessions, events, availability, connections, schedulePreview, preferences };
   const welcome = buildWelcome(context);
   const busy = thinking || working !== null || saving || reading || planBusy;
-  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working]);
+  const tab = useChatTab();
+  const reviewing = tab === "review" && planDrafts !== null;
+  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [messages, thinking, working, reviewing]);
+  // New items from a message open the Review tab beside the calendar; once they are applied or discarded, back to chat.
+  const batch = planDrafts?.batchId ?? null;
+  const shownBatch = useRef<string | null>(null);
+  useEffect(() => {
+    if (batch === shownBatch.current) return;
+    shownBatch.current = batch;
+    chatTabStore.set(batch ? "review" : "chat");
+  }, [batch]);
 
   function append(message: AssistantMessage) {
     setMessages(previous => [...previous.slice(-18), message]);
@@ -99,7 +122,9 @@ export default function ChatPanel() {
       const names = result.action.targets.map(t => `“${t.title}”`).join(", ");
       append({ id, role: "assistant", text: result.duplicate
         ? "That was already done, so nothing else changed."
-        : result.action.type === "delete_tasks"
+        : result.action.type === "delete_breaks"
+          ? `Deleted ${result.action.targets.length === 1 ? "your saved break" : `your ${result.action.targets.length} saved breaks`}. Work can be planned there now.`
+          : result.action.type === "delete_tasks"
           ? `Deleted ${names}${result.action.sessionCount ? ` and ${result.action.sessionCount} scheduled session${result.action.sessionCount === 1 ? "" : "s"}` : ""}.`
           : `Saved ${names} as ${result.tasks.length + result.events.length === 1 ? "an item" : "items"} on your list. They are not scheduled yet: say “plan my week” or use Generate Schedule.` });
     } catch (e) {
@@ -115,8 +140,8 @@ export default function ChatPanel() {
     try {
       await workspaceService.cancelAction(action.id);
       if (action.type === "create_items") {
-        window.dispatchEvent(new CustomEvent("autoplan:review-drafts"));
-        append({ id: `act-${++nextId.current}`, role: "assistant", text: "Okay, nothing was saved. Edit the items in the review panel above the calendar." });
+        chatTabStore.set("review");
+        append({ id: `act-${++nextId.current}`, role: "assistant", text: "Okay, nothing was saved. Edit the items in the Review tab." });
       } else append({ id: `act-${++nextId.current}`, role: "assistant", text: "Cancelled. Nothing was changed." });
     } catch (e) {
       setError((e as Error).message);
@@ -181,7 +206,16 @@ export default function ChatPanel() {
       const result = await workspaceService.interpretPlan(text, attachment ? { mediaType: attachment.mediaType, dataBase64: attachment.dataBase64, name: attachment.name } : null);
       if (attachment) URL.revokeObjectURL(attachment.url);
       append({ id: `${id}-a`, role: "assistant", text: draftsReply(result.drafts, result.provider, result.notes) });
+      if (splitAfterDrafts.current) {
+        if (firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? [])) {
+          append({ id: `${id}-s`, role: "assistant", text: "I’ll show the ways to split them as soon as that’s answered." });
+        } else {
+          splitAfterDrafts.current = false;
+          await run({ command: "split_options", target: "drafts" });
+        }
+      }
     } catch (e) {
+      splitAfterDrafts.current = false;
       setInput(text);
       setImage(attachment);
       setError((e as Error).message);
@@ -198,9 +232,15 @@ export default function ChatPanel() {
       const updated = await workspaceService.clarifyDraft(open.draftId, open.field, text);
       const next = firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? []);
       const title = updated.draft.title ?? "that item";
+      if (!next && splitAfterDrafts.current) {
+        splitAfterDrafts.current = false;
+        append({ id: `${id}-a`, role: "assistant", text: `Updated “${title}”. Every draft has what it needs.` });
+        await run({ command: "split_options", target: "drafts" });
+        return;
+      }
       append({ id: `${id}-a`, role: "assistant", text: next
         ? `Updated “${title}”. Next: ${next.question}`
-        : `Updated “${title}”. Every draft has what it needs. Use “Can this fit?” or “Preview on calendar”; nothing is saved until you Apply.` });
+        : `Updated “${title}”. Every draft has what it needs. Use “Preview on calendar”; nothing is saved until you Apply.` });
     } catch (e) {
       setInput(text);
       setError((e as Error).message);
@@ -221,6 +261,13 @@ export default function ChatPanel() {
     setError("");
 
     if (!attachment && await typedReply(text, id)) return;
+    if (!workspaceService.getSnapshot().planDrafts) splitAfterDrafts.current = false;
+    // "Essay 2h due Fri, show me ways to split it": read the items, then show the options once they are ready.
+    const { entry, wantsSplit } = splitFromEntry(text);
+    if (wantsSplit && (attachment || looksLikePlanEntry(entry))) {
+      splitAfterDrafts.current = true;
+      return interpret(entry, id, attachment);
+    }
     // Images and multi-item messages always become drafts; a single line is checked for commands first.
     const multiline = text.split(/\n/).filter(l => l.trim()).length > 1;
     if (attachment || (multiline && looksLikePlanEntry(text))) return interpret(text, id, attachment);
@@ -231,8 +278,8 @@ export default function ChatPanel() {
     }
     if (looksLikePlanEntry(text)) return interpret(text, id, null);
     const open = firstOpenQuestion(workspaceService.getSnapshot().planDrafts?.views ?? []);
-    // Small talk ("thanks", "ok wait") is not an answer to the open draft question.
-    if (open && !/\?\s*$/.test(text) && !ACKNOWLEDGEMENT.test(text)) return answer(text, id, open);
+    // Small talk ("thanks", "ok wait", "hello") is not an answer to the open draft question.
+    if (open && !/\?\s*$/.test(text) && !ACKNOWLEDGEMENT.test(text) && !isChatter(text)) return answer(text, id, open);
 
     let reply: Awaited<ReturnType<typeof workspaceService.chatAssistant>>;
     setThinking(true);
@@ -337,11 +384,32 @@ export default function ChatPanel() {
   // Only the newest message with buttons offers them, so an old Apply cannot be pressed after a newer result.
   const actionMessageId = [...messages].reverse().find(m => m.actions?.length)?.id;
   return (
-    <aside className="chat-panel" aria-label="AI chatbox">
+    <>
+    {!fullscreen && (
+      <ResizeHandle label="Resize AI chatbox" side="right" width={chatWidth} limits={CHAT_WIDTH}
+        otherPanelWidth={() => dockedWidth(".task-sidebar, .sidebar-tab")} onChange={w => chatWidthStore.set(w)} />
+    )}
+    <aside className={`chat-panel ${fullscreen ? "fullscreen" : ""}`} aria-label="AI chatbox" style={{ "--chat-w": `${chatWidth}px` } as CSSProperties}>
       <div className="chat-head">
-        <h2><Icon name="assistant" size={18} /> AI Chatbox</h2>
-        <button className="icon-button ghost small" aria-label="Hide AI chatbox" onClick={() => chatPanelStore.set(false)}><Icon name="panel" size={17} /></button>
+        {planDrafts ? (
+          <div className="chat-tabs" role="tablist" aria-label="AI panel">
+            <button role="tab" id="tab-chat" aria-selected={!reviewing} aria-controls="chat-tabpanel" onClick={() => chatTabStore.set("chat")}><Icon name="assistant" size={16} /> Chat</button>
+            <button role="tab" id="tab-review" aria-selected={reviewing} aria-controls="chat-tabpanel" onClick={() => chatTabStore.set("review")}>
+              Review <span className={`tab-count ${planDrafts.views.some(v => v.draft.include && !v.ready) ? "needs-fix" : ""}`}>{planDrafts.views.length}</span>
+            </button>
+          </div>
+        ) : <h2><Icon name="assistant" size={18} /> AI Chatbox</h2>}
+        <div className="chat-head-actions">
+          <button className="icon-button ghost small" aria-label={fullscreen ? "Exit full screen" : "Full screen"} title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+            aria-pressed={fullscreen} onClick={() => chatFullscreenStore.set(!fullscreen)}>
+            <Icon name={fullscreen ? "shrink" : "expand"} size={16} />
+          </button>
+          <button className="icon-button ghost small" aria-label="Hide AI chatbox" title="Hide AI chatbox" onClick={() => { chatFullscreenStore.set(false); chatPanelStore.set(false); }}><Icon name="panel" size={17} /></button>
+        </div>
       </div>
+      {reviewing ? (
+        <div className="chat-review" id="chat-tabpanel" role="tabpanel" aria-labelledby="tab-review"><DraftReview /></div>
+      ) : <>
       <div className="chat-messages" ref={log} role="log" aria-live="polite" aria-label="Planning conversation">
         <p className="bubble assistant">Hi{user?.name ? ` ${user.name.split(" ")[0]}` : ""}! {welcome.text}</p>
         {messages.map(m => (
@@ -391,6 +459,7 @@ export default function ChatPanel() {
       <div className="chat-prompts">
         {PROMPTS.map(p => <button key={p} className="chip" disabled={busy} onClick={() => void ask(p)}>{p}</button>)}
       </div>
+      </>}
       <form className="composer" onSubmit={submit} onClick={e => { if (e.target === e.currentTarget) composer.current?.focus(); }}>
         {image && (
           <div className="chat-attachment">
@@ -412,5 +481,6 @@ export default function ChatPanel() {
         </div>
       </form>
     </aside>
+    </>
   );
 }

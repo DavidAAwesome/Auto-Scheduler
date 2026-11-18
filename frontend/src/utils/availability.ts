@@ -1,6 +1,7 @@
 import type { Availability, AvailableDay, TimePeriod, WeekOverride } from "../types/models.ts";
 import { addDays } from "./dates.ts";
 import { clockTime, weekStart } from "./calendar.ts";
+import { DEFAULT_REMINDER_MINUTES } from "../types/models.ts";
 
 export const DEFAULT_PERIOD: TimePeriod = { start: 540, end: 1020 };
 
@@ -24,6 +25,7 @@ export function normalizeAvailability(value: Availability): Availability {
   return {
     timeZone: value.timeZone,
     reminders: value.reminders,
+    reminderMinutes: value.reminderMinutes ?? DEFAULT_REMINDER_MINUTES,
     days: value.days.map(normalizeDay),
     weekOverrides: (value.weekOverrides ?? []).map((week) => ({
       weekStart: week.weekStart,
@@ -51,6 +53,17 @@ export function normalizeDay(day: AvailableDay & { start?: number; end?: number 
 
 export function mondayOf(date: string) {
   return weekStart(date);
+}
+
+/** The earliest minute the user is available on any of these dates, or 8 AM when they have no hours set. */
+export function firstAvailableMinute(availability: Availability | null, dates: string[], fallback = 8 * 60) {
+  const starts = availability
+    ? dates.flatMap(date => {
+      const day = resolveDay(availability, date);
+      return day.enabled ? day.periods.map(period => period.start) : [];
+    })
+    : [];
+  return starts.length ? Math.min(...starts) : fallback;
 }
 
 export function resolveDay(availability: Availability, date: string): AvailableDay {

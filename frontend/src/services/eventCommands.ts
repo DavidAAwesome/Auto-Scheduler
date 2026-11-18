@@ -1,6 +1,6 @@
 import type { CalendarEvent, CalendarEventInput, EventKind } from "../types/models.ts";
 import type { WorkspaceState } from "./workspaceStore.ts";
-import { clock12, dateInZone, longDate, weekdayIndex } from "../utils/calendar.ts";
+import { clock12, dateInZone, longDate, minutesInZone, weekdayIndex } from "../utils/calendar.ts";
 import { addDays, validDate } from "../utils/dates.ts";
 import { eventClash, occursOn } from "../utils/events.ts";
 import { accountTimeZone } from "../utils/timeZones.ts";
@@ -98,7 +98,8 @@ export function parseTimes(raw: string): { start: number; end: number; assumed: 
 }
 
 /** The local date a phrase refers to (today, tomorrow, Friday, Oct 30, 10/30, 2026-10-30), or null. */
-export function parseDate(text: string, today: string): string | null {
+/** `passed`: the stated time has already gone today, so a bare weekday that names today means next week. */
+export function parseDate(text: string, today: string, passed = false): string | null {
   const lower = text.toLowerCase();
   const iso = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (iso) return validDate(iso[1]) ? iso[1] : null;
@@ -119,9 +120,11 @@ export function parseDate(text: string, today: string): string | null {
   const day = WEEKDAY_NAMES.findIndex(name => new RegExp(`\\b${name}s?\\b|\\b${name.slice(0, 3)}\\b`).test(lower));
   if (day >= 0) {
     const current = weekdayIndex(today);
-    // "next Friday" is the Friday of next week (Monday–Sunday), never tomorrow; "Friday" is the coming one.
+    // "next Friday" is the Friday of next week (Monday–Sunday), never tomorrow; "Friday" is the coming one,
+    // or next week's when it names today and the stated time has already gone.
     if (nextWeekday(lower)) return addDays(today, 7 - current + day);
-    return addDays(today, (day - current + 7) % 7);
+    const ahead = (day - current + 7) % 7;
+    return addDays(today, passed && ahead === 0 ? 7 : ahead);
   }
   return null;
 }
@@ -267,8 +270,8 @@ export function parseEventRequest(text: string, state: EventState, now = new Dat
   }
   if (ADD.test(text)) {
     const title = titleFrom(text);
-    const date = parseDate(text, today);
     const times = parseTimes(text);
+    const date = parseDate(text, today, !!times && times.start <= minutesInZone(zone, now));
     if (!title) return { action: null, question: `What should the event be called? ${ADD_EXAMPLE}` };
     if (!date) return { action: null, question: `Which day is “${title}” on? ${ADD_EXAMPLE}` };
     if (!times) return { action: null, question: `What time is “${title}”? ${ADD_EXAMPLE}` };
@@ -315,29 +318,34 @@ export function eventFromIntent(
   params: { eventId?: string | null; eventTitle?: string | null; eventDate?: string | null; eventStart?: string | null; eventEnd?: string | null },
   state: EventState,
   userText = "",
+  now = new Date(),
 ): EventProposal {
+  // The date comes from the user's own words whenever they give one, not from the model.
+  const zone = accountTimeZone(state.availability);
+  const stated = (minute: number | null) => parseDate(userText, dateInZone(zone, now), minute !== null && minute <= minutesInZone(zone, now));
   if (intent === "delete_event") {
     const byId = params.eventId ? state.events.find(e => e.id === params.eventId) : undefined;
-    const date = params.eventDate && validDate(params.eventDate) ? params.eventDate : null;
+    const date = stated(null) ?? (params.eventDate && validDate(params.eventDate) ? params.eventDate : null);
     return proposeDeleteEvent(byId?.title ?? params.eventTitle ?? "", date, state);
   }
   const start = clockFromModel(params.eventStart);
   const endRaw = clockFromModel(params.eventEnd);
   const end = endRaw === 0 ? 1440 : endRaw;
   if (!params.eventTitle?.trim()) return { action: null, question: `What should the event be called? ${ADD_EXAMPLE}` };
-  if (!params.eventDate || !validDate(params.eventDate)) return { action: null, question: `Which day is “${params.eventTitle.trim()}” on?` };
+  const date = stated(start) ?? (params.eventDate && validDate(params.eventDate) ? params.eventDate : null);
+  if (!date) return { action: null, question: `Which day is “${params.eventTitle.trim()}” on?` };
   if (start === null || end === null) return { action: null, question: `What time does “${params.eventTitle.trim()}” start and end?` };
   // The model picks one date; it must be a day the user named ("Sat and Sun" once became a Thursday).
   const named = namedWeekdays(userText);
-  const picked = new Date(`${params.eventDate}T12:00:00Z`).getUTCDay();
+  const picked = new Date(`${date}T12:00:00Z`).getUTCDay();
   if (named.length > 1) {
     const days = named.map(d => DAY_NAMES[d]).join(" and ");
     return { action: null, question: `That's one “${params.eventTitle.trim()}” on each of ${days}. Type it as a list, one per line, such as “${params.eventTitle.trim()} ${DAY_NAMES[named[0]]} 9-10am”, and I'll read them all.` };
   }
   if (named.length === 1 && named[0] !== picked) {
-    return { action: null, question: `Which day is “${params.eventTitle.trim()}” on? I read ${longDate(params.eventDate)}, but you said ${DAY_NAMES[named[0]]}.` };
+    return { action: null, question: `Which day is “${params.eventTitle.trim()}” on? I read ${longDate(date)}, but you said ${DAY_NAMES[named[0]]}.` };
   }
-  return proposeAddEvent({ title: params.eventTitle, kind: kindFrom(params.eventTitle), date: params.eventDate, start, end, location: null, repeat: null }, state);
+  return proposeAddEvent({ title: params.eventTitle, kind: kindFrom(params.eventTitle), date, start, end, location: null, repeat: null }, state);
 }
 
 export interface EventWorkspace {

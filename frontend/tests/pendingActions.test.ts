@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWorkspaceStore, editedView, missingSummary, type Requester } from '../src/services/workspaceStore.ts';
-import { deleteRequest, parseRequest, requestFromIntent, runAssistantCommand } from '../src/services/assistantCommands.ts';
+import { deleteRequest, parseRequest, requestFromIntent, runAssistantCommand, type CommandWorkspace } from '../src/services/assistantCommands.ts';
 import { emptyDraft } from '../src/services/planEntry.ts';
 import { CANCEL, CONFIRM, openActions, parseSelection, resolveConfirm } from '../src/services/pendingActions.ts';
 import type {
@@ -235,7 +235,7 @@ test('chat “add task … at noon” keeps noon from the parser to the saved ta
   const request = parseRequest('Add a task called Study Networking, due October 30 at noon, with a duration of 50 minutes.', workspace.getSnapshot(), NOW);
   assert.deepEqual(request, { command: 'add_task', text: 'Study Networking, due October 30 at noon, 50 minutes.' });
   const message = await runAssistantCommand(request!, workspace, NOW);
-  assert.match(message.text, /Study Networking: task, 50 min, due 2026-10-30 12 PM/);
+  assert.match(message.text, /Study Networking: task, 50 min, due Fri, Oct 30, 2026, 12 PM/);
   assert.ok(message.actionId && !api.log.includes('POST /tasks'), 'nothing saved before Confirm tasks');
   await workspace.confirmAction(message.actionId!);
   const saved = workspace.getSnapshot().tasks.find(t => t.title === 'Study Networking')!;
@@ -256,4 +256,17 @@ test('editing a draft withdraws an unconfirmed “save these items” proposal',
   assert.equal(after.status, 'cancelled');
   await assert.rejects(workspace.confirmAction(action.id), /cancelled/);
   assert.equal(api.tasks().length, 3);
+});
+
+
+test('adding a task in chat names every draft that Confirm will save, not only the new one', async () => {
+  const draft = (id: string, title: string) => ({ draft: { id, title, include: true }, issues: [], ready: true });
+  const workspace = {
+    getSnapshot: () => ({ availability: null }),
+    interpretPlan: async () => ({ drafts: [draft('d2', 'Quiz prep')], provider: 'local', notes: [] }),
+    proposeCreateItems: async () => ({ id: 'a1', targets: [{ id: 'd1', title: 'Essay' }, { id: 'd2', title: 'Quiz prep' }] }),
+  } as unknown as CommandWorkspace;
+  const message = await runAssistantCommand({ command: 'add_task', text: 'Quiz prep, 90 minutes, due Friday' }, workspace);
+  assert.match(message.text, /Confirm to save all 2 items under review \(“Essay”, “Quiz prep”\)/);
+  assert.equal(message.actionId, 'a1');
 });

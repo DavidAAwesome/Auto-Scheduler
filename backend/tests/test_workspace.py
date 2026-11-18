@@ -136,3 +136,45 @@ def test_invalid_availability_keeps_previous_save(environment, case):
     if case == 'boolean': data['reminders'] = 'true'
     assert client.put('/availability',json=data).status_code == 422
     assert client.get('/availability').json() == original
+
+
+def test_clear_data_starts_over_but_keeps_the_account_and_settings(environment):
+    client, db = environment
+    other = register(client, 'other@example.com')
+    client.post('/tasks', json=TASK)
+    sign_out(client)
+    user = register(client)
+    task = client.post('/tasks', json=TASK).json()
+    assert client.post('/sessions', json={'taskId': task['id'], 'date': '2026-10-08', 'start': 540, 'end': 600}).status_code == 201
+    assert client.post('/events', json={'title': 'Class', 'kind': 'Class', 'date': '2026-10-08', 'start': 600, 'end': 660,
+                                        'location': None, 'repeat': None}).status_code == 201
+    db.calendar_connections.insert_one({'user_id': user['id'], 'provider': 'google', 'account': 'me@example.com'})
+    availability = client.get('/availability').json()
+    availability['days'][0].update(enabled=True, periods=[{'start': 480, 'end': 600}])
+    assert client.put('/availability', json=availability).status_code == 200
+
+    response = client.delete('/data')
+    assert response.status_code == 200
+    assert response.json() == {'tasks': 1, 'sessions': 1, 'events': 1, 'calendar_connections': 1}
+    assert client.get('/tasks').json() == [] and client.get('/events').json() == [] and client.get('/schedule').json()['sessions'] == []
+    assert client.get('/auth/me').status_code == 200
+    assert client.get('/availability').json()['days'][0]['periods'] == [{'start': 480, 'end': 600}]
+    assert db.tasks.count_documents({'user_id': other['id']}) == 1  # nobody else's data is touched
+
+
+def test_clear_data_requires_sign_in(environment):
+    client, _ = environment
+    assert client.delete('/data').status_code == 401
+
+
+def test_availability_ignores_stored_fields_from_other_versions(environment):
+    client, db = environment
+    user = register(client)
+    data = client.get('/availability').json()
+    data['timeZone'] = 'America/New_York'
+    client.put('/availability', json=data)
+    db.availability.update_one({'user_id': user['id']}, {'$set': {'retiredSetting': 15}})
+    response = client.get('/availability')
+    assert response.status_code == 200, response.text
+    assert 'retiredSetting' not in response.json()
+    assert response.json()['timeZone'] == 'America/New_York'

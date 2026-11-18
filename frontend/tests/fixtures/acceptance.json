@@ -14,7 +14,9 @@
       "minSessionMinutes": 15,
       "maxSessionMinutes": 60,
       "dependsOn": [],
-      "id": "6adca766746b979ff7eb4274",
+      "kind": "task",
+      "windows": [],
+      "id": "6aec11a0201ee7f86557ce98",
       "done": false
     },
     {
@@ -31,7 +33,9 @@
       "minSessionMinutes": 15,
       "maxSessionMinutes": 60,
       "dependsOn": [],
-      "id": "6adca766746b979ff7eb4275",
+      "kind": "task",
+      "windows": [],
+      "id": "6aec11a0201ee7f86557ce99",
       "done": false
     }
   ],
@@ -110,7 +114,8 @@
     ],
     "weekOverrides": [],
     "timeZone": "America/New_York",
-    "reminders": false
+    "reminders": false,
+    "saved": true
   },
   "preferences": {
     "focusMinutes": 50,
@@ -124,7 +129,7 @@
     "sessions": []
   },
   "preview": {
-    "previewId": "6adca766746b979ff7eb4276",
+    "previewId": "6aec11a0201ee7f86557ce9a",
     "status": "proposed",
     "mode": "generate",
     "baseScheduleVersion": 3,
@@ -143,7 +148,7 @@
     "sessions": [
       {
         "id": "proposed-1",
-        "taskId": "6adca766746b979ff7eb4274",
+        "taskId": "6aec11a0201ee7f86557ce98",
         "title": "Asm",
         "type": "work",
         "status": "proposed",
@@ -172,12 +177,12 @@
         "date": "2026-10-26",
         "start": 590,
         "end": 600,
-        "change": "new",
+        "change": "derived",
         "reason": "Reserved break after reaching the focus limit"
       },
       {
         "id": "proposed-3",
-        "taskId": "6adca766746b979ff7eb4274",
+        "taskId": "6aec11a0201ee7f86557ce98",
         "title": "Asm",
         "type": "work",
         "status": "proposed",
@@ -194,7 +199,7 @@
       },
       {
         "id": "proposed-4",
-        "taskId": "6adca766746b979ff7eb4275",
+        "taskId": "6aec11a0201ee7f86557ce99",
         "title": "Test revision",
         "type": "work",
         "status": "proposed",
@@ -223,12 +228,12 @@
         "date": "2026-10-26",
         "start": 650,
         "end": 660,
-        "change": "new",
+        "change": "derived",
         "reason": "Reserved break after reaching the focus limit"
       },
       {
         "id": "proposed-6",
-        "taskId": "6adca766746b979ff7eb4275",
+        "taskId": "6aec11a0201ee7f86557ce99",
         "title": "Test revision",
         "type": "work",
         "status": "proposed",
@@ -247,9 +252,10 @@
     "removed": [],
     "tasks": [
       {
-        "taskId": "6adca766746b979ff7eb4274",
+        "taskId": "6aec11a0201ee7f86557ce98",
         "title": "Asm",
         "priority": "High",
+        "kind": "task",
         "dueAt": "2026-10-28T04:00:00Z",
         "estimatedMinutes": 60,
         "completedMinutes": 0,
@@ -265,9 +271,10 @@
         "reasons": []
       },
       {
-        "taskId": "6adca766746b979ff7eb4275",
+        "taskId": "6aec11a0201ee7f86557ce99",
         "title": "Test revision",
         "priority": "Medium",
+        "kind": "task",
         "dueAt": "2026-10-28T04:00:00Z",
         "estimatedMinutes": 60,
         "completedMinutes": 0,
@@ -295,7 +302,9 @@
     ],
     "firstProposedDate": "2026-10-26",
     "explanations": [],
-    "note": "AutoPlan places work with a deterministic greedy heuristic. Unallocated minutes mean this heuristic found no valid place under your rules; that is not proof that no schedule exists.",
-    "inputFingerprint": "07ceabafcb2bfd4d997f1f14f51a9a2c33fd430aadeb6cb1773ab6b07fff0605"
+    "note": "Work left unplaced means AutoPlan found no place for it under your rules. That is not proof that no schedule exists: changing a deadline, your hours or a priority may make it fit.",
+    "inputFingerprint": "c1c2b383302bd167b5dca38ede973acc36381e0b24d179da673e6f6535c9481f",
+    "proposedEvents": [],
+    "horizonDays": 1
   }
 }

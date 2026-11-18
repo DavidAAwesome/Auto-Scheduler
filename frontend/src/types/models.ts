@@ -29,6 +29,7 @@ export interface Task {
 export interface TimeWindow { weekdays: number[]; start: number; end: number }
 export type TaskInput = Omit<Task, "id" | "done" | "remainingMinutes">;
 export const DEFAULT_DUE_TIME = 23 * 60 + 59;
+export const DEFAULT_REMINDER_MINUTES = 15;
 export type SessionType = "work" | "break";
 /** "proposed" exists only in previews; saved schedules hold saved, completed or cancelled sessions. */
 export type SessionStatus = "proposed" | "saved" | "completed" | "cancelled";
@@ -52,8 +53,8 @@ export interface ScheduleSession {
   date: string;
   start: number;
   end: number;
-  /** Previews only: retained (fixed), kept (unchanged saved), new (proposed) or truncated. */
-  change?: "retained" | "kept" | "new" | "truncated" | null;
+  /** Previews only: retained (fixed), kept (unchanged saved), new (proposed), truncated, or derived (an automatic break, never saved). */
+  change?: "retained" | "kept" | "new" | "truncated" | "derived" | null;
   reason?: string | null;
 }
 export type WorkSession = ScheduleSession;
@@ -120,6 +121,8 @@ export interface Availability {
   weekOverrides: WeekOverride[];
   timeZone: string;
   reminders: boolean;
+  /** How many minutes before a work session or event starts to remind (0 = when it starts). */
+  reminderMinutes: number;
 }
 
 /** Editable pacing defaults (not medical advice). */
@@ -169,7 +172,7 @@ export interface DaySummary { date: string; workMinutes: number; newWorkMinutes:
 export interface SchedulePreview {
   previewId: string;
   status: "proposed" | "applied";
-  mode: "generate" | "repair" | "break" | "plan";
+  mode: "generate" | "repair" | "break" | "plan" | "split";
   baseScheduleVersion: number;
   generatedAt: string;
   timeZone: string;
@@ -193,6 +196,25 @@ export interface SchedulePreview {
   proposedEvents?: ProposedEvent[];
   horizonDays?: number;
 }
+/** One way to divide a task's work. Its preview is complete and is applied like any other. */
+export interface SplitOption {
+  id: "front_loaded" | "even" | "fewer_longer";
+  label: string;
+  description: string;
+  sessionCount: number;
+  dayCount: number;
+  longestMinutes: number;
+  shortestMinutes: number;
+  scheduledMinutes: number;
+  unallocatedMinutes: number;
+  lastEndAt: string | null;
+  /** New work for other tasks in this preview. */
+  otherNewMinutes: number;
+  /** Saved work sessions of other tasks this preview moves or removes. */
+  movedSessions: number;
+  preview: SchedulePreview;
+}
+export interface SplitOptions { taskIds: string[]; title: string; remainingMinutes: number; options: SplitOption[]; notes: string[] }
 export interface ApplyResult { previewId: string; status: "applied"; duplicate: boolean; schedule: SavedSchedule; tasks?: Task[]; events?: CalendarEvent[] }
 
 /** Draft ids are prefixed with this in previews (taskId "draft:d1") until Apply creates the real task. */
@@ -227,7 +249,9 @@ export interface PlanDraft {
   assumed: string[];
   include: boolean;
 }
-export interface DraftIssue { field: string; code: "missing" | "ambiguous" | "unreadable" | "invalid" | "warning"; question: string; blocking: boolean }
+/** A way out of a draft that cannot fit. Nothing happens until the user picks it. */
+export interface FitOption { id: "move_deadline" | "shorten" | "schedule_what_fits"; label: string; patch: Partial<PlanDraft> }
+export interface DraftIssue { field: string; code: "missing" | "ambiguous" | "unreadable" | "invalid" | "warning" | "wont_fit" | "past"; question: string; blocking: boolean; options?: FitOption[] }
 export interface DraftView { draft: PlanDraft; issues: DraftIssue[]; ready: boolean }
 export interface InterpretResult { batchId: string; provider: "openai" | "local"; drafts: DraftView[]; notes: string[]; now: string; timeZone: string }
 export type FitStatus = "fits_without_moving" | "fits_after_changes" | "no_plan_found" | "proven_infeasible";
@@ -244,7 +268,7 @@ export interface FeasibilityResult {
  * A change waiting for the user's confirmation, held as structured state (never remembered by the chat model).
  * Server-backed types are stored by the API; "apply_schedule" stands for the pending schedule preview.
  */
-export type PendingActionType = "delete_tasks" | "create_items" | "apply_schedule";
+export type PendingActionType = "delete_tasks" | "delete_breaks" | "create_items" | "apply_schedule";
 export type PendingActionStatus = "awaiting_confirmation" | "processing" | "succeeded" | "cancelled" | "failed";
 export interface ActionTarget { id: string; title: string; detail?: string | null }
 export interface PendingAction {
@@ -258,6 +282,6 @@ export interface PendingAction {
   error: string | null;
   createdAt: string;
 }
-export interface ActionResult { action: PendingAction; duplicate: boolean; deletedTaskIds: string[]; tasks: Task[]; events: CalendarEvent[]; scheduleVersion: number | null }
+export interface ActionResult { action: PendingAction; duplicate: boolean; deletedTaskIds: string[]; deletedSessionIds?: string[]; tasks: Task[]; events: CalendarEvent[]; scheduleVersion: number | null }
 /** A numbered list the chat showed; a reply like "1" or "1 and 3" is resolved against exactly this list. */
 export interface PendingChoice { id: string; purpose: "delete_tasks" | "confirm"; prompt: string; options: ActionTarget[] }

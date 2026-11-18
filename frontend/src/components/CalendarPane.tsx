@@ -1,22 +1,24 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { DEFAULT_DUE_TIME, DRAFT_PREFIX, type CalendarEvent, type ProposedEvent, type ScheduleConflict, type ScheduleSession, type Task, type WorkSession } from "../types/models";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
-import { calendarViewStore, useCalendarView, useShowHolidays } from "../services/uiState";
+import { calendarViewStore, draftLinkStore, openDraft, useCalendarView, useDraftLink, useShowHolidays } from "../services/uiState";
 import { observancesBetween, type Observance } from "../utils/holidays";
 import {
   clock12, longDate, minutesInZone, shiftAnchor, shortWeekday, tasksByDate, visibleDates, type CalendarMode,
 } from "../utils/calendar";
-import { resolveDay } from "../utils/availability";
+import { firstAvailableMinute, resolveDay } from "../utils/availability";
 import { endsAfterDue } from "../utils/planning";
-import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, layoutLanes, occurrencesOn, type Placed } from "../utils/events";
+import { allDayOn, blocksTime, busyOccurrencesOn, eventIcon, HOUR_HEIGHT, layoutBlocks, occurrencesOn, TWO_LINE_HEIGHT, type Placed } from "../utils/events";
 import Icon from "./Icon";
 import { categoryIcon, duration } from "../utils/taskDisplay";
-import { calendarSessions, proposedEventsOn, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
-import DraftReview from "./DraftReview";
+import { isDerivedBreak } from "../utils/breaks";
+import { calendarSessions, proposedEventsOn, savedWorkChanges, unscheduledLine, type CalendarItem } from "../utils/schedulePreview";
+import { useDraftAutoPreview } from "../hooks/useDraftAutoPreview";
+import SplitOptionsPanel from "./SplitOptionsPanel";
 import { accountTimeZone } from "../utils/timeZones";
 
-const HOUR_HEIGHT = 48;
 const MONTH_ITEM_LIMIT = 3;
 
 export interface CalendarHandlers {
@@ -37,12 +39,16 @@ export interface CalendarHandlers {
 const dueLabel = (task: Task) => (task.dueTime === DEFAULT_DUE_TIME ? "" : clock12(task.dueTime));
 const range = (start: number, end: number) => `${clock12(start)} – ${clock12(end % 1440)}`;
 /** Horizontal placement for side-by-side (overlapping) blocks. */
-const laneStyle = ({ lane, lanes }: Placed, start: number, end: number): CSSProperties => ({
-  top: (start / 60) * HOUR_HEIGHT + 1,
-  height: Math.max(((end - start) / 60) * HOUR_HEIGHT - 2, 16),
+const laneStyle = ({ lane, lanes, top, height }: Placed): CSSProperties => ({
+  top,
+  height,
   left: `calc(${(lane / lanes) * 100}% + 3px)`,
   width: `calc(${100 / lanes}% - 6px)`,
 });
+/** Too short for a second line: the title alone, with the details in the tooltip and card. */
+const oneLine = (place: Placed) => (place.height < TWO_LINE_HEIGHT ? "compact" : "");
+/** A CSS position in the grid for a time of day. */
+const timeTop = (minute: number) => `calc(${minute / 60} * var(--hour))`;
 
 function TaskChip({ task, onOpen }: { task: Task; onOpen: CalendarHandlers["onOpen"] }) {
   const time = dueLabel(task);
@@ -65,8 +71,8 @@ function SessionBlock({ session, task, place, onOpen }: { session: WorkSession; 
   const done = task.done || session.status === "completed";
   return (
     <button
-      className={`session-block cat-${task.category.toLowerCase()} ${done ? "done" : ""} ${late ? "late" : ""} ${length < 45 ? "compact" : ""}`}
-      style={laneStyle(place, session.start, session.end)}
+      className={`session-block cat-${task.category.toLowerCase()} ${done ? "done" : ""} ${late ? "late" : ""} ${oneLine(place)}`}
+      style={laneStyle(place)}
       onClick={e => { e.stopPropagation(); onOpen(task, e.currentTarget.getBoundingClientRect(), session.id); }}
       title={`Work on ${task.title} · ${range(session.start, session.end)} · saved${session.locked ? ", locked" : ""}${session.status === "completed" ? ", done" : ""}${late ? " · ends after the due time" : ""}`}
     >
@@ -81,17 +87,17 @@ function BreakBlock({ item, place, onOpen }: { item: CalendarItem; place: Placed
   const { session } = item;
   const proposed = item.kind === "proposed";
   const label = session.locked ? "Protected break" : "Break";
-  const className = `plan-block break ${proposed ? "preview" : ""} ${session.end - session.start < 45 ? "compact" : ""}`;
+  const className = `plan-block break ${proposed ? "preview" : ""} ${oneLine(place)}`;
   const content = <>
     <span className="session-title">{label}</span>
     <span className="session-time">{range(session.start, session.end)}{proposed ? " · proposed" : ""}</span>
   </>;
-  // A proposed break is only part of the preview; a saved one opens its card so it can be deleted.
-  if (proposed) {
-    return <div className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · proposed, not saved`}>{content}</div>;
+  // Only a saved break has a card to delete it. A proposed one is part of the preview; an automatic one follows the work.
+  if (proposed || isDerivedBreak(session)) {
+    return <div className={className} style={laneStyle(place)} title={`${label} · ${range(session.start, session.end)} · ${proposed ? "proposed, not saved" : "automatic, between work sessions"}`}>{content}</div>;
   }
   return (
-    <button className={className} style={laneStyle(place, session.start, session.end)} title={`${label} · ${range(session.start, session.end)} · click to delete`}
+    <button className={className} style={laneStyle(place)} title={`${label} · ${range(session.start, session.end)} · click to delete`}
       onClick={e => { e.stopPropagation(); onOpen(session, e.currentTarget.getBoundingClientRect()); }}>
       {content}
     </button>
@@ -102,7 +108,7 @@ function BreakBlock({ item, place, onOpen }: { item: CalendarItem; place: Placed
 function RemovedBlock({ item, place }: { item: CalendarItem; place: Placed }) {
   const { session } = item;
   return (
-    <div className="plan-block removed compact" style={laneStyle(place, session.start, session.end)}
+    <div className={`plan-block removed ${oneLine(place)}`} style={laneStyle(place)}
       title={`Apply removes this saved ${session.type === "break" ? "break" : `session for ${session.title}`}: ${item.reason ?? ""}`}>
       <span className="session-title">{session.type === "break" ? "Break" : session.title}</span>
       <span className="session-time">moves</span>
@@ -114,8 +120,8 @@ function EventBlock({ event, date, place, onOpen }: { event: CalendarEvent; date
   const length = event.end - event.start;
   return (
     <button
-      className={`event-block kind-${event.kind.toLowerCase()} source-${event.source} ${length < 45 ? "compact" : ""}`}
-      style={laneStyle(place, event.start, event.end)}
+      className={`event-block kind-${event.kind.toLowerCase()} source-${event.source} ${oneLine(place)}`}
+      style={laneStyle(place)}
       onClick={e => { e.stopPropagation(); onOpen(event, date, e.currentTarget.getBoundingClientRect()); }}
       title={`${event.title} · ${range(event.start, event.end)}${event.location ? ` · ${event.location}` : ""}${event.source === "google" ? " · from Google Calendar" : event.source === "outlook" ? " · from Outlook" : ""}`}
     >
@@ -161,7 +167,7 @@ function AllDayChip({ event, date, onOpen }: { event: CalendarEvent; date: strin
 /** A timed event marked "Free": a light band behind everything else, so busy items and planned work sit on top. */
 function FreeBand({ event, date, onOpen }: { event: CalendarEvent; date: string; onOpen: CalendarHandlers["onOpenEvent"] }) {
   return (
-    <div className={`free-band source-${event.source}`} style={{ top: (event.start / 60) * HOUR_HEIGHT, height: ((event.end - event.start) / 60) * HOUR_HEIGHT }}>
+    <div className={`free-band source-${event.source}`} style={{ top: timeTop(event.start), height: timeTop(event.end - event.start) }}>
       <button className="free-band-label" onClick={e => { e.stopPropagation(); onOpen(event, date, e.currentTarget.getBoundingClientRect()); }}
         title={`${event.title} · ${range(event.start, event.end)} · marked Free${SOURCE_LABEL[event.source]}: doesn't block time`}>
         <Icon name={eventIcon[event.kind]} size={12} /> {event.title} <small>Free</small>
@@ -172,31 +178,52 @@ function FreeBand({ event, date, onOpen }: { event: CalendarEvent; date: string;
 
 /** A fixed event that exists only as a draft: drawn dashed until Apply saves it. */
 function ProposedEventBlock({ event, place }: { event: ProposedEvent; place: Placed }) {
+  const link = useLinkedDraft(event.draftId);
   return (
-    <div className={`event-block kind-${event.kind.toLowerCase()} preview ${event.end - event.start < 45 ? "compact" : ""}`}
-      style={laneStyle(place, event.start, event.end)} title={`Proposed event: ${event.title} · ${range(event.start, event.end)} · not saved`}>
+    <button type="button" className={`event-block kind-${event.kind.toLowerCase()} preview ${oneLine(place)} ${link.className}`} {...link.handlers}
+      style={laneStyle(place)} title={`Proposed event: ${event.title} · ${range(event.start, event.end)} · not saved. Click to edit.`}>
       <span className="event-title"><Icon name={eventIcon[event.kind]} size={13} /> ✦ {event.title}</span>
       <span className="event-meta">{range(event.start, event.end)} · proposed</span>
-    </div>
+    </button>
   );
 }
 
+/** A calendar block for an item still under review: hovering it lights its card, clicking opens the card. */
+function useLinkedDraft(draftId: string | null) {
+  const { hover } = useDraftLink();
+  if (!draftId) return { className: "", handlers: {} };
+  const set = (on: boolean) => draftLinkStore.set({ ...draftLinkStore.get(), hover: on ? draftId : null });
+  return {
+    className: hover === draftId ? "linked" : hover ? "unlinked" : "",
+    handlers: {
+      onMouseEnter: () => set(true), onMouseLeave: () => set(false),
+      onClick: (e: MouseEvent) => { e.stopPropagation(); openDraft(draftId); },
+    },
+  };
+}
+
 function PreviewBlock({ session, place }: { session: ScheduleSession; place: Placed }) {
+  const draftId = session.taskId?.startsWith(DRAFT_PREFIX) ? session.taskId.slice(DRAFT_PREFIX.length) : null;
+  const link = useLinkedDraft(draftId);
+  const Tag = draftId ? "button" : "div";
   return (
-    <div
-      className={`plan-block focus preview ${session.end - session.start < 45 ? "compact" : ""}`}
-      style={laneStyle(place, session.start, session.end)}
-      title={`Proposed: ${session.title} · ${range(session.start, session.end)}`}
+    <Tag
+      {...(draftId ? { type: "button" as const } : {})}
+      {...link.handlers}
+      className={`plan-block focus preview ${oneLine(place)} ${link.className}`}
+      style={laneStyle(place)}
+      title={`Proposed: ${session.title} · ${range(session.start, session.end)}${draftId ? " · click to edit" : ""}`}
     >
       <span className="session-title">✦ {session.title}</span>
       <span className="session-time">{range(session.start, session.end)} · proposed</span>
-    </div>
+    </Tag>
   );
 }
 
 function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlot }: CalendarHandlers & { dates: string[]; today: string }) {
-  const { tasks, sessions, events, availability, schedulePreview } = useWorkspace();
+  const { tasks, sessions, events, availability, schedulePreview, preferences } = useWorkspace();
   const scroller = useRef<HTMLDivElement>(null);
+  const hourHeight = useMediaQuery("(max-width: 760px)") ? HOUR_HEIGHT.mobile : HOUR_HEIGHT.desktop;
   const zone = accountTimeZone(availability);
   const [now, setNow] = useState(() => minutesInZone(zone));
   const byDate = tasksByDate(tasks);
@@ -214,23 +241,23 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
     return () => observer.disconnect();
   }, []);
   // The same list Today's Tasks and chat read: saved sessions, or the preview's proposed schedule on top of them.
-  const shown = calendarSessions(sessions, schedulePreview);
+  const shown = calendarSessions(sessions, schedulePreview, { preferences, events, tasks });
   useEffect(() => {
     const timer = setInterval(() => setNow(minutesInZone(zone)), 60_000);
     return () => clearInterval(timer);
   }, [zone]);
-  // Open the grid at the start of the user's day rather than at midnight.
-  const firstStart = Math.min(...(availability?.days.filter(d => d.enabled).flatMap(d => d.periods.map(p => p.start)) ?? []), 8 * 60);
+  // Open the grid at the user's first available hour, with its label clear of the sticky header.
+  const firstStart = firstAvailableMinute(availability, dates);
   useEffect(() => {
-    if (scroller.current) scroller.current.scrollTop = Math.max(0, (firstStart / 60 - 0.5) * HOUR_HEIGHT);
-  }, [firstStart, dates.length]);
+    if (scroller.current) scroller.current.scrollTop = Math.max(0, (firstStart / 60) * hourHeight - 12);
+  }, [firstStart, hourHeight, dates.length]);
   function slotAt(date: string, event: MouseEvent<HTMLDivElement>) {
     if (event.target !== event.currentTarget) return;
     const y = event.clientY - event.currentTarget.getBoundingClientRect().top;
-    const start = Math.min(Math.floor((y / HOUR_HEIGHT) * 4) * 15, 1440 - 15);
+    const start = Math.min(Math.floor((y / hourHeight) * 4) * 15, 1440 - 15);
     onSlot(date, start, new DOMRect(event.clientX, event.clientY, 0, 0));
   }
-  const columns = { "--cols": dates.length } as CSSProperties;
+  const columns = { "--cols": dates.length, "--hour": `${hourHeight}px` } as CSSProperties;
   return (
     <div className="time-grid" ref={scroller} style={columns}>
       <div className="grid-head" ref={head}>
@@ -254,7 +281,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
       </div>
       <div className="grid-body">
         <div className="hours">
-          {Array.from({ length: 24 }, (_, h) => <span key={h} style={{ top: h * HOUR_HEIGHT }}>{h ? clock12(h * 60) : ""}</span>)}
+          {Array.from({ length: 24 }, (_, h) => <span key={h} style={{ top: timeTop(h * 60) }}>{h ? clock12(h * 60) : ""}</span>)}
         </div>
         {dates.map(date => {
           const hours = availability ? resolveDay(availability, date) : null;
@@ -268,17 +295,17 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
             ...proposedEventsOn(schedulePreview, date).map(e => ({ kind: "proposedEvent" as const, start: e.start, end: e.end, proposed: e })),
             ...onDay.map(i => ({ kind: i.kind === "removed" ? "removed" as const : i.session.type === "break" ? "break" as const : i.kind === "proposed" ? "preview" as const : "session" as const,
               start: i.session.start, end: i.session.end, session: i.session, item: i }))];
-          const lanes = layoutLanes(items);
+          const lanes = layoutBlocks(items, hourHeight);
           return (
             <div key={date} className={`day-col ${date === today ? "is-today" : ""}`} onClick={e => slotAt(date, e)} title="Click to plan work or add an event">
               {hours?.enabled && hours.periods.map(period => (
-                <div key={period.start} className="availability-block" style={{ top: (period.start / 60) * HOUR_HEIGHT, height: ((period.end - period.start) / 60) * HOUR_HEIGHT }}>
+                <div key={period.start} className="availability-block" style={{ top: timeTop(period.start), height: timeTop(period.end - period.start) }}>
                   <span>Available {range(period.start, period.end)}</span>
                 </div>
               ))}
               {free.map(({ event }) => <FreeBand key={`free-${event.id}`} event={event} date={date} onOpen={onOpenEvent} />)}
               {(byDate.get(date) ?? []).filter(t => !t.done && t.dueTime !== DEFAULT_DUE_TIME).map(task => (
-                <div key={task.id} className={`due-marker cat-${task.category.toLowerCase()}`} style={{ top: (task.dueTime / 60) * HOUR_HEIGHT }}>
+                <div key={task.id} className={`due-marker cat-${task.category.toLowerCase()}`} style={{ top: timeTop(task.dueTime) }}>
                   <span>{task.title} due</span>
                 </div>
               ))}
@@ -293,7 +320,7 @@ function TimeGrid({ dates, today, onOpen, onOpenEvent, onOpenBreak, onAdd, onSlo
                     : item.kind === "break"
                       ? <BreakBlock key={`break-${item.session.id}`} item={item.item} place={lanes.get(item)!} onOpen={onOpenBreak} />
                       : <RemovedBlock key={`removed-${item.session.id}`} item={item.item} place={lanes.get(item)!} />)}
-              {date === today && <div className="now-line" style={{ top: (now / 60) * HOUR_HEIGHT }} aria-hidden="true" />}
+              {date === today && <div className="now-line" style={{ top: timeTop(now) }} aria-hidden="true" />}
             </div>
           );
         })}
@@ -377,6 +404,23 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
   const unscheduled = schedulePreview?.tasks.filter(t => t.unallocatedMinutes > 0) ?? [];
   const added = schedulePreview?.sessions.filter(s => s.change === "new") ?? [];
   const moved = schedulePreview?.removed.filter(r => r.session.type === "work") ?? [];
+  const newBreaks = schedulePreview?.sessions.filter(s => s.type === "break" && (s.change === "new" || s.change === "derived")).length ?? 0;
+  const workCount = added.filter(s => s.type === "work").length;
+  const eventCount = schedulePreview?.proposedEvents?.length ?? 0;
+  const previewSummary = [
+    eventCount ? `${eventCount} event${eventCount === 1 ? "" : "s"}` : "",
+    `${workCount} session${workCount === 1 ? "" : "s"}`,
+    newBreaks ? `${newBreaks} break${newBreaks === 1 ? "" : "s"}` : "",
+    moved.length ? `${moved.length} moved` : "",
+  ].filter(Boolean).join(" · ");
+  const issueCount = unscheduled.length + (schedulePreview?.conflicts.length ?? 0);
+  // Details start closed for plan previews (each card shows its own result) and open when another preview has issues.
+  const [detailsChoice, setDetailsChoice] = useState<{ previewId: string; open: boolean } | null>(null);
+  const detailsOpen = schedulePreview
+    ? detailsChoice?.previewId === schedulePreview.previewId ? detailsChoice.open : schedulePreview.mode !== "plan" && issueCount > 0
+    : false;
+  const setDetailsOpen = (open: boolean) => schedulePreview && setDetailsChoice({ previewId: schedulePreview.previewId, open });
+  useDraftAutoPreview(setScheduleError);
   const nowIso = new Date().toISOString();
   // Saved flexible work that a newer event now overlaps: offer a local repair instead of moving it silently.
   const clashing = schedulePreview ? [] : sessions.filter(s => s.type === "work" && s.status === "saved" && s.source === "auto" && !s.locked
@@ -421,18 +465,18 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
     <section className="calendar-pane" aria-label="Calendar">
       <div className="calendar-toolbar">
         <div className="calendar-nav">
-          <button className="today-label" onClick={() => calendarViewStore.set({ ...view, anchor: today })} disabled={showsToday && view.anchor === today}>
-            Today, {longDate(today)}
+          <button className="today-label" title={`Today, ${longDate(today)}`} onClick={() => calendarViewStore.set({ ...view, anchor: today })} disabled={showsToday && view.anchor === today}>
+            Today<span className="today-date-long">, {longDate(today)}</span>
           </button>
           <button className="icon-button ghost small" aria-label="Previous" onClick={() => step(-1)}><Icon name="chevronLeft" size={18} /></button>
           <button className="icon-button ghost small" aria-label="Next" onClick={() => step(1)}><Icon name="chevronRight" size={18} /></button>
           {view.mode === "day" && <span className="range-label">{longDate(view.anchor)}</span>}
         </div>
         <div className="calendar-actions">
-          <button className="button small" disabled={saving} onClick={() => void generateSchedule()} aria-label="Generate schedule">
+          <button className="button small" disabled={saving} onClick={() => void generateSchedule()} aria-label="Generate schedule" title="Generate schedule">
             <Icon name="assistant" size={15} /> <span>{saving ? "Scheduling…" : "Generate Schedule"}</span>
           </button>
-          <button className="button secondary small" onClick={() => handlers.onPlan(focusDate)} aria-label="Plan work time">
+          <button className="button secondary small" onClick={() => handlers.onPlan(focusDate)} aria-label="Plan work time" title="Plan work time">
             <Icon name="clock" size={15} /> <span>Plan work time</span>
           </button>
           <div className="segmented" role="group" aria-label="Calendar view">
@@ -447,7 +491,6 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
       {/* Review area: drafts, conflicts and the schedule preview scroll here, so the calendar keeps its space and
           the Apply buttons are never pushed out of reach. */}
       <div className="calendar-review">
-      <DraftReview />
       {clashing.length > 0 && (
         <div className="schedule-preview-bar" role="region" aria-label="Schedule conflicts">
           <div><strong>{clashing.length} saved session{clashing.length === 1 ? "" : "s"} now overlap{clashing.length === 1 ? "s" : ""} an event.</strong> Nothing was moved yet.</div>
@@ -456,64 +499,71 @@ export default function CalendarPane({ today, ...handlers }: CalendarHandlers & 
           </div>
         </div>
       )}
-      {schedulePreview && (
-        <div className="schedule-preview-bar" role="region" aria-label="Schedule preview">
-          <div className="schedule-preview-head">
-            <div><span className="preview-badge">Preview · not saved</span> <strong>{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)}</strong></div>
-            <div className="schedule-preview-actions">
-              <button className="button small" disabled={saving || previewStale} onClick={() => void applySchedule()}>{saving ? "Applying…" : unscheduled.length ? "Apply partial plan" : "Apply schedule"}</button>
-              <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
-            </div>
-          </div>
-          <div className="schedule-preview-details">
-            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && <>{schedulePreview.proposedEvents!.length} new event occurrence{schedulePreview.proposedEvents!.length === 1 ? "" : "s"}</>}
-            {(schedulePreview.proposedEvents?.length ?? 0) > 0 && " · "}{added.filter(s => s.type === "work").length} new work session{added.filter(s => s.type === "work").length === 1 ? "" : "s"}, {added.filter(s => s.type === "break").length} break{added.filter(s => s.type === "break").length === 1 ? "" : "s"}
-            {moved.length > 0 && <>{" · "}{moved.length} saved session{moved.length === 1 ? "" : "s"} move</>}
-            {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
-              <div className="preview-days" aria-label="Scheduled days">
-                {schedulePreview.days.filter(d => d.newWorkMinutes > 0 || d.breakCount > 0).map(d => (
-                  <button key={d.date} className="chip" onClick={() => calendarViewStore.set({ ...view, anchor: d.date })}>
-                    {shortWeekday(d.date)} {Number(d.date.slice(8))}: {duration(d.workMinutes)} work{d.breakCount ? `, ${d.breakCount} break${d.breakCount === 1 ? "" : "s"}` : ""}
-                  </button>
-                ))}
-              </div>
-            )}
-            {unscheduled.length > 0 && (
-              <p className="form-warning small" role="status">
-                <strong>Partial plan:</strong> {unscheduled.reduce((n, t) => n + t.unallocatedMinutes, 0)} min of work can’t be placed in this window. You can still apply what fits; the rest stays on {unscheduled.length === 1 ? "its task" : "the tasks"} as unscheduled work (listed below).
-              </p>
-            )}
-            {added.length === 0 && moved.length === 0 && !(schedulePreview.proposedEvents?.length) && (
-              <p className="muted small" role="status">
-                {schedulePreview.mode === "plan"
-                  ? "No sessions could be placed in this window. Applying saves the new items with their work unscheduled."
-                  : schedulePreview.tasks.length === 0 ? "Nothing to schedule: you have no open tasks with remaining work in this window." : "Nothing changes: your saved plan already covers everything that fits."}
-              </p>
-            )}
-            {previewStale && <p className="form-warning small">{schedulePreview.mode === "plan" ? "The items under review changed after this preview. Preview again before applying." : "Your tasks, events or settings changed after this preview. Generate it again before applying."}</p>}
-            {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
-              <ul className="form-warning small">
-                {moved.map(r => <li key={r.session.id}>{r.newEndAt ? "Shortens" : "Moves"} {r.session.title} ({range(r.session.start, r.session.end)}): {r.reason}</li>)}
-                {schedulePreview.conflicts.map((c, i) => (
-                  <li key={`c${i}`}>{c.message}
-                    {(c.choices ?? []).length > 0 && (
-                      <span className="conflict-choices">
-                        {c.choices!.map(choice => <button key={choice.id} className="chip" disabled={saving} onClick={() => void choose(c, choice.id)}>{choice.label}</button>)}
-                      </span>
-                    )}
-                  </li>
-                ))}
-                {unscheduled.map(t => <li key={t.taskId}>{unscheduledLine(t)}</li>)}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
+      <SplitOptionsPanel onError={setScheduleError} />
       {(scheduleError || error) && <p role="alert" className="form-error">{scheduleError || error}</p>}
       </div>
       {view.mode === "month"
         ? <MonthGrid anchor={view.anchor} today={today} onOpen={handlers.onOpen} onOpenEvent={handlers.onOpenEvent} onAdd={handlers.onAdd} />
         : <TimeGrid dates={dates} today={today} {...handlers} />}
+      {schedulePreview && (
+        <div className={`preview-dock ${detailsOpen ? "open" : ""}`} role="region" aria-label="Schedule preview">
+            {detailsOpen && (
+            <div className="schedule-preview-details preview-dock-details" id="preview-details">
+              <p className="preview-dock-range"><strong>{longDate(schedulePreview.startDate)} – {longDate(schedulePreview.endDate)}</strong></p>
+              {schedulePreview.days.some(d => d.newWorkMinutes > 0) && (
+                <div className="preview-days" aria-label="Scheduled days">
+                  {schedulePreview.days.filter(d => d.newWorkMinutes > 0 || d.breakCount > 0).map(d => (
+                    <button key={d.date} className="chip" onClick={() => calendarViewStore.set({ ...view, anchor: d.date })}>
+                      {shortWeekday(d.date)} {Number(d.date.slice(8))}: {duration(d.workMinutes)} work{d.breakCount ? `, ${d.breakCount} break${d.breakCount === 1 ? "" : "s"}` : ""}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {unscheduled.length > 0 && (
+                <p className="form-warning small" role="status">
+                  <strong>Partial plan:</strong> {unscheduled.reduce((n, t) => n + t.unallocatedMinutes, 0)} min of work can’t be placed in this window. You can still apply what fits; the rest stays on {unscheduled.length === 1 ? "its task" : "the tasks"} as unscheduled work (listed below).
+                </p>
+              )}
+              {added.length === 0 && moved.length === 0 && !(schedulePreview.proposedEvents?.length) && (
+                <p className="muted small" role="status">
+                  {schedulePreview.mode === "plan"
+                    ? "No sessions could be placed in this window. Applying saves the new items with their work unscheduled."
+                    : schedulePreview.tasks.length === 0 ? "Nothing to schedule: you have no open tasks with remaining work in this window." : "Nothing changes: your saved plan already covers everything that fits."}
+                </p>
+              )}
+              {previewStale && <p className="form-warning small">{schedulePreview.mode === "plan" ? "The items under review changed after this preview. Preview again before applying." : "Your tasks, events or settings changed after this preview. Generate it again before applying."}</p>}
+              {(unscheduled.length > 0 || schedulePreview.conflicts.length > 0 || moved.length > 0) && (
+                <ul className="form-warning small">
+                  {savedWorkChanges(schedulePreview).map(line => <li key={line}>{line}</li>)}
+                  {schedulePreview.conflicts.map((c, i) => (
+                    <li key={`c${i}`}>{c.message}
+                      {(c.choices ?? []).length > 0 && (
+                        <span className="conflict-choices">
+                          {c.choices!.map(choice => <button key={choice.id} className="chip" disabled={saving} onClick={() => void choose(c, choice.id)}>{choice.label}</button>)}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                  {unscheduled.map(t => <li key={t.taskId}>{unscheduledLine(t)}</li>)}
+                </ul>
+              )}
+            </div>
+            )}
+          <div className="preview-dock-bar">
+            <span className="preview-badge">Preview · not saved</span>
+            <button type="button" className="preview-dock-summary" aria-expanded={detailsOpen} aria-controls="preview-details" onClick={() => setDetailsOpen(!detailsOpen)}
+              title={detailsOpen ? "Hide details" : "Show details"}>
+              <span>{previewSummary}</span>
+              {issueCount > 0 && <span className="issue-pill">{issueCount} to check</span>}
+              <Icon name={detailsOpen ? "chevronDown" : "chevronUp"} size={15} />
+            </button>
+            <div className="schedule-preview-actions">
+              <button className="button small" disabled={saving || previewStale} title={previewStale ? schedulePreview.mode === "plan" ? "Updating the preview…" : "Things changed after this preview. Generate it again." : undefined} onClick={() => void applySchedule()}>{saving ? "Applying…" : previewStale && schedulePreview.mode === "plan" ? "Updating…" : unscheduled.length ? "Apply partial plan" : "Apply"}</button>
+              <button className="button secondary small" disabled={saving} onClick={() => workspaceService.clearSchedulePreview()}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="calendar-legend">
         <span><i className="swatch event" /> Event</span>
         <span><i className="swatch session" /> Saved work session</span>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { DEFAULT_DUE_TIME, type CalendarEvent, type ScheduleSession, type Task } from "../types/models";
 import { useWorkspace } from "../hooks/useWorkspace";
 import { workspaceService } from "../services/workspace";
@@ -9,8 +9,11 @@ import { plannedMinutes } from "../utils/planning";
 import { selectTasks, type TaskFilter } from "../services/taskRules";
 import { allDayOn, blocksTime, eventIcon } from "../utils/events";
 import { observancesBetween } from "../utils/holidays";
-import { useShowHolidays } from "../services/uiState";
+import { SIDEBAR_WIDTH, sidebarStore, sidebarWidthStore, useShowHolidays, useSidebarOpen, useSidebarWidth } from "../services/uiState";
+import ResizeHandle from "./ResizeHandle";
+import { dockedWidth } from "../utils/layout";
 import { accountTimeZone } from "../utils/timeZones";
+import { isDerivedBreak } from "../utils/breaks";
 import { todayAgenda } from "../utils/schedulePreview";
 import Icon from "./Icon";
 import EventList from "./EventList";
@@ -52,7 +55,9 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   onOpenSession: (task: Task, rect: DOMRect, sessionId: string) => void;
   onOpenBreak: (session: ScheduleSession, rect: DOMRect) => void;
 }) {
-  const { tasks, sessions, events, availability, schedulePreview, saving } = useWorkspace();
+  const sidebarOpen = useSidebarOpen();
+  const sidebarWidth = useSidebarWidth();
+  const { tasks, sessions, events, availability, schedulePreview, preferences, saving } = useWorkspace();
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TaskFilter>("open");
@@ -61,7 +66,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   const taskById = new Map(tasks.map(t => [t.id, t]));
   // Today's timeline comes from the same list the calendar and chat use: events, saved and proposed work, and breaks.
   // Deadlines are listed separately below, because a due date is not a work time.
-  const agenda = todayAgenda({ sessions, events, tasks, schedulePreview }, today).items;
+  const agenda = todayAgenda({ sessions, events, tasks, schedulePreview, preferences }, today).items;
   const open = sorted.filter(t => !t.done);
   const done = sorted.filter(t => t.done);
   // Search/filter from the old Planner page. "Open" keeps completed tasks tucked under their own toggle.
@@ -72,10 +77,22 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
   const marks = showHolidays ? observancesBetween(today, today, accountTimeZone(availability)) : [];
   const allDayToday = allDayOn(events, today);
   const row = (task: Task) => <TaskRow key={task.id} task={task} today={today} planned={plannedMinutes(task.id, sessions)} onOpen={onOpen} onError={setError} />;
+  if (!sidebarOpen)
+    return (
+      <button className="sidebar-tab" onClick={() => sidebarStore.set(true)} aria-label="Show today's tasks" title="Show today's tasks">
+        <Icon name="tasks" size={18} /> <span>Tasks</span>
+      </button>
+    );
   return (
-    <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving}>
+    <>
+    <aside className="task-sidebar" aria-label="Tasks" aria-busy={saving} style={{ "--sidebar-w": `${sidebarWidth}px` } as CSSProperties}>
       <section className="today-card">
-        <h2>Today’s Tasks</h2>
+        <div className="today-head">
+          <h2>Today’s Tasks</h2>
+          <button className="icon-button ghost small sidebar-hide" aria-label="Hide today's tasks" title="Hide today's tasks" onClick={() => sidebarStore.set(false)}>
+            <Icon name="panel" size={17} />
+          </button>
+        </div>
         <p className="today-date">{longDate(today)}</p>
         {(marks.length > 0 || allDayToday.length > 0) && (
           <ul className="today-marks" aria-label="All day today">
@@ -91,7 +108,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
         )}
         <p className={`today-hours ${hours?.enabled ? "" : "off"}`}>
           <Icon name="clock" size={14} />
-          {hours?.enabled ? `Available ${hours.periods.map(p => `${clock12(p.start)} – ${clock12(p.end)}`).join(", ")}` : <>No available hours · <a href="#/settings">set hours</a></>}
+          {hours?.enabled ? `Available ${hours.periods.map(p => `${clock12(p.start)} – ${clock12(p.end)}`).join(", ")}` : <span>No available hours · <a href="#/settings">set&nbsp;hours</a></span>}
         </p>
         {agenda.length > 0 && (
           <ul className="today-sessions" aria-label="Today's schedule">
@@ -143,7 +160,7 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
                 </>;
                 return (
                   <li key={s.id}>
-                    {proposed || s.type !== "break"
+                    {proposed || s.type !== "break" || isDerivedBreak(s)
                       ? <span className={`today-break ${proposed ? "proposed" : ""}`}>{content}</span>
                       : <button className="today-break" onClick={e => onOpenBreak(s, e.currentTarget.getBoundingClientRect())}>{content}</button>}
                   </li>
@@ -193,5 +210,8 @@ export default function TaskSidebar({ today, onAdd, onAddEvent, onOpen, onOpenSe
       </section>
       <EventList today={today} onOpen={onOpenEvent} />
     </aside>
+    <ResizeHandle label="Resize today's tasks" side="left" width={sidebarWidth} limits={SIDEBAR_WIDTH}
+      otherPanelWidth={() => dockedWidth(".chat-panel, .chat-tab")} onChange={w => sidebarWidthStore.set(w)} />
+    </>
   );
 }
