@@ -1,4 +1,4 @@
-import type { SchedulePreview, Task, WorkSession } from "../types/models.ts";
+import type { SchedulePreview, Task, TaskInput, WorkSession } from "../types/models.ts";
 import type { AssistantReply, PreviewRequest, WorkspaceState } from "./workspaceStore.ts";
 import type { AssistantMessage } from "./plannerAssistant.ts";
 import { dateInZone, longDate, minutesInZone } from "../utils/calendar.ts";
@@ -8,14 +8,50 @@ import { busyTimeText, calendarSessions, explainText, previewText, timeRange, to
 
 /** Actions the chat can run. Each one calls the same workspace method the calendar uses. */
 export type AssistantCommand =
-  | "generate_schedule" | "replan" | "show_plan" | "show_today" | "busy_time" | "explain_unscheduled"
-  | "apply_schedule" | "cancel_schedule";
+  | "generate_schedule"
+  | "replan"
+  | "show_plan"
+  | "show_today"
+  | "busy_time"
+  | "explain_unscheduled"
+  | "apply_schedule"
+  | "cancel_schedule"
+  | "add_task"
+  | "delete_task"
+  | "confirm_delete_task"
+  | "add_event"
+  | "delete_event";
 
 /** A chat request turned into validated, structured parameters for the scheduling service. */
 export type ParsedRequest =
-  | { command: AssistantCommand }
+  | {
+    command: Exclude<
+      AssistantCommand,
+      "add_task" | "delete_task" | "confirm_delete_task" | "add_event" | "delete_event"  
+    >;
+    }
   | { command: "request_break"; minutes: number }
   | { command: "move_task"; taskId: string; notBefore: string; label: string }
+  | {
+      command: "add_task";
+      title: string;
+      deadline: string;
+      duration: number;
+    }
+  | {
+      command: "delete_task";
+      taskId: string;
+      title: string;
+    }
+  | {
+    command: "confirm_delete_task";
+    taskId: string;
+    }
+  | {
+    command: "confirm_delete_task";
+    taskId: string;
+    title: string;
+    }
   | { command: "clarify"; question: string };
 
 /** The subset of the workspace store the commands need; tests pass a store built on a fake transport. */
@@ -24,6 +60,8 @@ export interface CommandWorkspace {
   requestPreview(request: PreviewRequest): Promise<SchedulePreview>;
   applySchedulePreview(): Promise<WorkSession[]>;
   clearSchedulePreview(): void;
+  createTask(input: TaskInput): Promise<Task>;
+  deleteTask(id: string): Promise<void>;
 }
 
 export const PLAN_DAYS = 7;
@@ -97,6 +135,93 @@ export function parseRequest(text: string, state: Pick<WorkspaceState, "tasks" |
     if (!target) return { command: "clarify", question: `When should “${task.title}” start instead? For example “tomorrow” or “this afternoon”.` };
     return { command: "move_task", taskId: task.id, notBefore: target.at, label: `${task.title} to ${target.label}` };
   }
+    // Recognize simple task creation requests without OpenAI.
+  if (/^\s*(add|create)\s+(a\s+)?task\b/i.test(text)) {
+   const match =
+      text.match(
+        /^\s*(?:add|create)\s+(?:a\s+)?task\s+called\s+(.+?),?\s+due\s+(.+?),?\s+with\s+a\s+duration\s+of\s+(\d+)\s+minutes?\.?\s*$/i
+      ) ??
+      text.match(
+        /^\s*(?:add|create)\s+(?:a\s+)?task\s+called\s+(.+?)\s+for\s+(\d+)\s+minutes?\s+due\s+(.+?)\.?\s*$/i
+      )?.map((value, index, values) =>
+        index === 2 ? values[3] : index === 3 ? values[2] : value
+      );
+
+    if (!match) {
+      return {
+        command: "clarify",
+        question:
+          'Please use: Add a task called Study Networking, due October 30, 2026, with a duration of 60 minutes.'
+      };
+    }
+
+    const title = match[1].trim();
+    const deadlineDate = new Date(match[2].trim());
+    const duration = Number(match[3]);
+
+    if (
+      !title ||
+      title.length > 80 ||
+      Number.isNaN(deadlineDate.getTime()) ||
+      !Number.isInteger(duration) ||
+      duration < 15 ||
+      duration > 6000 ||
+      duration % 15 !== 0
+    ) {
+      return {
+        command: "clarify",
+        question:
+          "Please provide a valid task title, deadline, and duration in multiples of 15 minutes."
+      };
+    }
+
+    const deadline = [
+      deadlineDate.getFullYear(),
+      String(deadlineDate.getMonth() + 1).padStart(2, "0"),
+      String(deadlineDate.getDate()).padStart(2, "0")
+    ].join("-");
+
+    return {
+      command: "add_task",
+      title,
+      deadline,
+      duration
+    };
+  }
+    // Recognize task deletion requests locally.
+  if (/^\s*(delete|remove)\s+(the\s+|a\s+)?task\b/i.test(text)) {
+    const match = text.match(
+      /^\s*(?:delete|remove)\s+(?:the\s+|a\s+)?task\s+(?:called\s+)?(.+?)\.?\s*$/i
+    );
+
+    if (!match) {
+      return {
+        command: "clarify",
+        question: 'Which task should I delete? Example: Delete the task called Study Networking.'
+      };
+    }
+
+    const title = match[1].trim().replace(/\.$/, "");
+
+    const matches = open.filter(
+      task => task.title.toLowerCase() === title.toLowerCase()
+    );
+
+    if (matches.length !== 1) {
+      return {
+        command: "clarify",
+        question: matches.length > 1
+          ? `Multiple tasks are named "${title}". Please identify which one you mean.`
+          : `I couldn't find an open task named "${title}".`
+      };
+    }
+
+    return {
+      command: "delete_task",
+      taskId: matches[0].id,
+      title: matches[0].title
+    };
+  }
   if (EXPLAIN.test(text)) return { command: "explain_unscheduled" };
   if (TODAY.test(text)) return { command: "show_today" };
   if (SHOW_PLAN.test(text)) return { command: "show_plan" };
@@ -132,6 +257,53 @@ export function requestFromIntent(answer: AssistantReply, state: Pick<WorkspaceS
       if (!params.notBefore || Number.isNaN(Date.parse(params.notBefore))) return { command: "clarify", question: `When should “${task.title}” start instead?` };
       return { command: "move_task", taskId: task.id, notBefore: params.notBefore, label: task.title };
     }
+    case "delete_task":
+      return {
+        command: "clarify",
+        question: "Task deletion requires confirmation."
+  };
+     case "add_task": {
+      const title = params.taskTitle;
+      const deadline = params.taskDeadline;
+      const duration = params.taskDuration;
+
+      if (!title || !title.trim()) {
+        return {
+          command: "clarify",
+          question: "What should I call the task?"
+        };
+      }
+
+      if (!deadline) {
+        return {
+          command: "clarify",
+          question: "What is the deadline for this task?"
+        };
+      }
+
+      if (duration == null) {
+        return {
+          command: "clarify",
+          question: "How many minutes will this task take?"
+        };
+      }
+
+      return {
+        command: "add_task",
+        title,
+        deadline,
+        duration
+      };
+    }
+
+    case "delete_task":
+    case "add_event":
+    case "delete_event":
+      return {
+        command: "clarify",
+        question: "This action is not available yet."
+      };
+
     default:
       return { command: intent };
   }
@@ -160,7 +332,13 @@ async function preview(workspace: CommandWorkspace, request: PreviewRequest, int
 
 /** Runs one request and returns the chat message that reports its real outcome. */
 export async function runAssistantCommand(request: ParsedRequest | AssistantCommand, workspace: CommandWorkspace, now = new Date()): Promise<AssistantMessage> {
-  const req: ParsedRequest = typeof request === "string" ? { command: request } : request;
+  const req: ParsedRequest =
+  typeof request === "string"
+    ? { command: request as Exclude<
+        AssistantCommand,
+      "add_task" | "delete_task" | "confirm_delete_task" | "add_event" | "delete_event"  
+      > }
+    : request;
   const state = workspace.getSnapshot();
   const zone = state.availability?.timeZone ?? "UTC";
   const today = dateInZone(zone, now);
@@ -169,6 +347,37 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
   switch (req.command) {
     case "clarify":
       return reply(req.question);
+    case "delete_task": {
+      const task = workspace.getSnapshot().tasks.find(
+      t => t.id === req.taskId && !t.done
+      );
+
+      if (!task) {
+        return reply("This task no longer exists or has already been completed.");
+      }
+
+      return reply(
+        `Are you sure you want to delete "${task.title}"?`,
+        ["confirm_delete_task"]
+      );
+    
+    }
+    case "confirm_delete_task": {
+      const task = workspace.getSnapshot().tasks.find(
+        t => t.id === req.taskId && !t.done
+      );
+
+      if (!task) {
+        return reply("This task no longer exists.");
+      }
+
+      try {
+        await workspace.deleteTask(task.id);
+        return reply(`Task "${task.title}" was deleted successfully.`);
+      } catch {
+        return reply("Sorry, I couldn't delete the task.");
+      }
+}
     case "generate_schedule":
       return preview(workspace, { kind: "generate", horizonDays: PLAN_DAYS });
     case "replan":
@@ -224,5 +433,56 @@ export async function runAssistantCommand(request: ParsedRequest | AssistantComm
     }
     case "busy_time":
       return reply(busyTimeText(state.events, state.sessions, state.tasks, today, PLAN_DAYS, state.connections.length > 0));
+    
+    case "add_task": {
+      const title = req.title.trim();
+      const deadline = req.deadline;
+      const duration = req.duration;
+    
+      if (!title || title.length > 80) {
+        return reply("Please provide a task title between 1 and 80 characters.");
+      }
+
+  const parsedDate = new Date(`${deadline}T12:00:00Z`);
+
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(deadline) ||
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.toISOString().slice(0, 10) !== deadline
+  ) {
+    return reply("Please provide a valid deadline in YYYY-MM-DD format.");
   }
+
+  if (
+    !Number.isInteger(duration) ||
+    duration < 15 ||
+    duration > 6000 ||
+    duration % 15 !== 0
+  ) {
+    return reply("Task duration must be between 15 and 6000 minutes, in multiples of 15.");
+  }
+
+  try {
+    const task = await workspace.createTask({
+      title,
+      deadline,
+      minutes: duration,
+      completedMinutes: 0,
+      dueTime: 1439,
+      priority: "Medium",
+      category: "Personal",
+      earliestStart: null,
+      allowSplit: true,
+      minSessionMinutes: 15,
+      maxSessionMinutes: 60,
+      dependsOn: [],
+    });
+
+    return reply(`Task "${task.title}" was created successfully.`);
+  } catch {
+    return reply("Sorry, I couldn't create the task. Please try again.");
+  }
+}  
+    }
+return reply("This command is not supported yet.");
 }

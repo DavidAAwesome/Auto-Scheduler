@@ -102,6 +102,16 @@ def task_output(doc):
             payload[field] = TASK_DEFAULTS[field]
         else:
             payload[field] = doc[field]
+        due_time = payload.get('dueTime')
+
+    if isinstance(due_time, str) and ':' in due_time:
+        try:
+            hours, minutes = map(int, due_time.split(':'))
+            if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+                raise ValueError('Invalid time')
+            payload['dueTime'] = hours * 60 + minutes
+        except ValueError:
+            raise ValueError(f"Invalid dueTime value: {due_time}")
     if payload.get('completedMinutes') is not None:
         payload['remainingMinutes'] = None  # always derived from completed minutes
     return TaskOutput(**payload, id=str(doc['_id']), done=doc['done'])
