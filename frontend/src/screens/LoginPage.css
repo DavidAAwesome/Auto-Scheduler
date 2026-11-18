@@ -271,3 +271,21 @@
     min-height: 100svh;
   }
 }
+
+/* Sign-up password checklist: each rule turns green as it is met. */
+.password-rules {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+  font-size: 11.5px;
+  color: var(--login-muted);
+}
+.password-rules li { display: flex; align-items: baseline; gap: 5px; }
+.password-rules li > span[aria-hidden] { width: 10px; text-align: center; font-weight: 700; }
+.password-rules li.met { color: #3f7a52; }
+@media (max-width: 420px) {
+  .password-rules { grid-template-columns: 1fr; }
+}
