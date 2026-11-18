@@ -19,14 +19,18 @@ test('each missing rule is reported on its own', () => {
   assert.deepEqual(unmet(''), ['length', 'upper', 'lower', 'number', 'special']);
 });
 
-test('spaces do not count as special characters, but punctuation and symbols do', () => {
-  assert.deepEqual(unmet('Plan 2026'), ['special']);
-  for (const symbol of ['!', '@', '#', '$', '%', '^', '&', '*', '_', '-', '.', '?', '~', '€'])
+test('only the special characters Firebase accepts count', () => {
+  assert.deepEqual(unmet('Plan 2026'), ['special'], 'a space is not special');
+  for (const symbol of ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '.', '?', '_', '~', '/', '\\', '"', "'", '`'])
     assert.deepEqual(unmet(`Plan2026${symbol}`), [], symbol);
+  for (const symbol of ['€', '£', '§'])
+    assert.deepEqual(unmet(`Plan2026${symbol}`), ['special'], symbol);
 });
 
-test('accented letters count as upper and lower case', () => {
-  assert.deepEqual(unmet('Élan@2026é'), []);
+test('letters must be A-Z and a-z, as Firebase checks them', () => {
+  assert.deepEqual(unmet('élan@2026X'), []);
+  assert.deepEqual(unmet('ÉLAN@2026x'), [], 'x is the lowercase letter');
+  assert.deepEqual(unmet('ÉLAN@2026X'), ['lower']);
 });
 
 test('the error sentence names what is missing', () => {
