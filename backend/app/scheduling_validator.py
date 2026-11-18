@@ -186,15 +186,20 @@ def validate_preview(preview: SchedulePreview, *, tasks: list[TaskOutput], avail
                                   f'{prefs.maxDailyWorkMinutes}.')
     busy = sorted([(ev.start, ev.end) for ev in events] + [(s, e) for s, e, _t, _c in flex])  # not rest
     rests = [(s, e) for s, e, _l, _c, kind, _t in items if kind == 'break'] + lunch
-    runs: list[list] = []  # start, end, total, checked
-    for s, e, _tid, checked in all_work:
+    runs: list[list] = []  # start, end, total, checked, task ids
+    for s, e, tid, checked in all_work:
         if runs and not _rest_gap(runs[-1][1], s, busy, prefs.breakMinutes):
             runs[-1][1] = max(runs[-1][1], e)
             runs[-1][2] += e - s
             runs[-1][3] = runs[-1][3] or checked
+            runs[-1][4].append(tid)
         else:
-            runs.append([s, e, e - s, checked])
+            runs.append([s, e, e - s, checked, [tid]])
     for run in runs:
+        # One session of a task the user asked to do in one sitting may run past the focus limit on its own.
+        only = task_by_id.get(run[4][0]) if len(run[4]) == 1 else None
+        if only is not None and not only.allowSplit:
+            continue
         if run[3] and run[2] > prefs.focusMinutes:
             raise ValidationError('focus_limit', f'{run[2]} minutes of continuous work exceeds the '
                                   f'{prefs.focusMinutes}-minute focus limit.')

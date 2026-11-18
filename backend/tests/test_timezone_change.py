@@ -3,8 +3,11 @@ while weekly availability stays as wall-clock hours in the selected zone."""
 from datetime import date
 from zoneinfo import ZoneInfo
 
+import mongomock
+import pytest
+
 from firebase_tokens import sign_in, sign_out
-from app.timezone_change import convert_span, converted_events
+from app.timezone_change import convert_span, converted_events, preserve_event_times
 
 NY, LA, LONDON = ZoneInfo('America/New_York'), ZoneInfo('America/Los_Angeles'), ZoneInfo('Europe/London')
 D = date(2026, 10, 27)
@@ -72,8 +75,14 @@ def test_unsaved_account_reports_saved_false(environment):
     assert restored['saved'] is True and restored['timeZone'] == 'America/New_York'
 
 
+def needs_transactions(db):
+    if isinstance(db.client, mongomock.MongoClient):
+        pytest.skip('Transactions require a real MongoDB replica set; no mock persistence fallback.')
+
+
 def test_changing_timezone_keeps_events_and_sessions_at_the_same_instant(environment):
     client, db = environment
+    needs_transactions(db)
     user = sign_in(client)
     availability(client, 'America/New_York')
     meeting = client.post('/events', json={'title': 'Advisor', 'kind': 'Meeting', 'date': '2026-11-10',
@@ -102,7 +111,8 @@ def test_first_save_never_shifts_existing_events(environment):
 
 
 def test_timezone_and_events_are_isolated_between_users(environment):
-    client, _ = environment
+    client, db = environment
+    needs_transactions(db)
     sign_in(client, uid='a', email='a@example.com', name='A')
     availability(client, 'America/New_York')
     sign_out(client)
@@ -117,3 +127,54 @@ def test_timezone_and_events_are_isolated_between_users(environment):
     sign_in(client, uid='b', email='b@example.com', name='B')
     assert client.get('/availability').json()['timeZone'] == 'Europe/London'
     assert client.get('/events').json() == [theirs]
+
+
+def test_an_event_split_at_midnight_is_rejoined_when_the_zone_changes_again():
+    db = mongomock.MongoClient(tz_aware=True).db
+    db.events.insert_one({'user_id': 'u', 'title': 'Call', 'date': '2026-11-10', 'start': 18 * 60, 'end': 20 * 60,
+                          'skipDates': []})
+    # 6-8 PM in New York is 11 PM-1 AM in London: two pieces, one each side of midnight.
+    preserve_event_times(db, 'u', 'America/New_York', 'Europe/London', TODAY)
+    pieces = sorted(((e['date'], e['start'], e['end']) for e in db.events.find()))
+    assert pieces == [('2026-11-10', 23 * 60, 1440), ('2026-11-11', 0, 60)]
+    assert len({e['split_group'] for e in db.events.find()}) == 1
+    # Back to New York: one event again, not two halves.
+    preserve_event_times(db, 'u', 'Europe/London', 'America/New_York', TODAY)
+    assert [(e['date'], e['start'], e['end'], 'split_group' in e) for e in db.events.find()] == \
+        [('2026-11-10', 18 * 60, 20 * 60, False)]
+    # On to Los Angeles and London again: still one real span each time.
+    preserve_event_times(db, 'u', 'America/New_York', 'America/Los_Angeles', TODAY)
+    assert [(e['date'], e['start'], e['end']) for e in db.events.find()] == [('2026-11-10', 15 * 60, 17 * 60)]
+    preserve_event_times(db, 'u', 'America/Los_Angeles', 'Europe/London', TODAY)
+    assert sorted((e['date'], e['start'], e['end']) for e in db.events.find()) == \
+        [('2026-11-10', 23 * 60, 1440), ('2026-11-11', 0, 60)]
+
+
+def test_an_edited_half_is_no_longer_rejoined():
+    db = mongomock.MongoClient(tz_aware=True).db
+    db.events.insert_one({'user_id': 'u', 'title': 'Call', 'date': '2026-11-10', 'start': 18 * 60, 'end': 20 * 60,
+                          'skipDates': []})
+    preserve_event_times(db, 'u', 'America/New_York', 'Europe/London', TODAY)
+    db.events.update_one({'date': '2026-11-11'}, {'$set': {'start': 30}})  # the user moved the second half
+    preserve_event_times(db, 'u', 'Europe/London', 'America/New_York', TODAY)
+    assert sorted((e['date'], e['start'], e['end']) for e in db.events.find()) == \
+        [('2026-11-10', 18 * 60, 19 * 60), ('2026-11-10', 19 * 60 + 30, 20 * 60)]
+
+
+def test_a_failed_timezone_change_saves_nothing(environment, monkeypatch):
+    client, db = environment
+    needs_transactions(db)
+    sign_in(client)
+    availability(client, 'America/New_York')
+    event = client.post('/events', json={'title': 'Advisor', 'kind': 'Meeting', 'date': '2026-11-10',
+                                         'start': 15 * 60, 'end': 16 * 60}).json()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('database went away')
+    import app.schedule_version as versions
+    monkeypatch.setattr(versions, 'bump_schedule_version', fail)
+    data = client.get('/availability').json() | {'timeZone': 'America/Los_Angeles'}
+    with pytest.raises(RuntimeError):
+        client.put('/availability', json=data)
+    assert client.get('/availability').json()['timeZone'] == 'America/New_York'
+    assert client.get('/events').json() == [event]

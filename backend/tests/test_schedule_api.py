@@ -372,6 +372,38 @@ def test_interpret_builds_preview_through_the_same_service(environment, monkeypa
     assert strip(chat) == strip(button)
 
 
+def test_a_new_plan_keeps_sessions_it_would_put_back_in_the_same_place(transaction_environment, monkeypatch):
+    """Generating again with nothing changed used to show every saved session as "Replaced by the new schedule"."""
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    work = lambda sessions: [s for s in sessions if s['type'] != 'break']  # automatic breaks are drawn, never saved
+    saved = {s['id'] for s in work(client.get('/schedule').json()['sessions'])}
+
+    again = preview(client)
+    assert again['removed'] == []
+    assert rows(again['sessions']) == ACCEPTANCE
+    assert {s['id'] for s in work(again['sessions'])} == saved and {s['change'] for s in work(again['sessions'])} == {'kept'}
+    assert {s['change'] for s in again['sessions'] if s['type'] == 'break'} <= {'derived'}
+    assert apply(client, again['previewId']).status_code == 200
+    after = client.get('/schedule').json()['sessions']
+    assert {s['id'] for s in work(after)} == saved and rows(after) == [r for r in ACCEPTANCE if r[2] != 'break']
+
+
+def test_break_now_between_grid_minutes_starts_that_minute_and_saves(transaction_environment, monkeypatch):
+    """At 9:21:37 a break "now" used to fail validation because the planning window started at 9:25."""
+    client, _ = transaction_environment
+    setup_user(client, monkeypatch)
+    acceptance_tasks(client)
+    assert apply(client, preview(client)['previewId']).status_code == 200
+    freeze(monkeypatch, NOW + timedelta(hours=1, minutes=21, seconds=37))
+    proposal = preview(client, '/schedule/break', minutes=15)
+    breaks = [s for s in proposal['sessions'] if s['type'] == 'break' and s['locked']]
+    assert [(s['start'], s['end']) for s in breaks] == [(561, 576)]
+    assert apply(client, proposal['previewId']).status_code == 200
+
+
 def test_break_can_start_between_five_minute_marks(environment, monkeypatch):
     """A break starts at the current minute, which is usually not on the 5-minute grid new work uses."""
     client, _ = environment

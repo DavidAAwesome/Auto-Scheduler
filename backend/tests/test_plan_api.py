@@ -159,18 +159,16 @@ def test_heuristic_failure_is_not_called_proof(environment, monkeypatch):
     assert {a['id'] for a in check['alternatives']} == {'horizon-21', 'priority-d1'}
 
 
-def test_unsplittable_task_over_focus_limit_offers_choices_without_relaxing(environment, monkeypatch):
+def test_one_sitting_task_longer_than_the_focus_limit_gets_one_block(environment, monkeypatch):
+    """"In one sitting" was asked for explicitly, so it wins over the 50-minute focus limit for that task only."""
     client, _ = environment
     setup_user(client, monkeypatch)
     drafts = interpret(client, 'Mock exam 2 hours in one sitting due tomorrow, high priority')
-    check = feasibility(client, drafts)
-    assert check['status'] == 'proven_infeasible'
-    assert check['items'][0]['causes'][0]['code'] == 'unsplit_exceeds_focus_limit'
-    assert [a['patch'] for a in check['alternatives'] if a['draftId'] == 'd1'] == [{'allowSplit': True}]
+    assert feasibility(client, drafts)['status'] == 'fits_without_moving'
     proposal = plan_preview(client, drafts)
-    conflict = next(c for c in proposal['conflicts'] if c['code'] == 'settings_conflict')
-    assert [c['id'] for c in conflict['choices']] == ['allow_split', 'raise_focus_limit', 'make_flexible_event']
-    assert [s for s in proposal['sessions'] if s['type'] == 'work'] == []
+    work = [(s['start'], s['end']) for s in proposal['sessions'] if s['type'] == 'work']
+    assert work == [(540, 660)]  # 9-11 AM in one piece
+    assert not [c for c in proposal['conflicts'] if c['code'] == 'settings_conflict']
 
 
 def test_drafts_with_open_questions_never_reach_the_scheduler(environment, monkeypatch):

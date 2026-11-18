@@ -243,6 +243,19 @@ export function busyItemsByDate(events: CalendarEvent[], sessions: ScheduleSessi
 }
 
 /** Plain-language busy time for a date range, drawn only from the user's stored events and saved sessions. */
+/** One day's busy time, and whether a given minute of that day is free ("Is Friday at 3pm free?"). */
+export function busyDayText(events: CalendarEvent[], sessions: ScheduleSession[], tasks: Task[], date: string, at: number | null = null) {
+  const items = busyItemsByDate(events, sessions, tasks, date, 1).get(date) ?? [];
+  const lines = items.map(item => `• ${timeRange(item.start, item.end)} ${item.title}, ${item.detail}`);
+  if (at !== null) {
+    const clash = items.find(item => item.start <= at && at < item.end);
+    const when = `${longDate(date)} at ${clock12(at)}`;
+    if (clash) return `${when} is busy: ${clash.title} (${timeRange(clash.start, clash.end)}).`;
+    return items.length ? `${when} is free. Also that day:\n${lines.join('\n')}` : `${when} is free; nothing else is on that day.`;
+  }
+  return items.length ? `${longDate(date)}:\n${lines.join('\n')}` : `${longDate(date)} is free: no events and no saved sessions.`;
+}
+
 export function busyTimeText(events: CalendarEvent[], sessions: ScheduleSession[], tasks: Task[], startDate: string, days: number, hasCalendarConnection: boolean) {
   const endDate = addDays(startDate, days - 1);
   const byDate = busyItemsByDate(events, sessions, tasks, startDate, days);

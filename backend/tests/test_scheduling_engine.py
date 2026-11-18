@@ -127,10 +127,10 @@ def test_insufficient_capacity_reports_unallocated_minutes_and_reasons():
     conserved(result)
 
 
-def test_unsplit_task_longer_than_focus_limit_is_reported_incompatible():
+def test_unsplit_task_longer_than_focus_limit_gets_one_block():
     result = plan([task('exam', 'Exam', minutes=90, allow_split=False)])
-    assert result.sessions == []
-    assert [r.code for r in alloc(result, 'exam').reasons] == ['unsplit_exceeds_focus_limit']
+    assert [r[1:] for r in rows(result) if r[2] == 'work'] == [('09:00-10:30', 'work', 'Exam')]
+    assert alloc(result, 'exam').reasons == []
     fits = plan([task('quiz', 'Quiz', minutes=45, allow_split=False)])
     assert [r[1:] for r in rows(fits)] == [('09:00-09:45', 'work', 'Quiz')]
 

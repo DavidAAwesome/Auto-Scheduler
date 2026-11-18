@@ -136,11 +136,15 @@ def test_repair_never_trades_an_earlier_deadline_for_more_minutes():
     assert alloc(result, 'b').unallocated == 60
 
 
-def test_unsplittable_task_over_focus_limit_is_a_settings_conflict_with_choices():
-    result = plan([task('exam', 'Mock exam', minutes=120, allow_split=False)])
-    conflict = next(c for c in result.conflicts if c.code == 'settings_conflict')
-    assert [c['id'] for c in conflict.choices] == ['allow_split', 'raise_focus_limit', 'make_flexible_event']
-    assert works(result) == []  # nothing is relaxed silently
+def test_one_sitting_task_over_the_focus_limit_is_one_block_with_a_break_before_more_work():
+    result = plan([task('exam', 'Mock exam', minutes=120, allow_split=False), task('read', 'Reading', minutes=30)])
+    assert not [c for c in result.conflicts if c.code == 'settings_conflict']
+    sessions = works(result)
+    exam = [s for s in sessions if s.task_id == 'exam']
+    assert [(s.end - s.start) for s in exam] == [120]
+    other = [s for s in sessions if s.task_id == 'read']
+    # Other work never joins the 2-hour block without a rest gap.
+    assert all(o.start >= exam[0].end + 10 or o.end <= exam[0].start - 10 for o in other)
 
 
 def test_daylight_saving_fall_back_keeps_local_wall_clock_times():
