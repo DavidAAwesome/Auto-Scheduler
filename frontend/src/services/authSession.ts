@@ -71,6 +71,7 @@ function friendlyError(error: unknown) {
   const messages: Record<string, string> = {
     'auth/email-already-in-use': 'An account with this email already exists.',
     'auth/invalid-email': 'Enter a valid email address.',
+    'auth/missing-email': 'Enter your email address.',
     'auth/password-does-not-meet-requirements': 'Choose a stronger password: at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character such as ! @ # $ %.',
     'auth/weak-password': 'Choose a stronger password: at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character.',
     'auth/invalid-credential': 'Incorrect email or password.',
@@ -127,8 +128,22 @@ export const authSession = {
       await syncWithServer(user);
     } catch (e) { throw friendlyError(e); }
   },
+  /**
+   * Emails Firebase's reset link. After choosing a new password on Firebase's page, its Continue button returns to
+   * AutoPlan's sign-in page. "No such account" is reported the same as success, so the form never reveals who has one.
+   */
   async resetPassword(email: string) {
-    try { await sendPasswordResetEmail(requireAuth(), email); } catch (e) { throw friendlyError(e); }
+    const returnTo = { url: `${window.location.origin}/#/login` };
+    try { await sendPasswordResetEmail(requireAuth(), email, returnTo); }
+    catch (e) {
+      const code = (e as { code?: string })?.code;
+      if (code === 'auth/user-not-found') return;
+      // If this site isn't an authorized Firebase domain, still send the link, just without the way back.
+      if (code === 'auth/unauthorized-continue-uri' || code === 'auth/invalid-continue-uri') {
+        try { await sendPasswordResetEmail(requireAuth(), email); return; } catch (retry) { throw friendlyError(retry); }
+      }
+      throw friendlyError(e);
+    }
   },
   /** Firebase owns the display name; the API copies it from the refreshed ID token, like at sign-up. */
   async updateName(name: string) {
