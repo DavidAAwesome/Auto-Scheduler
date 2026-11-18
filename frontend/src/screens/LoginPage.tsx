@@ -3,6 +3,7 @@ import Icon from "../components/Icon";
 import { authSession } from "../services/authSession";
 import { PASSWORD_RULES, passwordProblem } from "../utils/passwordRules";
 import SignupCodeStep, { type PendingSignup } from "../components/SignupCodeStep";
+import ResetPasswordStep from "../components/ResetPasswordStep";
 import "./LoginPage.css";
 
 function LoginBrand() {
@@ -23,6 +24,9 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
   const [password, setPassword] = useState("");
   // Sign-up waits here for the emailed code; the account is created only after it is verified.
   const [pending, setPending] = useState<PendingSignup | null>(null);
+  // "Forgot password?" swaps the sign-in form for the reset screen; the email carries across both ways.
+  const [resetting, setResetting] = useState(false);
+  const [email, setEmail] = useState("");
   async function google() {
     if (loading) return;
     setError(""); setNotice(""); setLoading(true);
@@ -30,12 +34,10 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
     catch (err) { setError(err instanceof Error ? err.message : "Google sign-in failed."); }
     finally { setLoading(false); }
   }
-  async function forgotPassword(form: HTMLFormElement | null) {
-    const email = String(new FormData(form ?? undefined).get("email") ?? "").trim();
+  function forgotPassword(form: HTMLFormElement | null) {
+    setEmail(String(new FormData(form ?? undefined).get("email") ?? "").trim());
     setError(""); setNotice("");
-    if (!email) { setError("Enter your email address first, then choose Forgot password."); return; }
-    try { await authSession.resetPassword(email); setNotice(`If an account exists for ${email}, a reset link is on its way.`); }
-    catch (err) { setError(err instanceof Error ? err.message : "Could not send a reset email."); }
+    setResetting(true);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -93,6 +95,8 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
       <section className="login-right" aria-labelledby="login-heading">
         {pending ? (
           <SignupCodeStep pending={pending} onResent={setPending} onBack={() => { setPending(null); setPassword(""); }} />
+        ) : resetting && !signup ? (
+          <ResetPasswordStep initialEmail={email} onBack={address => { setEmail(address); setResetting(false); }} />
         ) : (
         <form className="prototype-login-form" onSubmit={submit}>
           <LoginBrand />
@@ -108,6 +112,7 @@ export default function LoginPage({ signup = false }: { signup?: boolean }) {
               id="login-email"
               name="email"
               type="email"
+              defaultValue={email}
               autoComplete="username"
               maxLength={254}
               disabled={loading}
